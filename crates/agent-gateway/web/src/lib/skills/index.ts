@@ -40,6 +40,32 @@ export type SkillDiscovery = {
   skills: SkillSummary[];
 };
 
+export type ExplicitSkillMentionReference = {
+  name: string;
+  skillFile?: string | null;
+  baseDir?: string | null;
+};
+
+const COMMON_SKILL_MENTION_ENV_VARS = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "PWD",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "TERM",
+  "XDG_CONFIG_HOME",
+]);
+
+function isCommonSkillMentionEnvVar(name: string) {
+  const upper = name.toUpperCase();
+  return COMMON_SKILL_MENTION_ENV_VARS.has(upper) ||
+    (upper.endsWith(":") && COMMON_SKILL_MENTION_ENV_VARS.has(upper.slice(0, -1)));
+}
+
 type SystemListSkillFilesResponse = {
   rootDir: string;
   paths: string[];
@@ -135,6 +161,122 @@ let discoveryCacheEpoch = 0;
 
 function normalizeRelPath(path: string) {
   return path.replace(/\\/g, "/");
+}
+
+function isSkillMentionNameChar(value: string) {
+  return /^[A-Za-z0-9_:-]$/.test(value);
+}
+
+export function extractSkillMentionNamesFromText(text: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] !== "$") continue;
+
+    const before = index > 0 ? text[index - 1] : "";
+    if (before && !/\s/.test(before)) continue;
+
+    const nameStart = index + 1;
+    const first = text[nameStart];
+    if (!first || !isSkillMentionNameChar(first)) continue;
+
+    let nameEnd = nameStart + 1;
+    while (nameEnd < text.length && isSkillMentionNameChar(text[nameEnd])) {
+      nameEnd += 1;
+    }
+
+    const name = text.slice(nameStart, nameEnd);
+    if (isCommonSkillMentionEnvVar(name)) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    index = nameEnd - 1;
+  }
+
+  return names;
+}
+
+export function resolveExplicitSkillMentions(params: {
+  text?: string | null;
+  structured?: ExplicitSkillMentionReference[] | null;
+  enabledSkills: SkillSummary[];
+}): SkillSummary[] {
+  const enabledSkills = params.enabledSkills;
+  if (enabledSkills.length === 0) return [];
+
+  const names: ExplicitSkillMentionReference[] = [];
+  const pushName = (item: ExplicitSkillMentionReference | string | null | undefined) => {
+    if (!item) return;
+    if (typeof item === "string") {
+      const name = item.trim();
+      if (name) names.push({ name });
+      return;
+    }
+    const name = item.name.trim();
+    if (name) {
+      names.push({
+        name,
+        skillFile: item.skillFile ? normalizeRelPath(item.skillFile) : null,
+        baseDir: item.baseDir ? normalizeRelPath(item.baseDir) : null,
+      });
+    }
+  };
+
+  for (const item of params.structured ?? []) {
+    pushName(item);
+  }
+  for (const name of extractSkillMentionNamesFromText(params.text ?? "")) {
+    pushName(name);
+  }
+
+  const byName = new Map<string, SkillSummary[]>();
+  const byLowerName = new Map<string, SkillSummary[]>();
+  const bySkillFile = new Map<string, SkillSummary>();
+  for (const skill of enabledSkills) {
+    const nameBucket = byName.get(skill.name) ?? [];
+    nameBucket.push(skill);
+    byName.set(skill.name, nameBucket);
+
+    const lowerBucket = byLowerName.get(skill.name.toLowerCase()) ?? [];
+    lowerBucket.push(skill);
+    byLowerName.set(skill.name.toLowerCase(), lowerBucket);
+    bySkillFile.set(normalizeRelPath(skill.skillFile), skill);
+  }
+
+  const selected: SkillSummary[] = [];
+  const seenKeys = new Set<string>();
+  const addSkill = (skill: SkillSummary | undefined) => {
+    if (!skill) return;
+    const key = `${skill.name}\u0000${skill.skillFile}`;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
+    selected.push(skill);
+  };
+
+  for (const ref of names) {
+    const skillFile = ref.skillFile ? normalizeRelPath(ref.skillFile) : "";
+    if (skillFile) {
+      const skill = bySkillFile.get(skillFile);
+      if (skill) {
+        addSkill(skill);
+        continue;
+      }
+    }
+
+    const exact = byName.get(ref.name);
+    if (exact?.length === 1) {
+      addSkill(exact[0]);
+      continue;
+    }
+
+    const lower = byLowerName.get(ref.name.toLowerCase());
+    if (lower?.length === 1) {
+      addSkill(lower[0]);
+    }
+  }
+
+  return selected;
 }
 
 function normalizeDisplayPath(path: string) {
@@ -534,9 +676,18 @@ export async function getSkillInstallJobStatus(
 export function buildSkillsSystemPrompt(params: {
   rootDir: string;
   selected: SkillSummary[];
+  explicit?: SkillSummary[];
 }): string {
   const { selected } = params;
   if (selected.length === 0) return "";
+  const explicit = resolveExplicitSkillMentions({
+    structured: params.explicit?.map((skill) => ({
+      name: skill.name,
+      skillFile: skill.skillFile,
+      baseDir: skill.baseDir,
+    })),
+    enabledSkills: selected,
+  });
 
   return [
     'The following Skills are enabled by the user (discovered from the fixed Skills directory exposed to file tools as root="skills").',
@@ -554,6 +705,16 @@ export function buildSkillsSystemPrompt(params: {
     "- Do not guess a Skill's exact instructions or script paths before reading the Skill file.",
     "- Relative paths inside a Skill (scripts/, references/, assets/, and so on) are resolved relative to baseDir.",
     "- If a Skill contains the {baseDir} placeholder, interpret it as the baseDir value in the metadata below (relative to the Skills root directory).",
+    explicit.length > 0
+      ? [
+          "",
+          "Explicitly mentioned this turn:",
+          "- The user explicitly mentioned the following enabled Skills with `$skill-name` in this turn.",
+          "- Treat these mentions as user intent to prioritize those Skills. Read and follow the mentioned Skill instructions before acting when they are relevant.",
+          "- `$` mentions never grant access to disabled Skills; only the enabled Skills listed in this prompt are available.",
+          ...explicit.map((skill) => `- ${skill.name} (skillFile: ${skill.skillFile}, baseDir: ${skill.baseDir})`),
+        ].join("\n")
+      : "",
     "",
     "Skills:",
     ...selected.map((s) =>

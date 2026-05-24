@@ -10,9 +10,42 @@ export function isMentionToken(token: string) {
   return /^@[^\s@][^\s]*$/.test(token);
 }
 
+const COMMON_SKILL_MENTION_ENV_VARS = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "SHELL",
+  "PWD",
+  "TMPDIR",
+  "TEMP",
+  "TMP",
+  "LANG",
+  "TERM",
+  "XDG_CONFIG_HOME",
+]);
+
+function isSkillMentionName(value: string) {
+  return /^[A-Za-z0-9_:-]+$/.test(value);
+}
+
+function isCommonSkillMentionEnvVar(name: string) {
+  const upper = name.toUpperCase();
+  return COMMON_SKILL_MENTION_ENV_VARS.has(upper) ||
+    (upper.endsWith(":") && COMMON_SKILL_MENTION_ENV_VARS.has(upper.slice(0, -1)));
+}
+
+export function isSkillMentionToken(token: string) {
+  if (!token.startsWith("$")) return false;
+  const name = token.slice(1);
+  return Boolean(name) &&
+    isSkillMentionName(name) &&
+    !isCommonSkillMentionEnvVar(name);
+}
+
 type UserMessageSegment =
   | { type: "text"; value: string }
   | { type: "mention"; path: string; isDir: boolean }
+  | { type: "skill"; name: string }
   | {
       type: "pastedText";
       reference: PastedTextDisplayReference;
@@ -84,33 +117,51 @@ function markdownFileReference(label: string, rawDestination: string) {
   return reference;
 }
 
-function tokenizeAtMentions(text: string): UserMessageSegment[] {
+function isTokenBoundary(text: string, index: number) {
+  return index === 0 || /\s/.test(text[index - 1] ?? "");
+}
+
+function tokenizeInlineMentions(text: string): UserMessageSegment[] {
   const segments: UserMessageSegment[] = [];
-  const mentionPattern = /(^|\s)(@\S+)/g;
   let cursor = 0;
 
-  for (const match of text.matchAll(mentionPattern)) {
-    const boundary = match[1] ?? "";
-    const token = match[2] ?? "";
-    const matchIndex = match.index ?? 0;
-    const tokenStart = matchIndex + boundary.length;
-
-    if (tokenStart > cursor) {
-      pushTextSegment(segments, text.slice(cursor, tokenStart));
+  for (let index = 0; index < text.length; index += 1) {
+    const marker = text[index];
+    if ((marker !== "@" && marker !== "$") || !isTokenBoundary(text, index)) {
+      continue;
     }
 
-    if (isMentionToken(token)) {
+    if (marker === "@") {
+      let tokenEnd = index + 1;
+      while (tokenEnd < text.length && !/\s/.test(text[tokenEnd])) {
+        tokenEnd += 1;
+      }
+      const token = text.slice(index, tokenEnd);
+      if (!isMentionToken(token)) continue;
       const reference = buildFileReference(token.slice(1));
       if (reference) {
+        if (index > cursor) {
+          pushTextSegment(segments, text.slice(cursor, index));
+        }
         segments.push({ type: "mention", ...reference });
-      } else {
-        pushTextSegment(segments, token);
+        cursor = tokenEnd;
+        index = tokenEnd - 1;
       }
-    } else if (tokenStart + token.length > cursor) {
-      pushTextSegment(segments, text.slice(tokenStart, tokenStart + token.length));
+      continue;
     }
 
-    cursor = tokenStart + token.length;
+    let nameEnd = index + 1;
+    while (nameEnd < text.length && /[A-Za-z0-9_:-]/.test(text[nameEnd])) {
+      nameEnd += 1;
+    }
+    const token = text.slice(index, nameEnd);
+    if (!isSkillMentionToken(token)) continue;
+    if (index > cursor) {
+      pushTextSegment(segments, text.slice(cursor, index));
+    }
+    segments.push({ type: "skill", name: token.slice(1) });
+    cursor = nameEnd;
+    index = nameEnd - 1;
   }
 
   if (cursor < text.length) {
@@ -138,17 +189,17 @@ function tokenizeMentions(text: string): UserMessageSegment[] {
     if (!reference) continue;
 
     if (matchIndex > cursor) {
-      appendSegments(segments, tokenizeAtMentions(text.slice(cursor, matchIndex)));
+      appendSegments(segments, tokenizeInlineMentions(text.slice(cursor, matchIndex)));
     }
     segments.push({ type: "mention", ...reference });
     cursor = matchIndex + raw.length;
   }
 
   if (cursor < text.length) {
-    appendSegments(segments, tokenizeAtMentions(text.slice(cursor)));
+    appendSegments(segments, tokenizeInlineMentions(text.slice(cursor)));
   }
 
-  return segments.length > 0 ? segments : tokenizeAtMentions(text);
+  return segments.length > 0 ? segments : tokenizeInlineMentions(text);
 }
 
 function tokenizeUserMessage(
@@ -239,6 +290,18 @@ function MentionChip({
   );
 }
 
+function SkillMentionChip({ name }: { name: string }) {
+  return (
+    <span
+      title={`Skill: ${name}`}
+      className="mention-chip mx-0.5 inline-flex items-center gap-1 rounded bg-violet-500/20 px-1.5 text-violet-700 align-baseline whitespace-nowrap select-none dark:text-violet-300"
+    >
+      <span className="text-[10px] font-semibold opacity-70">$</span>
+      {name}
+    </span>
+  );
+}
+
 export function UserMessageContent({
   text,
   pastedTextFiles = [],
@@ -247,7 +310,7 @@ export function UserMessageContent({
   pastedTextFiles?: PendingUploadedFile[];
 }) {
   const parts = tokenizeUserMessage(text, pastedTextFiles);
-  const hasChip = parts.some((part) => part.type === "mention" || part.type === "pastedText");
+  const hasChip = parts.some((part) => part.type === "mention" || part.type === "skill" || part.type === "pastedText");
   if (!hasChip) return <>{text}</>;
 
   return (
@@ -255,6 +318,9 @@ export function UserMessageContent({
       {parts.map((part, idx) => {
         if (part.type === "mention") {
           return <MentionChip key={idx} path={part.path} isDir={part.isDir} />;
+        }
+        if (part.type === "skill") {
+          return <SkillMentionChip key={idx} name={part.name} />;
         }
         if (part.type === "pastedText") {
           return (

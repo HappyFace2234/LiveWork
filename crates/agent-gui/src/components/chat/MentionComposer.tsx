@@ -37,11 +37,25 @@ type MentionSearchEntry = {
   searchPath: string;
 };
 
-/** Where the @ trigger lives inside a text node */
+export type MentionComposerSkill = {
+  name: string;
+  description: string;
+  skillFile: string;
+  baseDir: string;
+};
+
+export type MentionComposerSkillMention = MentionComposerSkill;
+
+type MentionSuggestion =
+  | { type: "file"; entry: MentionFileEntry }
+  | { type: "skill"; skill: MentionComposerSkill };
+
+/** Where the @/$ trigger lives inside a text node */
 interface MentionContext {
+  trigger: "file" | "skill";
   query: string;
   textNode: Text;
-  atOffset: number; // char offset of '@' inside textNode
+  triggerOffset: number; // char offset of the trigger inside textNode
 }
 
 export interface MentionComposerHandle {
@@ -65,13 +79,15 @@ export type MentionComposerLargePaste = {
 
 export type MentionComposerDraftSegment =
   | { type: "text"; text: string }
-  | { type: "largePaste"; paste: MentionComposerLargePaste };
+  | { type: "largePaste"; paste: MentionComposerLargePaste }
+  | { type: "skillMention"; skill: MentionComposerSkillMention };
 
 export type MentionComposerDraft = {
   segments: MentionComposerDraftSegment[];
   text: string;
   textWithoutLargePastes: string;
   largePastes: MentionComposerLargePaste[];
+  skillMentions: MentionComposerSkillMention[];
   isEmpty: boolean;
 };
 
@@ -85,6 +101,7 @@ export interface MentionComposerProps {
   disabled?: boolean;
   placeholder?: string;
   workdir: string;
+  enabledSkills?: MentionComposerSkill[];
   className?: string;
 }
 
@@ -96,6 +113,10 @@ const MAX_SUGGESTIONS = 20;
 const MENTION_INDEX_MAX_RESULTS = 5000;
 const MENTION_TAG_ATTR = "data-mention-path";
 const MENTION_KIND_ATTR = "data-mention-kind";
+const SKILL_MENTION_NAME_ATTR = "data-skill-name";
+const SKILL_MENTION_FILE_ATTR = "data-skill-file";
+const SKILL_MENTION_BASE_DIR_ATTR = "data-skill-base-dir";
+const SKILL_MENTION_DESCRIPTION_ATTR = "data-skill-description";
 const LARGE_PASTE_TAG_ATTR = "data-large-paste-id";
 const LARGE_PASTE_CHAR_THRESHOLD = 8_000;
 const LARGE_PASTE_LINE_THRESHOLD = 200;
@@ -128,6 +149,10 @@ function formatMentionReference(path: string, kind: "file" | "dir") {
   return `[${escapeMarkdownLinkLabel(label)}](${formatMarkdownLinkDestination(target)})`;
 }
 
+function formatSkillMentionToken(skill: Pick<MentionComposerSkillMention, "name">) {
+  return `$${skill.name}`;
+}
+
 /** Recursively serialise a contenteditable DOM tree back to plain text.
  *  Mention chips become Markdown file references. */
 function pushTextSegment(out: MentionComposerDraftSegment[], text: string) {
@@ -154,6 +179,21 @@ function serializeChildrenToSegments(
       if (mentionPath) {
         const kind = el.getAttribute(MENTION_KIND_ATTR);
         pushTextSegment(parts, formatMentionReference(mentionPath, kind === "dir" ? "dir" : "file"));
+      } else if (el.hasAttribute(SKILL_MENTION_NAME_ATTR)) {
+        const name = el.getAttribute(SKILL_MENTION_NAME_ATTR)?.trim() ?? "";
+        const skillFile = el.getAttribute(SKILL_MENTION_FILE_ATTR)?.trim() ?? "";
+        const baseDir = el.getAttribute(SKILL_MENTION_BASE_DIR_ATTR)?.trim() ?? "";
+        if (name && skillFile && baseDir) {
+          parts.push({
+            type: "skillMention",
+            skill: {
+              name,
+              skillFile,
+              baseDir,
+              description: el.getAttribute(SKILL_MENTION_DESCRIPTION_ATTR)?.trim() ?? "",
+            },
+          });
+        }
       } else {
         const largePasteId = el.getAttribute(LARGE_PASTE_TAG_ATTR);
         const largePaste = largePasteId ? largePastes.get(largePasteId) : undefined;
@@ -187,7 +227,11 @@ function serializeChildren(
   largePastes: Map<string, MentionComposerLargePaste>,
 ): string {
   return serializeChildrenToSegments(parent, largePastes)
-    .map((segment) => (segment.type === "largePaste" ? segment.paste.text : segment.text))
+    .map((segment) => {
+      if (segment.type === "largePaste") return segment.paste.text;
+      if (segment.type === "skillMention") return formatSkillMentionToken(segment.skill);
+      return segment.text;
+    })
     .join("");
 }
 
@@ -393,8 +437,8 @@ function selectionTextPosition(root: HTMLElement): { textNode: Text; offset: num
   return null;
 }
 
-/** Detect an in-progress @mention at the cursor position. */
-function detectMention(root: HTMLElement): MentionContext | null {
+/** Detect an in-progress @file or $skill mention at the cursor position. */
+function detectMention(root: HTMLElement, skillsEnabled: boolean): MentionContext | null {
   const position = selectionTextPosition(root);
   if (!position) return null;
 
@@ -402,18 +446,28 @@ function detectMention(root: HTMLElement): MentionContext | null {
   const text = node.textContent || "";
   const before = text.slice(0, offset);
 
-  let atIdx = -1;
+  let triggerIdx = -1;
+  let trigger: MentionContext["trigger"] | null = null;
   for (let i = before.length - 1; i >= 0; i--) {
-    if (before[i] === "@") { atIdx = i; break; }
+    if (before[i] === "@") {
+      triggerIdx = i;
+      trigger = "file";
+      break;
+    }
+    if (before[i] === "$" && skillsEnabled) {
+      triggerIdx = i;
+      trigger = "skill";
+      break;
+    }
     if (/\s/.test(before[i])) break;
   }
-  if (atIdx < 0) return null;
+  if (triggerIdx < 0 || !trigger) return null;
 
-  // @ must be preceded by whitespace or be the very first character
-  if (atIdx > 0) {
-    if (!/\s/.test(before[atIdx - 1])) return null;
+  // Trigger must be preceded by whitespace or be the very first character.
+  if (triggerIdx > 0) {
+    if (!/\s/.test(before[triggerIdx - 1])) return null;
   } else {
-    // atIdx === 0 — check previous leaf
+    // triggerIdx === 0 — check previous leaf
     const prev = prevLeaf(node, root);
     if (prev) {
       if (prev.nodeType === Node.TEXT_NODE) {
@@ -424,17 +478,22 @@ function detectMention(root: HTMLElement): MentionContext | null {
     }
   }
 
-  return { query: before.slice(atIdx + 1), textNode: node as Text, atOffset: atIdx };
+  return {
+    trigger,
+    query: before.slice(triggerIdx + 1),
+    textNode: node as Text,
+    triggerOffset: triggerIdx,
+  };
 }
 
 /** Replace the @query text with a styled mention chip. */
 function insertMentionChip(ctx: MentionContext, path: string, kind: "file" | "dir") {
-  const { textNode, atOffset, query } = ctx;
+  const { textNode, triggerOffset, query } = ctx;
   const text = textNode.textContent || "";
   const parent = textNode.parentNode!;
 
-  const beforeText = text.slice(0, atOffset);
-  const afterRaw = text.slice(atOffset + 1 + query.length);
+  const beforeText = text.slice(0, triggerOffset);
+  const afterRaw = text.slice(triggerOffset + 1 + query.length);
 
   const chip = document.createElement("span");
   chip.setAttribute(MENTION_TAG_ATTR, path);
@@ -464,6 +523,52 @@ function insertMentionChip(ctx: MentionContext, path: string, kind: "file" | "di
   parent.removeChild(textNode);
 
   // Place cursor right after the space
+  const range = document.createRange();
+  range.setStart(afterNode, 1);
+  range.collapse(true);
+  const sel = window.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function createSkillMentionChip(skill: MentionComposerSkillMention) {
+  const chip = document.createElement("span");
+  chip.setAttribute(SKILL_MENTION_NAME_ATTR, skill.name);
+  chip.setAttribute(SKILL_MENTION_FILE_ATTR, skill.skillFile);
+  chip.setAttribute(SKILL_MENTION_BASE_DIR_ATTR, skill.baseDir);
+  chip.setAttribute(SKILL_MENTION_DESCRIPTION_ATTR, skill.description);
+  chip.contentEditable = "false";
+  chip.className =
+    "mention-chip inline-flex items-center gap-1 rounded bg-violet-500/15 px-1.5 mx-0.5 text-violet-700 dark:text-violet-300 align-baseline whitespace-nowrap select-none";
+  chip.title = skill.description ? `${skill.name}\n${skill.description}` : skill.name;
+
+  const sigil = document.createElement("span");
+  sigil.textContent = "$";
+  sigil.className = "text-[10px] font-semibold opacity-70";
+  chip.appendChild(sigil);
+  chip.appendChild(document.createTextNode(skill.name));
+  return chip;
+}
+
+function insertSkillMentionChip(ctx: MentionContext, skill: MentionComposerSkill) {
+  const { textNode, triggerOffset, query } = ctx;
+  const text = textNode.textContent || "";
+  const parent = textNode.parentNode!;
+
+  const beforeText = text.slice(0, triggerOffset);
+  const afterRaw = text.slice(triggerOffset + 1 + query.length);
+  const chip = createSkillMentionChip(skill);
+
+  const afterText = afterRaw.length === 0 || !/^\s/.test(afterRaw) ? "\u00A0" + afterRaw : afterRaw;
+  const afterNode = document.createTextNode(afterText);
+
+  if (beforeText) {
+    parent.insertBefore(document.createTextNode(beforeText), textNode);
+  }
+  parent.insertBefore(chip, textNode);
+  parent.insertBefore(afterNode, textNode);
+  parent.removeChild(textNode);
+
   const range = document.createRange();
   range.setStart(afterNode, 1);
   range.collapse(true);
@@ -576,7 +681,11 @@ function chipBeforeCursor(root: HTMLElement): HTMLElement | null {
     const prev = node.previousSibling;
     if (prev && prev.nodeType === Node.ELEMENT_NODE) {
       const el = prev as HTMLElement;
-      if (el.hasAttribute(MENTION_TAG_ATTR) || el.hasAttribute(LARGE_PASTE_TAG_ATTR)) return el;
+      if (
+        el.hasAttribute(MENTION_TAG_ATTR) ||
+        el.hasAttribute(SKILL_MENTION_NAME_ATTR) ||
+        el.hasAttribute(LARGE_PASTE_TAG_ATTR)
+      ) return el;
     }
   }
 
@@ -587,7 +696,11 @@ function chipBeforeCursor(root: HTMLElement): HTMLElement | null {
     const childBefore = el.childNodes[offset - 1];
     if (childBefore && childBefore.nodeType === Node.ELEMENT_NODE) {
       const ce = childBefore as HTMLElement;
-      if (ce.hasAttribute(MENTION_TAG_ATTR) || ce.hasAttribute(LARGE_PASTE_TAG_ATTR)) return ce;
+      if (
+        ce.hasAttribute(MENTION_TAG_ATTR) ||
+        ce.hasAttribute(SKILL_MENTION_NAME_ATTR) ||
+        ce.hasAttribute(LARGE_PASTE_TAG_ATTR)
+      ) return ce;
     }
   }
 
@@ -605,15 +718,17 @@ function Popup({
   isLoading,
   error,
   showEmpty,
+  emptyLabel,
   onSelect,
 }: {
   anchorRef: RefObject<HTMLElement | null>;
-  suggestions: MentionFileEntry[];
+  suggestions: MentionSuggestion[];
   highlightIndex: number;
   isLoading: boolean;
   error: string | null;
   showEmpty: boolean;
-  onSelect: (path: string, kind: "file" | "dir") => void;
+  emptyLabel: string;
+  onSelect: (suggestion: MentionSuggestion) => void;
 }) {
   const popupRef = useRef<HTMLDivElement>(null);
   const hlRef = useRef<HTMLDivElement>(null);
@@ -666,15 +781,20 @@ function Popup({
         {error && !isLoading && (
           <div className="px-3 py-2 text-xs text-destructive">{error}</div>
         )}
-        {suggestions.map((entry, i) => {
-          const isDir = entry.kind === "dir";
-          const parts = entry.path.split("/");
+        {suggestions.map((suggestion, i) => {
+          const isSkill = suggestion.type === "skill";
+          const entry = suggestion.type === "file" ? suggestion.entry : null;
+          const skill = suggestion.type === "skill" ? suggestion.skill : null;
+          const isDir = entry?.kind === "dir";
+          const parts = entry ? entry.path.split("/") : [];
           const fileName = parts.pop() || "";
           const dirPath = parts.join("/");
-          const Icon = getFileTypeIcon(entry.path, entry.kind);
+          const Icon = entry ? getFileTypeIcon(entry.path, entry.kind) : null;
+          const title = skill?.name ?? fileName;
+          const subtitle = skill?.description ?? (dirPath ? `${dirPath}/` : "");
           return (
             <div
-              key={entry.path}
+              key={entry ? `${entry.kind}:${entry.path}` : `skill:${skill?.skillFile ?? skill?.name}`}
               ref={i === highlightIndex ? hlRef : undefined}
               className={cn(
                 "mention-popup-item group mx-1.5 flex cursor-pointer items-center gap-2.5 rounded-xl px-2.5 py-1.5 text-sm transition-all",
@@ -684,26 +804,32 @@ function Popup({
               )}
               onMouseDown={(e) => {
                 e.preventDefault();
-                onSelect(entry.path, entry.kind);
+                onSelect(suggestion);
               }}
             >
               <span
                 className={cn(
                   "flex h-6 w-6 shrink-0 items-center justify-center rounded-lg",
-                  isDir
+                  isSkill
+                    ? "bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300"
+                    : isDir
                     ? "bg-amber-500/10 dark:bg-amber-400/15"
                     : "bg-foreground/[0.04] dark:bg-white/[0.05]",
                 )}
               >
-                <Icon width={14} height={14} />
+                {Icon ? <Icon width={14} height={14} /> : <span className="text-[12px] font-semibold">$</span>}
               </span>
               <span className="min-w-0 flex-1 truncate">
-                <span className="font-medium tracking-tight text-foreground/95">{fileName}</span>
-                {dirPath && (
-                  <span className="ml-1.5 text-[11px] text-muted-foreground/85">{dirPath}/</span>
+                <span className="font-medium tracking-tight text-foreground/95">{title}</span>
+                {subtitle && (
+                  <span className="ml-1.5 text-[11px] text-muted-foreground/85">{subtitle}</span>
                 )}
               </span>
-              {isDir && (
+              {isSkill ? (
+                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/60">
+                  skill
+                </span>
+              ) : isDir && (
                 <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/60">
                   dir
                 </span>
@@ -712,7 +838,7 @@ function Popup({
           );
         })}
         {showEmpty && !isLoading && !error && suggestions.length === 0 && (
-          <div className="px-3 py-2 text-xs text-muted-foreground">No matching files</div>
+          <div className="px-3 py-2 text-xs text-muted-foreground">{emptyLabel}</div>
         )}
       </div>
     </div>,
@@ -732,6 +858,7 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
   disabled = false,
   placeholder = "",
   workdir,
+  enabledSkills = [],
   className,
 }: MentionComposerProps, ref) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -799,9 +926,12 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
       const requestSeq = ++mentionSessionRequestSeqRef.current;
       mentionSessionQueryRef.current = ctx.query;
       setMentionSessionEntries([]);
-      setMentionSessionLoading(Boolean(normalizedWorkdir));
+      setMentionSessionLoading(ctx.trigger === "file" && Boolean(normalizedWorkdir));
       setMentionSessionError(null);
 
+      if (ctx.trigger === "skill") {
+        return;
+      }
       if (!normalizedWorkdir) {
         return;
       }
@@ -858,23 +988,38 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
   }, [disabled, closeMentionSession, setBusy]);
 
   const normalizedMentionQuery = mentionCtx ? normalizeMentionQuery(mentionCtx.query) : "";
-  const suggestions = useMemo(() => {
+  const suggestions = useMemo<MentionSuggestion[]>(() => {
     if (mentionCtx === null) {
       return [];
     }
 
-    const next: MentionFileEntry[] = [];
+    if (mentionCtx.trigger === "skill") {
+      const next: MentionSuggestion[] = [];
+      for (const skill of enabledSkills) {
+        const haystack = `${skill.name}\n${skill.description}\n${skill.baseDir}`.toLowerCase();
+        if (normalizedMentionQuery && !haystack.includes(normalizedMentionQuery)) {
+          continue;
+        }
+        next.push({ type: "skill", skill });
+        if (next.length >= MAX_SUGGESTIONS) {
+          break;
+        }
+      }
+      return next;
+    }
+
+    const next: MentionSuggestion[] = [];
     for (const item of mentionSessionSearchIndex) {
       if (normalizedMentionQuery && !item.searchPath.includes(normalizedMentionQuery)) {
         continue;
       }
-      next.push(item.entry);
+      next.push({ type: "file", entry: item.entry });
       if (next.length >= MAX_SUGGESTIONS) {
         break;
       }
     }
     return next;
-  }, [mentionCtx, mentionSessionSearchIndex, normalizedMentionQuery]);
+  }, [enabledSkills, mentionCtx, mentionSessionSearchIndex, normalizedMentionQuery]);
 
   useEffect(() => {
     setHighlightIdx((current) => {
@@ -885,6 +1030,8 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
 
   const popupLoading = mentionSessionLoading;
   const popupError = suggestions.length === 0 ? mentionSessionError : null;
+  const popupEmptyLabel =
+    mentionCtx?.trigger === "skill" ? "No matching enabled Skills" : "No matching files";
   const showEmpty =
     mentionCtx !== null &&
     !popupLoading &&
@@ -918,21 +1065,28 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
         text: "",
         textWithoutLargePastes: "",
         largePastes: [],
+        skillMentions: [],
         isEmpty: true,
       };
     }
 
     const segments = serializeChildrenToSegments(el, largePastesRef.current);
     const largePastes: MentionComposerLargePaste[] = [];
+    const skillMentions: MentionComposerSkillMention[] = [];
     const textParts: string[] = [];
     const textWithoutLargePastesParts: string[] = [];
     for (const segment of segments) {
       if (segment.type === "text") {
         textParts.push(segment.text);
         textWithoutLargePastesParts.push(segment.text);
-      } else {
+      } else if (segment.type === "largePaste") {
         largePastes.push(segment.paste);
         textParts.push(segment.paste.text);
+      } else {
+        skillMentions.push(segment.skill);
+        const token = formatSkillMentionToken(segment.skill);
+        textParts.push(token);
+        textWithoutLargePastesParts.push(token);
       }
     }
 
@@ -943,6 +1097,7 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
       text,
       textWithoutLargePastes,
       largePastes,
+      skillMentions,
       isEmpty: editorTextIsEmpty(el),
     };
   }, []);
@@ -997,13 +1152,13 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
       }
     };
 
-    applyContext(detectMention(el));
+    applyContext(detectMention(el, enabledSkills.length > 0));
     window.requestAnimationFrame(() => {
       const nextEl = editorRef.current;
       if (!nextEl || document.activeElement !== nextEl) return;
-      applyContext(detectMention(nextEl));
+      applyContext(detectMention(nextEl, enabledSkills.length > 0));
     });
-  }, [closeMentionSession, startMentionSession]);
+  }, [closeMentionSession, enabledSkills.length, startMentionSession]);
 
   useImperativeHandle(
     ref,
@@ -1045,6 +1200,8 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
             if (segment.type === "largePaste") {
               largePastesRef.current.set(segment.paste.id, segment.paste);
               el.appendChild(createLargePasteChip(segment.paste));
+            } else if (segment.type === "skillMention") {
+              el.appendChild(createSkillMentionChip(segment.skill));
             } else if (segment.text) {
               el.appendChild(document.createTextNode(segment.text));
             }
@@ -1073,9 +1230,13 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
 
   // ---- Select suggestion ----
   const selectSuggestion = useCallback(
-    (path: string, kind: "file" | "dir") => {
+    (suggestion: MentionSuggestion) => {
       if (!mentionCtx) return;
-      insertMentionChip(mentionCtx, path, kind);
+      if (suggestion.type === "skill") {
+        insertSkillMentionChip(mentionCtx, suggestion.skill);
+      } else {
+        insertMentionChip(mentionCtx, suggestion.entry.path, suggestion.entry.kind);
+      }
       closeMentionSession();
       refreshEmptyState();
       editorRef.current?.focus();
@@ -1174,8 +1335,7 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
         if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
           e.preventDefault();
           if (suggestions[highlightIdx]) {
-            const s = suggestions[highlightIdx];
-            selectSuggestion(s.path, s.kind);
+            selectSuggestion(suggestions[highlightIdx]);
           }
           return;
         }
@@ -1310,6 +1470,7 @@ export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionCom
           isLoading={popupLoading}
           error={popupError}
           showEmpty={showEmpty}
+          emptyLabel={popupEmptyLabel}
           onSelect={selectSuggestion}
         />
       )}

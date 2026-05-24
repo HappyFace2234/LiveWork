@@ -173,6 +173,9 @@ function buildTextFromComposerDraft(
       if (segment.type === "text") {
         return segment.text;
       }
+      if (segment.type === "skillMention") {
+        return `$${segment.skill.name}`;
+      }
       const file = pastedFileById?.get(segment.paste.id);
       return file ? `[${segment.paste.label}: ${file.relativePath}]` : segment.paste.text;
     })
@@ -3916,6 +3919,15 @@ export default function App() {
     selectedSkillNames,
     setSettings,
   });
+  const enabledComposerSkills = useMemo(() => {
+    if (!skillsEnabled || selectedSkillNames.length === 0 || availableSkills.length === 0) {
+      return [];
+    }
+    const byName = new Map(availableSkills.map((skill) => [skill.name, skill]));
+    return selectedSkillNames
+      .map((name) => byName.get(name))
+      .filter((skill): skill is (typeof availableSkills)[number] => Boolean(skill));
+  }, [availableSkills, selectedSkillNames, skillsEnabled]);
 
   const sidebarItems = useMemo<ChatHistorySummary[]>(
     () =>
@@ -4115,7 +4127,9 @@ export default function App() {
     ? translate("chat.compactingContextWait", settings.locale)
     : historyDetailLoading
       ? "正在加载会话历史，请稍候..."
-      : "输入消息，@ 引用文件，Enter 发送，Shift+Enter 换行";
+      : enabledComposerSkills.length > 0
+        ? translate("chat.inputHintWithSkills", settings.locale)
+        : translate("chat.inputHint", settings.locale);
   const canDropUpload =
     status?.online === true &&
     isAgentMode &&
@@ -4628,6 +4642,7 @@ export default function App() {
                 isInputDisabled={composerInputDisabled}
                 inputPlaceholder={composerPlaceholder}
                 workdir={settings.system.workdir}
+                enabledSkills={enabledComposerSkills}
                 isAgentMode={isAgentMode}
                 onSend={() => {
                   if (

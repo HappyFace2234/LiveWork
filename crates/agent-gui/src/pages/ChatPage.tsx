@@ -46,7 +46,11 @@ import {
   shouldPreCompactConversation,
   type CompactionStatus,
 } from "../lib/chat/compaction/contextCompaction";
-import { buildSkillsSystemPrompt, mergeAlwaysEnabledSkillNames } from "../lib/skills";
+import {
+  buildSkillsSystemPrompt,
+  mergeAlwaysEnabledSkillNames,
+  resolveExplicitSkillMentions,
+} from "../lib/skills";
 import {
   type AppSettings,
   type ExecutionMode,
@@ -218,6 +222,9 @@ function buildTextFromComposerDraft(
     .map((segment) => {
       if (segment.type === "text") {
         return segment.text;
+      }
+      if (segment.type === "skillMention") {
+        return `$${segment.skill.name}`;
       }
       const file = pastedFileById?.get(segment.paste.id);
       return file ? `[${segment.paste.label}: ${file.relativePath}]` : segment.paste.text;
@@ -568,6 +575,15 @@ export function ChatPage(props: ChatPageProps) {
     selectedSkillNames,
     setSettings,
   });
+  const enabledComposerSkills = useMemo(() => {
+    if (!skillsEnabled || selectedSkillNames.length === 0 || availableSkills.length === 0) {
+      return [];
+    }
+    const byName = new Map(availableSkills.map((skill) => [skill.name, skill]));
+    return selectedSkillNames
+      .map((name) => byName.get(name))
+      .filter((skill): skill is (typeof availableSkills)[number] => Boolean(skill));
+  }, [availableSkills, selectedSkillNames, skillsEnabled]);
 
   const modelOptions = useMemo(() => buildModelOptions(settings), [settings]);
   const selectedValue = settings.selectedModel
@@ -1831,7 +1847,16 @@ export function ChatPage(props: ChatPageProps) {
         allowSkillManagement: allowBuiltinSkillManagement,
         allowSkillMutation: true,
       };
-      skillsPrompt = buildSkillsSystemPrompt({ rootDir, selected: selectedSkills });
+      const explicitSkills = resolveExplicitSkillMentions({
+        text,
+        structured: composerDraft?.skillMentions ?? [],
+        enabledSkills: selectedSkills,
+      });
+      skillsPrompt = buildSkillsSystemPrompt({
+        rootDir,
+        selected: selectedSkills,
+        explicit: explicitSkills,
+      });
     }
 
     try {
@@ -2743,7 +2768,9 @@ export function ChatPage(props: ChatPageProps) {
       ? "正在补全完整历史，请稍候..."
       : isConversationHydrationFailed
         ? "当前会话完整历史加载失败，请重新打开会话..."
-        : t("chat.inputHint");
+        : enabledComposerSkills.length > 0
+          ? t("chat.inputHintWithSkills")
+          : t("chat.inputHint");
   const isComposerInputDisabled =
     isCompactionRunning ||
     isConversationHydrating ||
@@ -2968,6 +2995,7 @@ export function ChatPage(props: ChatPageProps) {
           isInputDisabled={isComposerInputDisabled}
           inputPlaceholder={composerPlaceholder}
           workdir={workdir}
+          enabledSkills={enabledComposerSkills}
           isAgentMode={isAgentMode}
           onSend={handleSend}
           onStop={handleStopSending}

@@ -1,7 +1,11 @@
 import { memo, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { Loader2, Paperclip, Send, Square, X } from "../../components/icons";
 
-import { MentionComposer, type MentionComposerHandle } from "../../components/chat/MentionComposer";
+import {
+  MentionComposer,
+  type MentionComposerHandle,
+  type MentionComposerSkill,
+} from "../../components/chat/MentionComposer";
 import { Button } from "../../components/ui/button";
 import { useLocale } from "../../i18n";
 import {
@@ -17,6 +21,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   isInputDisabled: boolean;
   inputPlaceholder: string;
   workdir: string;
+  enabledSkills: MentionComposerSkill[];
   isAgentMode: boolean;
   onSend: () => void;
   onStop: () => void;
@@ -33,6 +38,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
     isInputDisabled,
     inputPlaceholder,
     workdir,
+    enabledSkills,
     isAgentMode,
     onSend,
     onStop,
@@ -152,6 +158,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
               placeholder={inputPlaceholder}
               disabled={isInputDisabled}
               workdir={workdir}
+              enabledSkills={enabledSkills}
               className="px-0 py-0"
             />
           </div>
