@@ -3,10 +3,12 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
-const [assetDir, outputPath] = process.argv.slice(2);
+const [assetDir, outputPath, notesPath] = process.argv.slice(2);
 
 if (!assetDir || !outputPath) {
-  console.error("Usage: create-tauri-updater-manifest.mjs <asset-dir> <output-path>");
+  console.error(
+    "Usage: create-tauri-updater-manifest.mjs <asset-dir> <output-path> [notes-file]",
+  );
   process.exit(1);
 }
 
@@ -43,6 +45,12 @@ function releaseAssetUrl(filename) {
   return `https://github.com/${repository}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(filename)}`;
 }
 
+function releaseNotes() {
+  if (!notesPath) return `LiveAgent ${releaseTag}`;
+  const notes = readFileSync(notesPath, "utf8").trim();
+  return notes || `LiveAgent ${releaseTag}`;
+}
+
 for (const file of files) {
   if (!file.endsWith(".sig")) continue;
 
@@ -77,7 +85,7 @@ if (Object.keys(platforms).length === 0) {
 
 const manifest = {
   version: releaseTag.replace(/^v/i, ""),
-  notes: `LiveAgent ${releaseTag}`,
+  notes: releaseNotes(),
   pub_date: new Date().toISOString(),
   platforms,
 };

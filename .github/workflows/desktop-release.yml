@@ -291,12 +291,53 @@ jobs:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          prerelease_args=()
+          is_prerelease=false
           if [[ "$RELEASE_TAG" =~ -(alpha|beta|rc|pre|preview|next) ]]; then
-            prerelease_args+=(--prerelease)
+            is_prerelease=true
           fi
-          gh release view "$RELEASE_TAG" >/dev/null 2>&1 || \
-            gh release create "$RELEASE_TAG" "${prerelease_args[@]}" --title "LiveAgent $RELEASE_TAG" --notes "Automated LiveAgent release."
-          gh release upload "$RELEASE_TAG" release-artifacts/* --clobber
-          node scripts/release/create-tauri-updater-manifest.mjs release-artifacts release-artifacts/latest.json
+
+          notes_path="$RUNNER_TEMP/liveagent-release-notes.md"
+          if ! gh api "repos/$GH_REPO/releases/generate-notes" \
+            -f tag_name="$RELEASE_TAG" \
+            --jq ".body" > "$notes_path"; then
+            printf 'LiveAgent %s\n' "$RELEASE_TAG" > "$notes_path"
+          fi
+          if [ ! -s "$notes_path" ]; then
+            printf 'LiveAgent %s\n' "$RELEASE_TAG" > "$notes_path"
+          fi
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            edit_args=(--title "LiveAgent $RELEASE_TAG" --notes-file "$notes_path")
+            if [ "$is_prerelease" = true ]; then
+              edit_args+=(--prerelease)
+            else
+              edit_args+=(--prerelease=false --latest)
+            fi
+            gh release edit "$RELEASE_TAG" "${edit_args[@]}"
+          else
+            create_args=(--verify-tag --title "LiveAgent $RELEASE_TAG" --notes-file "$notes_path")
+            if [ "$is_prerelease" = true ]; then
+              create_args+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" "${create_args[@]}"
+          fi
+
+          mapfile -t signature_assets < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name | select(endswith(".sig"))')
+          for asset in "${signature_assets[@]}"; do
+            gh release delete-asset "$RELEASE_TAG" "$asset" --yes
+          done
+
+          rm -rf public-release-assets
+          mkdir -p public-release-assets
+          find release-artifacts -maxdepth 1 -type f ! -name '*.sig' ! -name latest.json -exec cp {} public-release-assets/ \;
+
+          shopt -s nullglob
+          public_assets=(public-release-assets/*)
+          if [ "${#public_assets[@]}" -eq 0 ]; then
+            echo "No public release assets were found."
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" "${public_assets[@]}" --clobber
+
+          node scripts/release/create-tauri-updater-manifest.mjs release-artifacts release-artifacts/latest.json "$notes_path"
           gh release upload "$RELEASE_TAG" release-artifacts/latest.json --clobber
