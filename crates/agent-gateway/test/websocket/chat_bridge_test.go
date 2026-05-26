@@ -830,15 +830,15 @@ func TestWebSocketForwardsHistorySettingsAndFsRPCs(t *testing.T) {
 	}
 
 	sendEnvelope(t, conn, "history-1", "history.list", map[string]any{
-		"limit":  25,
-		"offset": 5,
+		"page":      2,
+		"page_size": 25,
 	})
 	historyOutbound := readOutboundEnvelope(t, agentSession)
 	historyReq := historyOutbound.GetHistoryList()
 	if historyReq == nil {
 		t.Fatalf("history outbound payload = %T, want HistoryListRequest", historyOutbound.GetPayload())
 	}
-	if historyReq.GetLimit() != 25 || historyReq.GetOffset() != 5 {
+	if historyReq.GetPage() != 2 || historyReq.GetPageSize() != 25 {
 		t.Fatalf("history list request = %#v", historyReq)
 	}
 	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
@@ -846,7 +846,7 @@ func TestWebSocketForwardsHistorySettingsAndFsRPCs(t *testing.T) {
 		Timestamp: time.Now().Unix(),
 		Payload: &gatewayv1.AgentEnvelope_HistoryListResp{
 			HistoryListResp: &gatewayv1.HistoryListResponse{
-				Total: 1,
+				TotalCount: 1,
 				Conversations: []*gatewayv1.ConversationSummary{
 					{
 						Id:           "conversation-1",
@@ -874,7 +874,7 @@ func TestWebSocketForwardsHistorySettingsAndFsRPCs(t *testing.T) {
 	if err := json.Unmarshal(historyResponse.Payload, &historyPayload); err != nil {
 		t.Fatalf("decode history response: %v", err)
 	}
-	if historyPayload["total"] != float64(1) {
+	if historyPayload["total_count"] != float64(1) {
 		t.Fatalf("history payload = %#v", historyPayload)
 	}
 	runningConversationIDs, ok := historyPayload["running_conversation_ids"].([]any)
@@ -894,6 +894,49 @@ func TestWebSocketForwardsHistorySettingsAndFsRPCs(t *testing.T) {
 	}
 	if historyConversation["is_shared"] != true {
 		t.Fatalf("history conversation share field = %#v", historyConversation)
+	}
+
+	sendEnvelope(t, conn, "history-shared-1", "history.shared_list", map[string]any{
+		"page":      1,
+		"page_size": 50,
+	})
+	sharedHistoryOutbound := readOutboundEnvelope(t, agentSession)
+	sharedHistoryReq := sharedHistoryOutbound.GetMemoryManage()
+	if sharedHistoryReq == nil {
+		t.Fatalf("shared history outbound payload = %T, want MemoryManageRequest", sharedHistoryOutbound.GetPayload())
+	}
+	if sharedHistoryReq.GetCommand() != "history_shared_list" {
+		t.Fatalf("shared history list request = %#v", sharedHistoryReq)
+	}
+	var sharedHistoryArgs map[string]any
+	if err := json.Unmarshal([]byte(sharedHistoryReq.GetArgsJson()), &sharedHistoryArgs); err != nil {
+		t.Fatalf("decode shared history args: %v", err)
+	}
+	if sharedHistoryArgs["page"] != float64(1) || sharedHistoryArgs["page_size"] != float64(50) {
+		t.Fatalf("shared history args = %#v", sharedHistoryArgs)
+	}
+	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
+		RequestId: sharedHistoryOutbound.GetRequestId(),
+		Timestamp: time.Now().Unix(),
+		Payload: &gatewayv1.AgentEnvelope_MemoryManageResp{
+			MemoryManageResp: &gatewayv1.MemoryManageResponse{
+				ResultJson: `{"total_count":1,"conversations":[{"id":"conversation-1","title":"Gateway test","created_at":10,"updated_at":11,"message_count":3,"provider_id":"codex-provider","model":"gpt-test","session_id":"session-1","cwd":"/workspace","is_shared":true}]}`,
+			},
+		},
+	})
+	sharedHistoryResponse := receiveEnvelope(t, conn)
+	if sharedHistoryResponse.ID != "history-shared-1" || sharedHistoryResponse.Type != "response" {
+		t.Fatalf("shared history response = %#v", sharedHistoryResponse)
+	}
+	var sharedHistoryPayload map[string]any
+	if err := json.Unmarshal(sharedHistoryResponse.Payload, &sharedHistoryPayload); err != nil {
+		t.Fatalf("decode shared history response: %v", err)
+	}
+	if sharedHistoryPayload["total_count"] != float64(1) {
+		t.Fatalf("shared history payload = %#v", sharedHistoryPayload)
+	}
+	if _, ok := sharedHistoryPayload["running_conversation_ids"]; ok {
+		t.Fatalf("shared history response should not include running ids: %#v", sharedHistoryPayload)
 	}
 
 	sendEnvelope(t, conn, "history-get-1", "history.get", map[string]any{

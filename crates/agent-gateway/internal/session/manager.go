@@ -798,7 +798,9 @@ func (m *Manager) broadcastChatEvent(requestID string, event *gatewayv1.ChatEven
 	}
 
 	requestID = strings.TrimSpace(requestID)
+	conversationID := strings.TrimSpace(event.GetConversationId())
 	now := time.Now()
+	sessionEpoch := m.currentSessionEpoch()
 
 	m.chatMu.Lock()
 	m.pruneExpiredChatRunsLocked(now)
@@ -807,10 +809,24 @@ func (m *Manager) broadcastChatEvent(requestID string, event *gatewayv1.ChatEven
 		Event:     event,
 	}
 	var runSubscribers []*chatRunSubscriber
-	if run := m.chatRuns[requestID]; run != nil {
+	run := m.chatRuns[requestID]
+	if run == nil && requestID != "" {
+		run = &chatRun{
+			requestID:      requestID,
+			conversationID: conversationID,
+			sessionEpoch:   sessionEpoch,
+			updatedAt:      now,
+			subscribers:    make(map[int]*chatRunSubscriber),
+		}
+		m.chatRuns[requestID] = run
+		if conversationID != "" {
+			m.chatRunByConversation[conversationID] = requestID
+		}
+	}
+	if run != nil {
 		run.nextSeq += 1
 		run.updatedAt = now
-		if conversationID := strings.TrimSpace(event.GetConversationId()); conversationID != "" {
+		if conversationID != "" {
 			if run.conversationID != "" && run.conversationID != conversationID {
 				if m.chatRunByConversation[run.conversationID] == requestID {
 					delete(m.chatRunByConversation, run.conversationID)

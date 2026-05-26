@@ -35,6 +35,11 @@ export type ChatHistoryShareStatus = {
   redactToolContent?: boolean;
 };
 
+export type ChatHistoryListPage = {
+  items: ChatHistorySummary[];
+  totalCount: number;
+};
+
 type ChatHistorySegmentWireRecord = {
   segmentIndex: number;
   segmentId: string;
@@ -186,8 +191,12 @@ function normalizeWireRecord(
   };
 }
 
-export async function listChatHistory() {
-  return invoke<ChatHistorySummary[]>("chat_history_list");
+export async function listChatHistory(page: number, pageSize: number) {
+  return invoke<ChatHistoryListPage>("chat_history_list", { page, pageSize });
+}
+
+export async function listSharedChatHistory(page: number, pageSize: number) {
+  return invoke<ChatHistoryListPage>("chat_history_shared_list", { page, pageSize });
 }
 
 export async function getChatHistory(id: string, fallbackSystemPrompt?: string) {

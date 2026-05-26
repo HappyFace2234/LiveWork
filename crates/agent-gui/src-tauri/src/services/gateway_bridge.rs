@@ -1,5 +1,6 @@
 use std::{collections::HashSet, sync::Arc};
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::commands::{
@@ -24,6 +25,13 @@ use crate::services::skills::system_manage_skill_sync;
 
 const DEFAULT_FS_LIST_DIRS_MAX_RESULTS: usize = 2000;
 const HARD_FS_LIST_DIRS_MAX_RESULTS: usize = 10000;
+
+#[derive(Debug, Deserialize)]
+struct HistorySharedListArgs {
+    page: i64,
+    #[serde(alias = "pageSize")]
+    page_size: i64,
+}
 
 pub async fn handle_cron_manage(
     cron_manager: Arc<CronManager>,
@@ -83,14 +91,19 @@ pub async fn handle_cron_manage(
 pub async fn handle_history_list(
     request: proto::HistoryListRequest,
 ) -> Result<proto::HistoryListResponse, String> {
-    let limit = usize::try_from(request.limit.max(0)).unwrap_or(0);
-    let offset = usize::try_from(request.offset.max(0)).unwrap_or(0);
-    let all = chat_history::chat_history_list().await?;
-    let total = i32::try_from(all.len()).unwrap_or(i32::MAX);
-    let conversations = all
+    let page =
+        chat_history::chat_history_list(i64::from(request.page), i64::from(request.page_size))
+            .await?;
+    Ok(build_proto_history_list_response(page))
+}
+
+fn build_proto_history_list_response(
+    page: chat_history::ChatHistoryListResponse,
+) -> proto::HistoryListResponse {
+    let total_count = i32::try_from(page.total_count).unwrap_or(i32::MAX);
+    let conversations = page
+        .items
         .into_iter()
-        .skip(offset)
-        .take(if limit == 0 { usize::MAX } else { limit })
         .map(|item| proto::ConversationSummary {
             id: item.id,
             title: item.title,
@@ -107,10 +120,10 @@ pub async fn handle_history_list(
         })
         .collect();
 
-    Ok(proto::HistoryListResponse {
+    proto::HistoryListResponse {
         conversations,
-        total,
-    })
+        total_count,
+    }
 }
 
 pub async fn handle_history_get(
@@ -497,6 +510,11 @@ fn handle_memory_manage_sync(
         "memory_list" => {
             let args = parse_memory_args::<MemoryListArgs>(&request.args_json, command)?;
             serde_json::to_value(memory_store.list(args)?)
+        }
+        "history_shared_list" => {
+            let args = parse_memory_args::<HistorySharedListArgs>(&request.args_json, command)?;
+            let page = chat_history::list_shared_chat_history_page_sync(args.page, args.page_size)?;
+            serde_json::to_value(history_list_json(page))
         }
         "memory_read" => {
             let args = parse_memory_args::<MemoryReadArgs>(&request.args_json, command)?;
@@ -1107,6 +1125,28 @@ fn build_proto_history_share_status(
         updated_at: status.updated_at.unwrap_or_default(),
         redact_tool_content: status.redact_tool_content,
     }
+}
+
+fn history_list_json(page: chat_history::ChatHistoryListResponse) -> Value {
+    json!({
+        "conversations": page.items.into_iter().map(|item| {
+            json!({
+                "id": item.id,
+                "title": item.title,
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+                "message_count": item.message_count,
+                "provider_id": item.provider_id,
+                "model": item.model,
+                "session_id": item.session_id.unwrap_or_default(),
+                "cwd": item.cwd.unwrap_or_default(),
+                "is_pinned": item.is_pinned,
+                "pinned_at": item.pinned_at.unwrap_or_default(),
+                "is_shared": item.is_shared,
+            })
+        }).collect::<Vec<_>>(),
+        "total_count": page.total_count,
+    })
 }
 
 fn sanitize_provider_summaries(providers: Option<Value>) -> Result<Value, String> {

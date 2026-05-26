@@ -812,12 +812,14 @@ export async function runAssistantWithTools(params: {
     const hostedSearchProbeByRound = new Map<
       number,
       {
-        finishProbe: () => void;
+        finishProbe: () => Promise<void>;
         completeAggregator: () => HostedSearchBlock[];
         failAggregator: () => HostedSearchBlock[];
         disposeAggregator: () => HostedSearchBlock[];
+        finalization?: Promise<HostedSearchBlock[]>;
       }
     >();
+    const hostedSearchFinalizations = new Set<Promise<void>>();
 
     function upsertHostedSearchBlockForRound(round: number, hostedSearch: HostedSearchBlock) {
       const blocks = hostedSearchBlocksByRound.get(round) ?? [];
@@ -874,29 +876,111 @@ export async function runAssistantWithTools(params: {
       blocks.push({ kind: "hostedSearch", item: hostedSearch });
     }
 
-    function finishHostedSearchRound(
-      round: number,
-      mode: "completed" | "failed" | "dispose",
-    ) {
-      const controller = hostedSearchProbeByRound.get(round);
-      if (!controller) return hostedSearchBlocksByRound.get(round) ?? [];
-      controller.finishProbe();
-      const blocks =
-        mode === "completed"
-          ? controller.completeAggregator()
-          : mode === "failed"
-            ? controller.failAggregator()
-            : controller.disposeAggregator();
-      hostedSearchProbeByRound.delete(round);
-      if (blocks.length > 0) {
-        hostedSearchBlocksByRound.set(round, blocks);
-      }
+    function getHostedSearchBlocksForRound(round: number) {
       return hostedSearchBlocksByRound.get(round) ?? [];
     }
 
-    function finishAllHostedSearchProbes(mode: "completed" | "failed" | "dispose") {
+    function finishHostedSearchRound(
+      round: number,
+      mode: "completed" | "failed" | "dispose",
+    ): Promise<HostedSearchBlock[]> {
+      const controller = hostedSearchProbeByRound.get(round);
+      if (!controller) return Promise.resolve(getHostedSearchBlocksForRound(round));
+      if (!controller.finalization) {
+        controller.finalization = (async () => {
+          await controller.finishProbe();
+          const blocks =
+            mode === "completed"
+              ? controller.completeAggregator()
+              : mode === "failed"
+                ? controller.failAggregator()
+                : controller.disposeAggregator();
+          hostedSearchProbeByRound.delete(round);
+          if (blocks.length > 0) {
+            hostedSearchBlocksByRound.set(round, blocks);
+          }
+          return getHostedSearchBlocksForRound(round);
+        })();
+      }
+      return controller.finalization;
+    }
+
+    function replaceAgentStateMessage(target: Message, replacement: Message) {
+      const stateMessages = getAgentMessages(agent);
+      let targetIndex = stateMessages.lastIndexOf(target);
+      if (targetIndex < 0) {
+        for (let index = stateMessages.length - 1; index >= 0; index -= 1) {
+          const message = stateMessages[index];
+          if (!message) continue;
+          if (message.role !== target.role) continue;
+          if (message.role !== "assistant" || target.role !== "assistant") continue;
+          if (
+            typeof message.timestamp === "number" &&
+            typeof target.timestamp === "number" &&
+            message.timestamp === target.timestamp
+          ) {
+            targetIndex = index;
+            break;
+          }
+        }
+      }
+      if (targetIndex < 0) return false;
+      agent!.state.messages = [
+        ...stateMessages.slice(0, targetIndex),
+        replacement,
+        ...stateMessages.slice(targetIndex + 1),
+      ];
+      return true;
+    }
+
+    function applyHostedSearchBlocksToAssistant(
+      assistant: AssistantMessage,
+      round: number,
+      hostedSearchBlocks: HostedSearchBlock[],
+    ) {
+      return appendHostedSearchBlocksToAssistant(
+        assistant as AssistantMessage & { content: unknown[] },
+        hostedSearchBlocks,
+        {
+          orderedBlocks: hostedSearchOrderedBlocksByRound.get(round),
+        },
+      ) as AssistantMessage;
+    }
+
+    function queueHostedSearchFinalization(
+      round: number,
+      mode: "completed" | "failed" | "dispose",
+      assistantRef?: { current: AssistantMessage },
+    ) {
+      const finalization = finishHostedSearchRound(round, mode)
+        .then((hostedSearchBlocks) => {
+          if (!assistantRef) return;
+          const nextAssistant = applyHostedSearchBlocksToAssistant(
+            assistantRef.current,
+            round,
+            hostedSearchBlocks,
+          );
+          if (nextAssistant === assistantRef.current) return;
+          if (replaceAgentStateMessage(assistantRef.current, nextAssistant)) {
+            assistantRef.current = nextAssistant;
+          }
+        })
+        .catch(() => undefined);
+      hostedSearchFinalizations.add(finalization);
+      void finalization.finally(() => {
+        hostedSearchFinalizations.delete(finalization);
+      });
+    }
+
+    function queueAllHostedSearchFinalizations(mode: "completed" | "failed" | "dispose") {
       for (const round of [...hostedSearchProbeByRound.keys()]) {
-        finishHostedSearchRound(round, mode);
+        queueHostedSearchFinalization(round, mode);
+      }
+    }
+
+    async function waitForHostedSearchFinalizations() {
+      while (hostedSearchFinalizations.size > 0) {
+        await Promise.allSettled([...hostedSearchFinalizations]);
       }
     }
 
@@ -1163,17 +1247,12 @@ export async function runAssistantWithTools(params: {
               : event.message.stopReason === "error"
                 ? "failed"
                 : "completed";
-          const hostedSearchBlocks = finishHostedSearchRound(
+          const hostedSearchBlocks = getHostedSearchBlocksForRound(currentRound);
+          const assistantWithHostedSearch = applyHostedSearchBlocksToAssistant(
+            event.message as AssistantMessage,
             currentRound,
-            hostedSearchFinishMode,
-          );
-          const assistantWithHostedSearch = appendHostedSearchBlocksToAssistant(
-            event.message as AssistantMessage & { content: unknown[] },
             hostedSearchBlocks,
-            {
-              orderedBlocks: hostedSearchOrderedBlocksByRound.get(currentRound),
-            },
-          ) as AssistantMessage;
+          );
           const normalizedSeedTurn = recoverAssistantSeedToolCalls(assistantWithHostedSearch);
           const assistantMessage = normalizedSeedTurn?.assistant ?? assistantWithHostedSearch;
           if (normalizedSeedTurn || assistantWithHostedSearch !== event.message) {
@@ -1194,6 +1273,9 @@ export async function runAssistantWithTools(params: {
               toolCalls: normalizedSeedTurn.toolCalls,
             });
           }
+          queueHostedSearchFinalization(currentRound, hostedSearchFinishMode, {
+            current: assistantMessage,
+          });
           params.debugLogger?.logResult({
             round: currentRound,
             assistant: assistantMessage,
@@ -1276,7 +1358,7 @@ export async function runAssistantWithTools(params: {
               : assistant?.stopReason === "error"
                 ? "failed"
                 : "completed";
-          finishAllHostedSearchProbes(hostedSearchFinishMode);
+          queueAllHostedSearchFinalizations(hostedSearchFinishMode);
         }
         nativeWebSearchStatusController.finish();
         params.onToolStatus?.(null);
@@ -1361,6 +1443,8 @@ export async function runAssistantWithTools(params: {
         }
       }
 
+      await waitForHostedSearchFinalizations();
+
       const messages = getAgentMessages(agent).slice();
       const assistant =
         findLastAssistantMessage(messages) ?? findLastAssistantMessage(latestAgentEndMessages);
@@ -1383,14 +1467,16 @@ export async function runAssistantWithTools(params: {
         emittedMessages: getMessagesSinceBaseline(agent, emittedBaselineIndex),
       };
     } catch (error) {
-      finishAllHostedSearchProbes(params.signal?.aborted ? "dispose" : "failed");
+      queueAllHostedSearchFinalizations(params.signal?.aborted ? "dispose" : "failed");
+      await waitForHostedSearchFinalizations();
       nativeWebSearchStatusController.finish();
       params.onToolStatus?.(null);
       params.debugLogger?.logError(error);
       await params.debugLogger?.flush();
       throw error;
     } finally {
-      finishAllHostedSearchProbes("dispose");
+      queueAllHostedSearchFinalizations("dispose");
+      await waitForHostedSearchFinalizations();
       nativeWebSearchStatusController.finish();
       abortListener?.();
       unsubscribe();

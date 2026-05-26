@@ -26,6 +26,7 @@ macro_rules! app_invoke_handler {
         tauri::generate_handler![
             // Chat history
             commands::chat_history::chat_history_list,
+            commands::chat_history::chat_history_shared_list,
             commands::chat_history::chat_history_search,
             commands::chat_history::chat_history_get,
             commands::chat_history::chat_history_get_active_segment,

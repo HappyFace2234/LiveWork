@@ -371,6 +371,53 @@ test("pushChatEvent keeps streamed text after hosted search in event order", () 
   assert.equal(blocks[2].text, "任务2继续输出，应该出现在搜索卡片之后。");
 });
 
+test("buildTranscriptItems groups live hosted searches separated by streamed text", () => {
+  let entries = [];
+  entries = pushChatEvent(entries, {
+    type: "token",
+    text: "先查第一组资料。",
+    round: 1,
+  });
+  entries = pushChatEvent(entries, {
+    type: "hosted_search",
+    id: "search-a",
+    provider: "codex",
+    status: "completed",
+    queries: ["first query"],
+    sources: [{ url: "https://example.com/a", title: "A" }],
+    round: 1,
+  });
+  entries = pushChatEvent(entries, {
+    type: "token",
+    text: "继续说明中间过程。",
+    round: 1,
+  });
+  entries = pushChatEvent(entries, {
+    type: "hosted_search",
+    id: "search-b",
+    provider: "codex",
+    status: "completed",
+    queries: ["second query"],
+    sources: [{ url: "https://example.com/b", title: "B" }],
+    round: 1,
+  });
+
+  const items = buildTranscriptItems(entries);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, "assistant");
+  const blocks = items[0].rounds[0].blocks;
+  assert.deepEqual(
+    blocks.map((block) => block.kind),
+    ["text", "hostedSearch", "hostedSearch", "text"],
+  );
+  assert.deepEqual(
+    blocks
+      .filter((block) => block.kind === "hostedSearch")
+      .map((block) => block.item.id),
+    ["search-a", "search-b"],
+  );
+});
+
 test("pushChatEvent does not split a sentence when hosted search arrives mid sentence", () => {
   let entries = [];
   entries = pushChatEvent(entries, {
@@ -490,6 +537,33 @@ test("web UI hydrates persisted hosted search sources from answer links", () => 
     {
       url: "https://www.dell.com/en-us/lp/dt/open-manage-idrac",
       title: "Dell 官方 iDRAC 页面",
+      sourceType: "citation",
+    },
+  ]);
+});
+
+test("pushChatEvent hydrates live hosted search sources from streamed answer links", () => {
+  let entries = [];
+  entries = pushChatEvent(entries, {
+    type: "hosted_search",
+    id: "search-live-empty",
+    provider: "codex",
+    status: "completed",
+    queries: ["iDRAC 是什么"],
+    sources: [],
+    round: 1,
+  });
+  entries = pushChatEvent(entries, {
+    type: "token",
+    text: "参考：Dell 官方 iDRAC 页面：https://www.dell.com/en-us/lp/dt/open-manage-idrac",
+    round: 1,
+  });
+
+  assert.equal(entries[0].kind, "hosted_search");
+  assert.deepEqual(entries[0].hostedSearch.sources, [
+    {
+      url: "https://www.dell.com/en-us/lp/dt/open-manage-idrac",
+      title: "参考：Dell 官方 iDRAC 页面",
       sourceType: "citation",
     },
   ]);

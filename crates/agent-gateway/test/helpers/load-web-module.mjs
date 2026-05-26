@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json", ".css"];
 
@@ -106,7 +106,7 @@ function resolveAsFileOrDirectory(candidate) {
 export function createWebModuleLoader(options = {}) {
   const rootDir = options.rootDir
     ? path.resolve(options.rootDir)
-    : path.resolve(new URL("../../web", import.meta.url).pathname);
+    : path.resolve(fileURLToPath(new URL("../../web", import.meta.url)));
   const requireFromRoot = createRequire(path.join(rootDir, "package.json"));
   const ts = requireFromRoot("typescript");
   const cache = new Map();

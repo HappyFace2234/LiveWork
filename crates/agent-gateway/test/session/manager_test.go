@@ -252,6 +252,49 @@ func TestStartChatRunWithClientRequestReusesExistingRun(t *testing.T) {
 	}
 }
 
+func TestDesktopBroadcastChatEventCreatesAttachableRun(t *testing.T) {
+	t.Parallel()
+
+	sm := newTestSessionManager()
+	sm.SetSession(session.NewAgentSession(sm.LatestAuthSnapshot()))
+
+	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
+		RequestId: "conversation-live-conversation-1",
+		Payload: &gatewayv1.AgentEnvelope_ChatEvent{
+			ChatEvent: &gatewayv1.ChatEvent{
+				Type:           gatewayv1.ChatEvent_TOKEN,
+				ConversationId: "conversation-1",
+				Data:           `{"text":"hello"}`,
+			},
+		},
+	})
+
+	ch, done, cleanup, snapshot, err := sm.SubscribeChatRun("", "conversation-1", 0)
+	if err != nil {
+		t.Fatalf("SubscribeChatRun: %v", err)
+	}
+	defer cleanup()
+	assertDoneOpen(t, done)
+	if snapshot.RequestID != "conversation-live-conversation-1" {
+		t.Fatalf("snapshot request id = %q, want conversation-live-conversation-1", snapshot.RequestID)
+	}
+
+	select {
+	case event := <-ch:
+		if event.Seq != 1 {
+			t.Fatalf("event seq = %d, want 1", event.Seq)
+		}
+		if event.Event.GetType() != gatewayv1.ChatEvent_TOKEN {
+			t.Fatalf("event type = %v, want TOKEN", event.Event.GetType())
+		}
+		if event.Event.GetConversationId() != "conversation-1" {
+			t.Fatalf("conversation id = %q, want conversation-1", event.Event.GetConversationId())
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for replayed desktop chat event")
+	}
+}
+
 func TestCompletedHistoryUpsertDoesNotPreemptTerminalChatEvent(t *testing.T) {
 	t.Parallel()
 

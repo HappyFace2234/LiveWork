@@ -19,6 +19,7 @@ import {
   type UiRound,
 } from "@/lib/chat/uiMessages";
 import {
+  enrichHostedSearchBlockWithText,
   mergeHostedSearchBlocks,
   normalizeHostedSearchBlock,
   type HostedSearchBlock,
@@ -1044,6 +1045,71 @@ function mergeTailToolCallArguments(
   return { entries, matched: false };
 }
 
+function enrichTailHostedSearchEntriesWithText(entries: ChatEntry[]): ChatEntry[] {
+  let startIndex = 0;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    if (entry.kind === "user" || entry.kind === "checkpoint" || entry.kind === "error") {
+      startIndex = index + 1;
+      break;
+    }
+  }
+
+  let allText = "";
+  for (let index = startIndex; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry?.kind === "assistant") {
+      allText += entry.text;
+    }
+  }
+  if (allText === "") {
+    return entries;
+  }
+
+  let next: ChatEntry[] | null = null;
+  for (let index = startIndex; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry?.kind !== "hosted_search" || entry.hostedSearch.sources.length > 0) {
+      continue;
+    }
+
+    let nextSearchIndex = entries.length;
+    for (let probe = index + 1; probe < entries.length; probe += 1) {
+      if (entries[probe]?.kind === "hosted_search") {
+        nextSearchIndex = probe;
+        break;
+      }
+    }
+
+    let nearbyText = "";
+    for (let probe = index + 1; probe < nextSearchIndex; probe += 1) {
+      const textEntry = entries[probe];
+      if (textEntry?.kind === "assistant") {
+        nearbyText += textEntry.text;
+      }
+    }
+
+    const enriched = enrichHostedSearchBlockWithText(
+      entry.hostedSearch,
+      nearbyText || allText,
+    );
+    if (enriched.sources.length === entry.hostedSearch.sources.length) {
+      continue;
+    }
+
+    if (!next) {
+      next = entries.slice();
+    }
+    next[index] = {
+      ...entry,
+      hostedSearch: enriched,
+    };
+  }
+
+  return next ?? entries;
+}
+
 export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry[] {
   if (event.type === "token") {
     if (isCheckpointTokenEvent(event)) {
@@ -1095,7 +1161,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
         round: round ?? target.round,
         meta: meta ? { ...(target.meta ?? {}), ...meta } : target.meta,
       };
-      return next;
+      return enrichTailHostedSearchEntriesWithText(next);
     }
 
     const occurrence = countTailAssistantEntries(
@@ -1104,7 +1170,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
         entry.kind === "assistant" &&
         isLiveAssistantEntryIdForRound(entry.id, round),
     );
-    return [
+    const next: ChatEntry[] = [
       ...entries,
       {
         id: buildLiveAssistantEntryId(round, occurrence),
@@ -1114,6 +1180,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
         meta,
       },
     ];
+    return enrichTailHostedSearchEntriesWithText(next);
   }
 
   if (event.type === "thinking") {
@@ -1296,7 +1363,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
           ...entry,
           hostedSearch: mergeHostedSearchBlocks(entry.hostedSearch, hostedSearch),
         };
-        return next;
+        return enrichTailHostedSearchEntriesWithText(next);
       }
     }
 
@@ -1305,10 +1372,11 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
       id: hostedSearch.id,
       queries: hostedSearch.queries,
     });
-    return [
+    const next: ChatEntry[] = [
       ...entries,
       buildHostedSearchEntry(hostedSearch, round, { entryId: baseId }),
     ];
+    return enrichTailHostedSearchEntriesWithText(next);
   }
 
   if (event.type === "error") {

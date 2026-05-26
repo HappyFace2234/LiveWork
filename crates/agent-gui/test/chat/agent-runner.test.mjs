@@ -10,7 +10,9 @@ const proxyModulePath = path.join(rootDir, "src/lib/providers/proxy.ts");
 const powerActivityModulePath = path.join(rootDir, "src/lib/system/powerActivity.ts");
 
 const streamQueue = [];
+const streamSideEffects = [];
 const observedStreamContexts = [];
+const HOSTED_SEARCH_PROBE_HEADER = "x-liveagent-hosted-search-probe";
 
 function createUsage() {
   return {
@@ -195,13 +197,24 @@ const llmMock = {
       },
     };
   },
-  streamSimpleByApi(_model, context) {
+  streamSimpleByApi(_model, context, options) {
     observedStreamContexts.push(context);
     const assistant = streamQueue.shift();
     if (!assistant) {
       throw new Error("No fake stream response queued");
     }
-    return createStreamForAssistant(assistant);
+    const beforeStream = streamSideEffects.shift()?.(options);
+    const stream = createStreamForAssistant(assistant);
+    return {
+      async *[Symbol.asyncIterator]() {
+        await beforeStream;
+        yield* stream;
+      },
+      async result() {
+        await beforeStream;
+        return stream.result();
+      },
+    };
   },
 };
 
@@ -229,7 +242,31 @@ const { createSubagentScheduler } = loader.loadModule(
 function resetFakeStreams(...assistants) {
   streamQueue.length = 0;
   streamQueue.push(...assistants);
+  streamSideEffects.length = 0;
   observedStreamContexts.length = 0;
+}
+
+function queueStreamSideEffect(sideEffect) {
+  streamSideEffects.push(sideEffect);
+}
+
+function sse(event) {
+  return `data: ${JSON.stringify(event)}\n\n`;
+}
+
+function delayedSseResponse(event) {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        setTimeout(() => {
+          controller.enqueue(encoder.encode(sse(event)));
+          controller.close();
+        }, 5);
+      },
+    }),
+    { headers: { "content-type": "text/event-stream; charset=utf-8" } },
+  );
 }
 
 function createBaseParams(overrides = {}) {
@@ -297,6 +334,58 @@ test("runAssistantWithTools returns terminal stop messages without scheduling a 
   assert.equal(result.messages.length, 2);
   assert.equal(result.messages[0].role, "user");
   assert.equal(result.messages[1].role, "assistant");
+});
+
+test("runAssistantWithTools waits for delayed hosted search probe finalization", async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  const hostedSearchEvents = [];
+
+  globalThis.fetch = async (_input, init) => {
+    fetchCalled = true;
+    const probeHeader = new Headers(init?.headers).get(HOSTED_SEARCH_PROBE_HEADER);
+    assert.equal(probeHeader?.startsWith("hosted-search-codex-"), true);
+    return delayedSseResponse({
+      type: "response.output_item.added",
+      item: {
+        type: "web_search_call",
+        id: "search-delayed",
+        status: "in_progress",
+        action: { query: "delayed hosted search" },
+      },
+    });
+  };
+
+  try {
+    resetFakeStreams(createTextAssistant("answer"));
+    queueStreamSideEffect((options) =>
+      fetch("http://127.0.0.1:18080/proxy/codex/v1/responses", {
+        method: "POST",
+        headers: options?.headers,
+        body: JSON.stringify({ prompt_cache_key: "session-1" }),
+      }),
+    );
+    const { params } = createBaseParams({
+      nativeWebSearch: true,
+      onHostedSearch: (hostedSearch) => hostedSearchEvents.push(hostedSearch),
+    });
+
+    const result = await runAssistantWithTools(params);
+    const finalHostedSearch = hostedSearchEvents[hostedSearchEvents.length - 1];
+    const assistantHostedSearches = result.assistant.content.filter(
+      (block) => block?.type === "hostedSearch",
+    );
+
+    assert.equal(fetchCalled, true);
+    assert.equal(finalHostedSearch?.id, "search-delayed");
+    assert.equal(finalHostedSearch?.status, "completed");
+    assert.deepEqual(finalHostedSearch?.queries, ["delayed hosted search"]);
+    assert.equal(assistantHostedSearches.length, 1);
+    assert.equal(assistantHostedSearches[0].status, "completed");
+  } finally {
+    await Promise.resolve();
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("runAssistantWithTools calls onBeforeNextTurn only for toolUse turns with tool results", async () => {

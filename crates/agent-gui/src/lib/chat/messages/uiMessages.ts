@@ -1258,6 +1258,16 @@ function findLastTextBlockIndex(blocks: UiRoundContentBlock[]) {
   return -1;
 }
 
+function findHostedSearchGroupInsertIndex(blocks: UiRoundContentBlock[]) {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (!block) continue;
+    if (block.kind === "tool") break;
+    if (block.kind === "hostedSearch") return index + 1;
+  }
+  return -1;
+}
+
 function upsertHostedSearchBlock(
   blocks: UiRoundContentBlock[],
   hostedSearch: HostedSearchBlock,
@@ -1280,6 +1290,14 @@ function upsertHostedSearchBlock(
           ...blocks.slice(lastTextIndex + 1),
         ];
       }
+    }
+    const groupedSearchInsertIndex = findHostedSearchGroupInsertIndex(blocks);
+    if (groupedSearchInsertIndex >= 0) {
+      return rebalanceHostedSearchTextBoundaries([
+        ...blocks.slice(0, groupedSearchInsertIndex),
+        nextBlock,
+        ...blocks.slice(groupedSearchInsertIndex),
+      ]);
     }
     return rebalanceHostedSearchTextBoundaries([...blocks, nextBlock]);
   }

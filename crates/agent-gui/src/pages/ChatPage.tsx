@@ -27,6 +27,7 @@ import {
 import {
   getChatHistory,
   getChatHistoryShare,
+  listSharedChatHistory,
   setChatHistoryShare,
   type ChatHistoryShareStatus,
   type ChatHistorySummary,
@@ -83,6 +84,7 @@ import {
   createPendingHistoryItem,
   createConversationIdentity,
   PENDING_CONVERSATION_TITLE,
+  sortHistoryItems,
 } from "../lib/chat/page/chatPageHelpers";
 import {
   createUserMessageWithUploads,
@@ -184,6 +186,7 @@ type EffectiveChatModelSelection = {
 };
 
 const HISTORY_SWITCH_OVERLAY_MIN_MS = 260;
+const SHARED_HISTORY_LIST_PAGE_SIZE = 200;
 
 function appendManagedSkillSelections(current: readonly string[], names: readonly string[]) {
   const out = mergeAlwaysEnabledSkillNames(current);
@@ -510,9 +513,13 @@ export function ChatPage(props: ChatPageProps) {
     historyItems,
     setHistoryItems,
     historyItemsRef,
+    historyTotal,
+    historyHasMore,
     historyLoading,
+    historyLoadingMore,
     historyError,
     setHistoryError,
+    loadMoreHistory,
   } = useChatHistoryList();
   const [shareConversation, setShareConversation] = useState<ChatHistorySummary | null>(null);
   const [shareStatus, setShareStatus] = useState<ChatHistoryShareStatus | null>(null);
@@ -534,10 +541,9 @@ export function ChatPage(props: ChatPageProps) {
   >({});
   const [sharedManagerGatewayUrl, setSharedManagerGatewayUrl] = useState("");
   const [sharedManagerGatewayUrlLoading, setSharedManagerGatewayUrlLoading] = useState(false);
-  const sharedHistoryItems = useMemo(
-    () => historyItems.filter((item) => item.isShared === true),
-    [historyItems],
-  );
+  const [sharedHistoryItems, setSharedHistoryItems] = useState<ChatHistorySummary[]>([]);
+  const sharedHistoryItemsRef = useRef<ChatHistorySummary[]>([]);
+  const sharedHistoryListRequestRef = useRef<Promise<ChatHistorySummary[]> | null>(null);
   const sharedManagerShareOrigin = useMemo(() => {
     const statusGatewayUrl = remoteRuntimeStatus.gatewayUrl?.trim() ?? "";
     const runtimeGatewayUrl = sharedManagerGatewayUrl.trim();
@@ -2554,9 +2560,24 @@ export function ChatPage(props: ChatPageProps) {
     void setPinnedActionRef.current(id, isPinned);
   }, []);
 
-  const handleDeleteConversation = useCallback((id: string) => {
-    void deleteConversationActionRef.current(id);
+  const setSharedHistoryItemsState = useCallback((items: ChatHistorySummary[]) => {
+    const nextItems = sortHistoryItems(
+      items.map((item) => ({ ...item, isShared: true })),
+    );
+    sharedHistoryItemsRef.current = nextItems;
+    setSharedHistoryItems(nextItems);
   }, []);
+
+  const handleDeleteConversation = useCallback((id: string) => {
+    void deleteConversationActionRef.current(id).then(() => {
+      if (historyItemsRef.current.some((item) => item.id === id)) {
+        return;
+      }
+      setSharedHistoryItemsState(
+        sharedHistoryItemsRef.current.filter((item) => item.id !== id),
+      );
+    });
+  }, [historyItemsRef, setSharedHistoryItemsState]);
 
   const updateSharedManagerIdSet = useCallback(
     (
@@ -2589,13 +2610,72 @@ export function ChatPage(props: ChatPageProps) {
     });
   }, []);
 
+  const refreshSharedHistoryItems = useCallback(async () => {
+    if (sharedHistoryListRequestRef.current) {
+      return sharedHistoryListRequestRef.current;
+    }
+
+    const request = (async () => {
+      const byId = new Map<string, ChatHistorySummary>();
+      let totalCount = 0;
+      for (let pageNumber = 1; ; pageNumber += 1) {
+        const page = await listSharedChatHistory(pageNumber, SHARED_HISTORY_LIST_PAGE_SIZE);
+        totalCount = Math.max(0, page.totalCount);
+        for (const item of page.items) {
+          byId.set(item.id, { ...item, isShared: true });
+        }
+        if (page.items.length === 0 || byId.size >= totalCount) {
+          break;
+        }
+      }
+
+      const nextItems = Array.from(byId.values());
+      setSharedHistoryItemsState(nextItems);
+      return sortHistoryItems(nextItems);
+    })();
+
+    sharedHistoryListRequestRef.current = request;
+    try {
+      return await request;
+    } catch (error) {
+      setHistoryError(asErrorMessage(error, "读取已分享历史列表失败"));
+      return sharedHistoryItemsRef.current;
+    } finally {
+      if (sharedHistoryListRequestRef.current === request) {
+        sharedHistoryListRequestRef.current = null;
+      }
+    }
+  }, [setHistoryError, setSharedHistoryItemsState]);
+
+  useEffect(() => {
+    void refreshSharedHistoryItems();
+  }, [refreshSharedHistoryItems]);
+
   const markSharedConversation = useCallback(
-    (id: string, isShared: boolean) => {
+    (id: string, isShared: boolean, source?: ChatHistorySummary | null) => {
       setHistoryItems((current) =>
         current.map((item) => (item.id === id ? { ...item, isShared } : item)),
       );
+      if (!isShared) {
+        setSharedHistoryItemsState(
+          sharedHistoryItemsRef.current.filter((item) => item.id !== id),
+        );
+        return;
+      }
+
+      const conversation =
+        source ??
+        historyItemsRef.current.find((item) => item.id === id) ??
+        sharedHistoryItemsRef.current.find((item) => item.id === id);
+      if (!conversation) {
+        return;
+      }
+      setSharedHistoryItemsState([
+        { ...conversation, isShared: true },
+        ...sharedHistoryItemsRef.current.filter((item) => item.id !== id),
+      ]);
     },
-    [setHistoryItems],
+    [historyItemsRef, setHistoryItems, setSharedHistoryItemsState],
   );
 
   const handleLoadSharedHistoryStatus = useCallback(
@@ -2609,7 +2689,7 @@ export function ChatPage(props: ChatPageProps) {
       void getChatHistoryShare(id)
         .then((status) => {
           setSharedManagerStatuses((current) => ({ ...current, [id]: status }));
-          markSharedConversation(id, status.enabled === true);
+          markSharedConversation(id, status.enabled === true, conversation);
         })
         .catch((error) => {
           setSharedManagerError(id, asErrorMessage(error, "读取分享状态失败"));
@@ -2664,7 +2744,7 @@ export function ChatPage(props: ChatPageProps) {
           setShareStatus(status);
           setSharedManagerStatuses((current) => ({ ...current, [id]: status }));
           setSharedManagerError(id, null);
-          markSharedConversation(id, status.enabled === true);
+          markSharedConversation(id, status.enabled === true, conversation);
         })
         .catch((error) => {
           setShareError(asErrorMessage(error, "读取分享状态失败"));
@@ -2713,7 +2793,7 @@ export function ChatPage(props: ChatPageProps) {
         .then((status) => {
           setShareStatus(status);
           setSharedManagerStatuses((current) => ({ ...current, [id]: status }));
-          markSharedConversation(id, status.enabled === true);
+          markSharedConversation(id, status.enabled === true, shareConversation);
           setShareConversation((current) =>
             current?.id === id ? { ...current, isShared: status.enabled === true } : current,
           );
@@ -2730,7 +2810,7 @@ export function ChatPage(props: ChatPageProps) {
       markSharedConversation,
       refreshSharedManagerGatewayUrl,
       setSharedManagerError,
-      shareConversation?.id,
+      shareConversation,
     ],
   );
 
@@ -2749,7 +2829,7 @@ export function ChatPage(props: ChatPageProps) {
         .then((status) => {
           setShareStatus(status);
           setSharedManagerStatuses((current) => ({ ...current, [id]: status }));
-          markSharedConversation(id, status.enabled === true);
+          markSharedConversation(id, status.enabled === true, shareConversation);
         })
         .catch((error) => {
           setShareError(asErrorMessage(error, "更新分享脱敏设置失败"));
@@ -2758,24 +2838,32 @@ export function ChatPage(props: ChatPageProps) {
           setShareUpdating(false);
         });
     },
-    [markSharedConversation, setSharedManagerError, shareConversation?.id],
+    [markSharedConversation, setSharedManagerError, shareConversation],
   );
 
   const handleRefreshSharedHistoryStatuses = useCallback(() => {
     refreshSharedManagerGatewayUrl();
-    sharedHistoryItems.forEach(handleLoadSharedHistoryStatus);
-  }, [handleLoadSharedHistoryStatus, refreshSharedManagerGatewayUrl, sharedHistoryItems]);
+    void refreshSharedHistoryItems().then((items) => {
+      items.forEach(handleLoadSharedHistoryStatus);
+    });
+  }, [
+    handleLoadSharedHistoryStatus,
+    refreshSharedHistoryItems,
+    refreshSharedManagerGatewayUrl,
+  ]);
 
   const handleOpenSharedHistoryManager = useCallback(() => {
     setSharedManagerGatewayUrl(settings.remote.gatewayUrl.trim());
     refreshSharedManagerGatewayUrl();
     setSharedManagerOpen(true);
-    sharedHistoryItems.forEach(handleLoadSharedHistoryStatus);
+    void refreshSharedHistoryItems().then((items) => {
+      items.forEach(handleLoadSharedHistoryStatus);
+    });
   }, [
     handleLoadSharedHistoryStatus,
+    refreshSharedHistoryItems,
     refreshSharedManagerGatewayUrl,
     settings.remote.gatewayUrl,
-    sharedHistoryItems,
   ]);
 
   const handleDisableSharedHistory = useCallback(
@@ -2789,7 +2877,7 @@ export function ChatPage(props: ChatPageProps) {
       void setChatHistoryShare(id, false)
         .then((status) => {
           setSharedManagerStatuses((current) => ({ ...current, [id]: status }));
-          markSharedConversation(id, status.enabled === true);
+          markSharedConversation(id, status.enabled === true, conversation);
         })
         .catch((error) => {
           setSharedManagerError(id, asErrorMessage(error, "关闭分享失败"));
@@ -2813,7 +2901,7 @@ export function ChatPage(props: ChatPageProps) {
       void setChatHistoryShare(id, true, { redactToolContent })
         .then((status) => {
           setSharedManagerStatuses((current) => ({ ...current, [id]: status }));
-          markSharedConversation(id, status.enabled === true);
+          markSharedConversation(id, status.enabled === true, conversation);
           if (shareConversation?.id === id) {
             setShareStatus(status);
           }
@@ -3012,6 +3100,9 @@ export function ChatPage(props: ChatPageProps) {
         isBusy={isSending}
         runningConversationIds={runningConversationIds}
         isLoading={historyLoading}
+        totalItems={historyTotal}
+        hasMore={historyHasMore}
+        isLoadingMore={historyLoadingMore}
         errorMessage={historyError}
         renamingId={renamingId}
         renameDraft={renameDraft}
@@ -3034,9 +3125,11 @@ export function ChatPage(props: ChatPageProps) {
         onCancelRename={handleCancelRename}
         onSetPinned={handleSetPinned}
         canShareConversations={canShareHistory}
+        sharedConversationCount={sharedHistoryItems.length}
         onShareConversation={handleOpenShareModal}
         onOpenSharedConversations={handleOpenSharedHistoryManager}
         onDeleteConversation={handleDeleteConversation}
+        onLoadMore={loadMoreHistory}
         onCloseSidebar={handleCloseSidebar}
         onOpenSkillsHub={() => {
           cacheActiveComposerDraft();

@@ -581,6 +581,51 @@ test("live hosted search card moves after the current sentence when more text ar
   assert.equal(withMoreText.blocks[2].text, "然后再看市场。");
 });
 
+test("live hosted searches stay grouped when text streams between events", () => {
+  const initialRound = {
+    round: 1,
+    blocks: [],
+    key: "live-search-group",
+    runningToolCallIds: [],
+    thinkingOpen: false,
+  };
+  const searchA = {
+    type: "hostedSearch",
+    id: "search-a",
+    provider: "codex",
+    status: "completed",
+    queries: ["first query"],
+    sources: [{ url: "https://example.com/a", title: "A" }],
+  };
+  const searchB = {
+    type: "hostedSearch",
+    id: "search-b",
+    provider: "codex",
+    status: "completed",
+    queries: ["second query"],
+    sources: [{ url: "https://example.com/b", title: "B" }],
+  };
+
+  const withText = uiMessages.appendTextDeltaToRound(initialRound, "先查第一组资料。");
+  const withSearchA = uiMessages.upsertHostedSearchToRound(withText, searchA);
+  const withMiddleText = uiMessages.appendTextDeltaToRound(
+    withSearchA,
+    "继续说明中间过程。",
+  );
+  const withSearchB = uiMessages.upsertHostedSearchToRound(withMiddleText, searchB);
+
+  assert.deepEqual(
+    withSearchB.blocks.map((block) => block.kind),
+    ["text", "hostedSearch", "hostedSearch", "text"],
+  );
+  assert.deepEqual(
+    withSearchB.blocks
+      .filter((block) => block.kind === "hostedSearch")
+      .map((block) => block.item.id),
+    ["search-a", "search-b"],
+  );
+});
+
 test("UI message builder keeps hosted search after text when persisted at tail", () => {
   const messages = [
     { role: "user", content: "search", timestamp: 1 },
