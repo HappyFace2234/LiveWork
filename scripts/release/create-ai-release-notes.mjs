@@ -7,6 +7,7 @@ import { parseReleaseVersion } from "./release-version.mjs";
 
 const DEFAULT_BASE_URL = "https://codex-api.packycode.com/v1";
 const DEFAULT_MODEL = "gpt-5.5";
+const DEFAULT_REASONING_EFFORT = "";
 const MAX_CONTEXT_CHARS = 22000;
 
 const [releaseTagArg, outputPath, fallbackNotesPath] = process.argv.slice(2);
@@ -204,11 +205,17 @@ function responseText(payload) {
   return "";
 }
 
-async function createResponse({ apiKey, baseUrl, model, prompt }) {
-  const endpoint = `${baseUrl.replace(/\/+$/, "")}/responses`;
-  const timeoutMs = Number.parseInt(process.env.AI_RELEASE_NOTES_TIMEOUT_MS ?? "60000", 10);
+function normalizeReasoningEffort(value) {
+  const effort = value.trim().toLowerCase();
+  if (!effort || effort === "none" || effort === "off" || effort === "false" || effort === "xhigh") {
+    return "";
+  }
+  return effort;
+}
+
+async function fetchJsonWithTimeout(endpoint, { apiKey, body, timeoutMs }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Number.isFinite(timeoutMs) ? timeoutMs : 60000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -216,32 +223,73 @@ async function createResponse({ apiKey, baseUrl, model, prompt }) {
       "Content-Type": "application/json",
     },
     signal: controller.signal,
-    body: JSON.stringify({
-      input: [
-        {
-          role: "system",
-          content: [
-            {
-              type: "input_text",
-              text: "You are a precise release-notes editor. You never make claims that are not grounded in the provided repository context.",
-            },
-          ],
-        },
-        {
-          role: "user",
-          content: [{ type: "input_text", text: prompt }],
-        },
-      ],
-      max_output_tokens: 3000,
-      model,
-    }),
+    body: JSON.stringify(body),
   }).finally(() => clearTimeout(timeout));
 
   const text = await response.text();
   if (!response.ok) {
-    throw new Error(`Responses API returned HTTP ${response.status}: ${text.slice(0, 500)}`);
+    throw new Error(`API returned HTTP ${response.status}: ${text.slice(0, 500)}`);
   }
   return JSON.parse(text);
+}
+
+async function createResponse({ apiKey, baseUrl, model, prompt, reasoningEffort, timeoutMs }) {
+  const endpoint = `${baseUrl.replace(/\/+$/, "")}/responses`;
+  const body = {
+    input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: "You are a precise release-notes editor. You never make claims that are not grounded in the provided repository context.",
+          },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "input_text", text: prompt }],
+      },
+    ],
+    max_output_tokens: 3000,
+    model,
+    store: false,
+  };
+  if (reasoningEffort) {
+    body.reasoning = { effort: reasoningEffort };
+  }
+  return fetchJsonWithTimeout(endpoint, {
+    apiKey,
+    timeoutMs,
+    body,
+  });
+}
+
+async function createChatCompletion({ apiKey, baseUrl, model, prompt, reasoningEffort, timeoutMs }) {
+  const endpoint = `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
+  const body = {
+    max_tokens: 3000,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a precise release-notes editor. You never make claims that are not grounded in the provided repository context.",
+      },
+      {
+        role: "user",
+        content: prompt,
+      },
+    ],
+    model,
+  };
+  if (reasoningEffort) {
+    body.reasoning_effort = reasoningEffort;
+  }
+  return fetchJsonWithTimeout(endpoint, {
+    apiKey,
+    timeoutMs,
+    body,
+  });
 }
 
 async function main() {
@@ -256,12 +304,49 @@ async function main() {
 
   const baseUrl = process.env.AI_RELEASE_NOTES_BASE_URL?.trim() || DEFAULT_BASE_URL;
   const model = process.env.AI_RELEASE_NOTES_MODEL?.trim() || DEFAULT_MODEL;
+  const reasoningEffort = normalizeReasoningEffort(
+    process.env.AI_RELEASE_NOTES_REASONING_EFFORT ?? DEFAULT_REASONING_EFFORT,
+  );
+  const parsedTimeoutMs = Number.parseInt(process.env.AI_RELEASE_NOTES_TIMEOUT_MS ?? "60000", 10);
+  const timeoutMs = Number.isFinite(parsedTimeoutMs) ? parsedTimeoutMs : 60000;
 
   try {
     const context = collectContext();
     const prompt = buildPrompt(context);
-    const payload = await createResponse({ apiKey, baseUrl, model, prompt });
-    const markdown = normalizeMarkdown(responseText(payload));
+    let markdown = "";
+    let chatCompleted = false;
+    try {
+      const chatPayload = await createChatCompletion({
+        apiKey,
+        baseUrl,
+        model,
+        prompt,
+        reasoningEffort,
+        timeoutMs,
+      });
+      chatCompleted = true;
+      markdown = normalizeMarkdown(responseText(chatPayload));
+    } catch (error) {
+      console.warn(
+        `Chat completions unavailable: ${
+          error instanceof Error ? error.message : String(error)
+        }; trying Responses API fallback.`,
+      );
+    }
+    if (!markdown) {
+      if (chatCompleted) {
+        console.warn("Chat completions returned empty release notes; trying Responses API fallback.");
+      }
+      const responsesPayload = await createResponse({
+        apiKey,
+        baseUrl,
+        model,
+        prompt,
+        reasoningEffort,
+        timeoutMs,
+      });
+      markdown = normalizeMarkdown(responseText(responsesPayload));
+    }
     if (!markdown) {
       writeFallback("model returned empty release notes");
       return;
