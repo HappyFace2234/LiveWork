@@ -79,6 +79,7 @@ import type {
 import {
   buildOptimisticConversationTitle,
   formatConversationTitle,
+  resolveConversationBrowserTitle,
   type ChatEntry,
 } from "./lib/chatUi";
 import { parseHistoryMessagesJsonAsync } from "./lib/historyParser";
@@ -5204,16 +5205,26 @@ export default function App() {
     };
   }, [activeView, displayedConversationId]);
 
-  const displayedConversationTitle = useMemo(() => {
+  const displayedConversationSummary = useMemo(() => {
     const displayedId = displayedConversationId.trim();
     if (!displayedId || isLocalDraftConversationId(displayedId)) {
-      return NEW_CONVERSATION_BROWSER_TITLE;
+      return null;
     }
-    return resolveConversationTitle(
-      pickConversationSummary(historyItems, displayedId),
-      displayedId,
-    );
+    return pickConversationSummary(historyItems, displayedId);
   }, [displayedConversationId, historyItems]);
+  const activeProjectBrowserTitle =
+    isAgentMode ? activeWorkspaceProject?.name.trim() ?? "" : "";
+  const displayedConversationTitle = useMemo(
+    () =>
+      resolveConversationBrowserTitle({
+        conversation: displayedConversationSummary,
+        conversationId: displayedConversationId,
+        projectName: activeProjectBrowserTitle,
+        isLocalDraftConversation: isLocalDraftConversationId(displayedConversationId),
+        newConversationTitle: NEW_CONVERSATION_BROWSER_TITLE,
+      }),
+    [activeProjectBrowserTitle, displayedConversationId, displayedConversationSummary],
+  );
   const browserTitle = useMemo(() => {
     if (historyShareToken) {
       return SHARED_HISTORY_BROWSER_TITLE;

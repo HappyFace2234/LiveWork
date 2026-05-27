@@ -1112,6 +1112,37 @@ test("formatConversationTitle falls back to stable labels", () => {
   assert.equal(chatUi.formatConversationTitle(null, ""), "新对话");
 });
 
+test("resolveConversationBrowserTitle uses project title for project-level empty selection", () => {
+  assert.equal(
+    chatUi.resolveConversationBrowserTitle({
+      conversation: null,
+      conversationId: "conversation-abcdef",
+      projectName: "  Project Alpha  ",
+      newConversationTitle: "LiveAgent",
+    }),
+    "Project Alpha",
+  );
+  assert.equal(
+    chatUi.resolveConversationBrowserTitle({
+      conversation: { id: "conversation-abcdef", title: "  Named  " },
+      conversationId: "conversation-abcdef",
+      projectName: "Project Alpha",
+      newConversationTitle: "LiveAgent",
+    }),
+    "Named",
+  );
+  assert.equal(
+    chatUi.resolveConversationBrowserTitle({
+      conversation: null,
+      conversationId: "__local_draft__:abc",
+      projectName: "Project Alpha",
+      isLocalDraftConversation: true,
+      newConversationTitle: "LiveAgent",
+    }),
+    "LiveAgent",
+  );
+});
+
 test("buildOptimisticConversationTitle uses the first ten characters of the first prompt paragraph", () => {
   assert.equal(
     chatUi.buildOptimisticConversationTitle("  12345 67890 abc\nstill first paragraph\n\nsecond"),

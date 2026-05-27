@@ -1790,6 +1790,25 @@ export function formatConversationTitle(
   return "新对话";
 }
 
+export function resolveConversationBrowserTitle(params: {
+  conversation?: Pick<ConversationSummary, "title" | "id"> | null;
+  conversationId?: string | null;
+  projectName?: string | null;
+  isLocalDraftConversation?: boolean;
+  newConversationTitle: string;
+}) {
+  const conversationId = params.conversationId?.trim() ?? "";
+  const newConversationTitle = params.newConversationTitle.trim() || "LiveAgent";
+  if (!conversationId || params.isLocalDraftConversation) {
+    return newConversationTitle;
+  }
+  if (params.conversation) {
+    return formatConversationTitle(params.conversation, conversationId);
+  }
+  const projectName = params.projectName?.trim() ?? "";
+  return projectName || formatConversationTitle(null, conversationId);
+}
+
 export function buildOptimisticConversationTitle(message: string) {
   const firstParagraph = message
     .split(/\r?\n\s*\r?\n/)
