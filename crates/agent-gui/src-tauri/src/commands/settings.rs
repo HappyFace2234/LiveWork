@@ -923,20 +923,84 @@ fn load_system(conn: &Connection) -> Result<Option<Value>, String> {
     }
 }
 
-fn default_workspace_project_value(default_workdir: &str) -> Value {
-    json!({
-        "id": DEFAULT_WORKSPACE_PROJECT_ID,
-        "name": DEFAULT_WORKSPACE_PROJECT_NAME,
-        "path": default_workdir,
-        "kind": "managed",
-        "createdAt": 1,
-        "updatedAt": 1,
-    })
+fn positive_number_value(value: Option<&Value>) -> Option<Value> {
+    match value {
+        Some(Value::Number(number)) if number.as_f64().is_some_and(|value| value > 0.0) => {
+            Some(Value::Number(number.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn default_workspace_project_value(
+    default_workdir: &str,
+    existing_default_project: Option<&Map<String, Value>>,
+) -> Value {
+    let mut project = Map::new();
+    project.insert(
+        "id".to_string(),
+        Value::String(DEFAULT_WORKSPACE_PROJECT_ID.to_string()),
+    );
+    project.insert(
+        "name".to_string(),
+        Value::String(DEFAULT_WORKSPACE_PROJECT_NAME.to_string()),
+    );
+    project.insert(
+        "path".to_string(),
+        Value::String(default_workdir.to_string()),
+    );
+    project.insert("kind".to_string(), Value::String("managed".to_string()));
+    project.insert("createdAt".to_string(), json!(1));
+    project.insert("updatedAt".to_string(), json!(1));
+
+    if existing_default_project
+        .and_then(|project| project.get("isPinned"))
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        project.insert("isPinned".to_string(), Value::Bool(true));
+        project.insert(
+            "pinnedAt".to_string(),
+            existing_default_project
+                .and_then(|project| positive_number_value(project.get("pinnedAt")))
+                .or_else(|| {
+                    existing_default_project
+                        .and_then(|project| positive_number_value(project.get("updatedAt")))
+                })
+                .unwrap_or_else(|| json!(1)),
+        );
+    }
+
+    Value::Object(project)
 }
 
 fn normalize_workspace_projects_value(raw: Option<&Value>, default_workdir: &str) -> Value {
-    let mut projects = vec![default_workspace_project_value(default_workdir)];
     let default_path = default_workdir.trim();
+    let existing_default_project = match raw {
+        Some(Value::Array(existing)) => existing.iter().find_map(|item| {
+            let obj = item.as_object()?;
+            let id = obj
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            let path = obj
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default();
+            if id == DEFAULT_WORKSPACE_PROJECT_ID || path == default_path {
+                Some(obj)
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    };
+    let mut projects = vec![default_workspace_project_value(
+        default_workdir,
+        existing_default_project,
+    )];
     if let Some(Value::Array(existing)) = raw {
         let mut seen_paths = HashSet::new();
         seen_paths.insert(default_path.to_string());
@@ -2277,6 +2341,58 @@ mod tests {
                         "kind": "managed",
                         "createdAt": 1,
                         "updatedAt": 1
+                    }
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn save_system_preserves_default_project_pin_metadata() {
+        let mut conn = open_memory_db();
+        save_system_with_default_workdir(
+            &mut conn,
+            json!({
+                "executionMode": "tools",
+                "workdir": "/tmp/liveagent-default-project",
+                "selectedSystemTools": [],
+                "workspaceProjects": [
+                    {
+                        "id": DEFAULT_WORKSPACE_PROJECT_ID,
+                        "name": DEFAULT_WORKSPACE_PROJECT_NAME,
+                        "path": "/tmp/liveagent-default-project",
+                        "kind": "managed",
+                        "createdAt": 10,
+                        "updatedAt": 20,
+                        "isPinned": true,
+                        "pinnedAt": 30
+                    }
+                ]
+            }),
+            "/tmp/liveagent-default-project",
+        )
+        .expect("save system");
+
+        let loaded = load_system(&conn).expect("load system");
+        assert_eq!(
+            loaded,
+            Some(json!({
+                "activeWorkspaceProjectId": DEFAULT_WORKSPACE_PROJECT_ID,
+                "executionMode": "tools",
+                "hiddenWorkspaceProjectPaths": [],
+                "missingWorkspaceProjectPaths": [],
+                "workdir": "/tmp/liveagent-default-project",
+                "selectedSystemTools": [],
+                "workspaceProjects": [
+                    {
+                        "id": DEFAULT_WORKSPACE_PROJECT_ID,
+                        "name": DEFAULT_WORKSPACE_PROJECT_NAME,
+                        "path": "/tmp/liveagent-default-project",
+                        "kind": "managed",
+                        "createdAt": 1,
+                        "updatedAt": 1,
+                        "isPinned": true,
+                        "pinnedAt": 30
                     }
                 ]
             }))

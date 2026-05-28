@@ -99,6 +99,35 @@ test("running workspace project outranks a newer idle project", () => {
   );
 });
 
+test("pinned workspace project outranks running and newer projects", () => {
+  const projects = [
+    {
+      ...project("project-pinned", "/tmp/project-pinned", 1),
+      isPinned: true,
+      pinnedAt: 1_700_000_000_100,
+    },
+    project("project-running", "/tmp/project-running", 2),
+    project("project-newer", "/tmp/project-newer", 3),
+  ];
+  const activity = workspaceProjects.buildWorkspaceProjectActivityUpdatedAts([
+    { path: "/tmp/project-pinned", updatedAt: 1_700_000_000_100 },
+    { path: "/tmp/project-running", updatedAt: 1_700_000_000_200 },
+    { path: "/tmp/project-newer", updatedAt: 1_700_000_000_900 },
+  ]);
+
+  const ordered = workspaceProjects.sortWorkspaceProjectsByActivity(projects, {
+    projectActivityUpdatedAts: activity,
+    runningProjectPathKeys: new Set([
+      settings.workspaceProjectPathKey("/tmp/project-running"),
+    ]),
+  });
+
+  assert.deepEqual(
+    ordered.map((item) => item.id),
+    ["project-pinned", "project-running", "project-newer"],
+  );
+});
+
 test("workspace project selection metadata does not change activity ordering", () => {
   const projects = [
     project(settings.DEFAULT_WORKSPACE_PROJECT_ID, "/tmp/default-project", 1),

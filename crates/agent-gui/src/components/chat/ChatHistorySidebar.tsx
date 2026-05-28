@@ -1,7 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import iconSimpleUrl from "../../../src-tauri/icons/icon-simple.png";
-import { MacOsTitleBarSpacer, isMacOsTauri } from "../MacOsTitleBarSpacer";
 import { useLocale } from "../../i18n";
 import type { ChatHistorySummary } from "../../lib/chat/history/chatHistory";
 import {
@@ -28,6 +27,7 @@ import {
   SquarePen,
   Trash2,
 } from "../icons";
+import { isMacOsTauri, MacOsTitleBarSpacer } from "../MacOsTitleBarSpacer";
 import { Button } from "../ui/button";
 import {
   DropdownMenu,
@@ -70,6 +70,7 @@ type ChatHistorySidebarProps = {
   onProjectRenameDraftChange?: (value: string) => void;
   onCommitProjectRename?: () => void;
   onCancelProjectRename?: () => void;
+  onSetProjectPinned?: (project: WorkspaceProject, isPinned: boolean) => void;
   onRemoveProject?: (project: WorkspaceProject) => void;
   onNewConversation: () => void;
   onSelectConversation: (id: string) => void;
@@ -400,6 +401,7 @@ const ProjectRow = memo(function ProjectRow(props: {
   onProjectRenameDraftChange: (value: string) => void;
   onCommitProjectRename: () => void;
   onCancelProjectRename: () => void;
+  onSetProjectPinned: (project: WorkspaceProject, isPinned: boolean) => void;
   onRemoveProject: (project: WorkspaceProject) => void;
   onSetPendingRemove: (projectId: string | null) => void;
 }) {
@@ -417,12 +419,14 @@ const ProjectRow = memo(function ProjectRow(props: {
     onProjectRenameDraftChange,
     onCommitProjectRename,
     onCancelProjectRename,
+    onSetProjectPinned,
     onRemoveProject,
     onSetPendingRemove,
   } = props;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const skipNextBlurCommitRef = useRef(false);
   const isDefaultProject = project.id === DEFAULT_WORKSPACE_PROJECT_ID;
+  const isPinned = project.isPinned === true;
 
   useEffect(() => {
     if (!isRenaming) return;
@@ -443,6 +447,10 @@ const ProjectRow = memo(function ProjectRow(props: {
   const handleCancelRemove = useCallback(() => {
     onSetPendingRemove(null);
   }, [onSetPendingRemove]);
+
+  const handleTogglePinned = useCallback(() => {
+    onSetProjectPinned(project, !isPinned);
+  }, [isPinned, onSetProjectPinned, project]);
 
   if (isPendingRemove) {
     return (
@@ -581,6 +589,16 @@ const ProjectRow = memo(function ProjectRow(props: {
                   <span className="relative h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.14)]" />
                 </span>
               ) : null}
+              {isPinned ? (
+                <span
+                  role="img"
+                  className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-primary/75"
+                  aria-label="已置顶"
+                  title="已置顶"
+                >
+                  <Pin className="h-3 w-3" />
+                </span>
+              ) : null}
             </span>
             <span
               className={cn(
@@ -634,40 +652,50 @@ const ProjectRow = memo(function ProjectRow(props: {
               >
                 <SquarePen className="h-3.5 w-3.5" />
               </Button>
-              {!isDefaultProject ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className={PROJECT_ICON_BUTTON_CLASS}
-                        title="更多"
-                        aria-label="更多"
-                      />
-                    }
-                  >
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent side="right" align="start" sideOffset={6}>
-                    <DropdownMenuItem
-                      onSelect={() => onStartRenamingProject(project)}
-                      className="gap-2"
-                    >
-                      <Edit3 className="h-3.5 w-3.5" />
-                      修改标题
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onSelect={handleRequestRemove}
-                      className="gap-2 text-destructive focus:bg-destructive/10 focus:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      移除项目
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={PROJECT_ICON_BUTTON_CLASS}
+                      title="更多"
+                      aria-label="更多"
+                    />
+                  }
+                >
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="right" align="start" sideOffset={6}>
+                  <DropdownMenuItem onSelect={handleTogglePinned} className="gap-2">
+                    {isPinned ? (
+                      <PinOff className="h-3.5 w-3.5" />
+                    ) : (
+                      <Pin className="h-3.5 w-3.5" />
+                    )}
+                    {isPinned ? "取消置顶" : "置顶项目"}
+                  </DropdownMenuItem>
+                  {!isDefaultProject ? (
+                    <>
+                      <DropdownMenuItem
+                        onSelect={() => onStartRenamingProject(project)}
+                        className="gap-2"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" />
+                        修改标题
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={handleRequestRemove}
+                        className="gap-2 text-destructive focus:bg-destructive/10 focus:text-destructive"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        移除项目
+                      </DropdownMenuItem>
+                    </>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </>
           )}
         </div>
@@ -766,6 +794,7 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
     onProjectRenameDraftChange,
     onCommitProjectRename,
     onCancelProjectRename,
+    onSetProjectPinned,
     onRemoveProject,
     onNewConversation,
     onSelectConversation,
@@ -814,6 +843,9 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
   });
   const handleCancelProjectRename = useStableEvent(() => {
     onCancelProjectRename?.();
+  });
+  const handleSetProjectPinned = useStableEvent((project: WorkspaceProject, isPinned: boolean) => {
+    onSetProjectPinned?.(project, isPinned);
   });
   const handleRemoveProject = useStableEvent((project: WorkspaceProject) => {
     onRemoveProject?.(project);
@@ -1098,6 +1130,7 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
                       onProjectRenameDraftChange={handleProjectRenameDraftChange}
                       onCommitProjectRename={handleCommitProjectRename}
                       onCancelProjectRename={handleCancelProjectRename}
+                      onSetProjectPinned={handleSetProjectPinned}
                       onRemoveProject={handleRemoveProject}
                       onSetPendingRemove={setPendingProjectRemoveId}
                     />

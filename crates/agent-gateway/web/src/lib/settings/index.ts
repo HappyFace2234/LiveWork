@@ -196,6 +196,8 @@ export type WorkspaceProject = {
   createdAt: number;
   updatedAt: number;
   lastConversationAt?: number;
+  isPinned?: boolean;
+  pinnedAt?: number | null;
 };
 
 export type SelectedModel = {
@@ -511,6 +513,11 @@ function normalizeWorkspaceProject(input: unknown): WorkspaceProject | null {
     obj.lastConversationAt > 0
       ? obj.lastConversationAt
       : undefined;
+  const isPinned = obj.isPinned === true;
+  const pinnedAt =
+    typeof obj.pinnedAt === "number" && Number.isFinite(obj.pinnedAt) && obj.pinnedAt > 0
+      ? obj.pinnedAt
+      : undefined;
   return {
     id,
     name,
@@ -519,6 +526,7 @@ function normalizeWorkspaceProject(input: unknown): WorkspaceProject | null {
     createdAt,
     updatedAt,
     ...(lastConversationAt ? { lastConversationAt } : {}),
+    ...(isPinned ? { isPinned: true, pinnedAt: pinnedAt ?? updatedAt } : {}),
   };
 }
 
@@ -591,6 +599,9 @@ export function resolveWorkspaceProjects(
     updatedAt: defaultExisting?.updatedAt ?? now,
     ...(defaultExisting?.lastConversationAt
       ? { lastConversationAt: defaultExisting.lastConversationAt }
+      : {}),
+    ...(defaultExisting?.isPinned
+      ? { isPinned: true, pinnedAt: defaultExisting.pinnedAt ?? defaultExisting.updatedAt }
       : {}),
   };
 

@@ -1049,6 +1049,52 @@ export function ChatPage(props: ChatPageProps) {
     setProjectRenameDraft("");
   }, []);
 
+  const handleSetWorkspaceProjectPinned = useCallback(
+    (project: WorkspaceProject, isPinned: boolean) => {
+      const pathKey = workspaceProjectPathKey(project.path);
+      if (!pathKey) return;
+
+      setSettings((prev) => {
+        const existing = prev.system.workspaceProjects.find(
+          (item) => item.id === project.id || workspaceProjectPathKey(item.path) === pathKey,
+        );
+        if (!existing && !isPinned) {
+          return prev;
+        }
+
+        const now = Date.now();
+        const source = existing ?? project;
+        const updatedProject: WorkspaceProject = {
+          ...source,
+          id: existing?.id ?? source.id,
+          kind: source.id === DEFAULT_WORKSPACE_PROJECT_ID ? "managed" : source.kind,
+          updatedAt: now,
+          isPinned,
+          pinnedAt: isPinned ? now : null,
+        };
+        const workspaceProjects = existing
+          ? prev.system.workspaceProjects.map((item) =>
+              item.id === existing.id || workspaceProjectPathKey(item.path) === pathKey
+                ? updatedProject
+                : item,
+            )
+          : [...prev.system.workspaceProjects, updatedProject];
+
+        return {
+          ...prev,
+          system: resolveWorkspaceProjects(
+            {
+              ...prev.system,
+              workspaceProjects,
+            },
+            getDefaultWorkspaceProjectPath(prev.system),
+          ),
+        };
+      });
+    },
+    [setSettings],
+  );
+
   const handleSidebarProjectsCollapsedChange = useCallback(
     (projectsCollapsed: boolean) => {
       setSettings((prev) =>
@@ -3948,6 +3994,7 @@ export function ChatPage(props: ChatPageProps) {
         onProjectRenameDraftChange={setProjectRenameDraft}
         onCommitProjectRename={handleCommitWorkspaceProjectRename}
         onCancelProjectRename={handleCancelWorkspaceProjectRename}
+        onSetProjectPinned={handleSetWorkspaceProjectPinned}
         onRemoveProject={handleRemoveWorkspaceProject}
         onNewConversation={() => {
           setActiveView("chat");

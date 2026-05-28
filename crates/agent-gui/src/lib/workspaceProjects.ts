@@ -44,6 +44,15 @@ function readProjectLastConversationAt(project: WorkspaceProject) {
     : 0;
 }
 
+function readProjectPinnedAt(project: WorkspaceProject) {
+  return project.isPinned === true &&
+    typeof project.pinnedAt === "number" &&
+    Number.isFinite(project.pinnedAt) &&
+    project.pinnedAt > 0
+    ? project.pinnedAt
+    : 0;
+}
+
 function createHistoryWorkspaceProjectFromPath(
   path: string,
   updatedAt?: number | null,
@@ -297,6 +306,17 @@ export function sortWorkspaceProjectsByActivity(
       };
     })
     .sort((left, right) => {
+      const leftIsPinned = left.project.isPinned === true;
+      const rightIsPinned = right.project.isPinned === true;
+      if (leftIsPinned !== rightIsPinned) {
+        return leftIsPinned ? -1 : 1;
+      }
+      if (leftIsPinned && rightIsPinned) {
+        const pinnedDelta = readProjectPinnedAt(right.project) - readProjectPinnedAt(left.project);
+        if (pinnedDelta !== 0) {
+          return pinnedDelta;
+        }
+      }
       if (left.isRunning !== right.isRunning) {
         return left.isRunning ? -1 : 1;
       }
