@@ -6,12 +6,12 @@ import type {
   ProjectToolsFileTreeStatePatch,
 } from "@/lib/settings";
 import { cn } from "@/lib/shared/utils";
+import { getFileTypeIcon } from "../chat/fileTypeIcons";
 import {
   Check,
   ChevronRight,
   Copy,
   Edit3,
-  File,
   Folder,
   FolderOpen,
   Loader2,
@@ -664,6 +664,7 @@ export function ProjectFileTreePanel(props: {
       if (!node) return null;
       const expanded = state.expanded.includes(path);
       const selected = state.selectedPath === path;
+      const TypeIcon = node.kind === "file" ? getFileTypeIcon(path, node.kind) : null;
       return (
         <div key={path || "__root__"}>
           <div
@@ -715,9 +716,9 @@ export function ProjectFileTreePanel(props: {
                 ) : (
                   <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
                 )
-              ) : (
-                <File className="h-3.5 w-3.5 shrink-0 text-sky-500" />
-              )}
+              ) : TypeIcon ? (
+                <TypeIcon className="h-3.5 w-3.5 shrink-0" />
+              ) : null}
               <span className="min-w-0 truncate">{node.name}</span>
             </button>
           </div>
@@ -857,22 +858,26 @@ export function ProjectFileTreePanel(props: {
               {t("projectTools.fileTree.noMatches")}
             </div>
           ) : (
-            searchResults.map((entry) => (
-              <button
-                key={`${entry.kind}:${entry.path}`}
-                type="button"
-                className="flex h-7 w-full select-none items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-                title={entry.path}
-                onClick={() => void revealPath(entry.path, entry.kind)}
-              >
-                {entry.kind === "dir" ? (
-                  <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
-                ) : (
-                  <File className="h-3.5 w-3.5 shrink-0 text-sky-500" />
-                )}
-                <span className="min-w-0 truncate">{entry.path}</span>
-              </button>
-            ))
+            searchResults.map((entry) => {
+              const TypeIcon =
+                entry.kind === "file" ? getFileTypeIcon(entry.path, entry.kind) : null;
+              return (
+                <button
+                  key={`${entry.kind}:${entry.path}`}
+                  type="button"
+                  className="flex h-7 w-full select-none items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                  title={entry.path}
+                  onClick={() => void revealPath(entry.path, entry.kind)}
+                >
+                  {entry.kind === "dir" ? (
+                    <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                  ) : TypeIcon ? (
+                    <TypeIcon className="h-3.5 w-3.5 shrink-0" />
+                  ) : null}
+                  <span className="min-w-0 truncate">{entry.path}</span>
+                </button>
+              );
+            })
           )}
           {searchTruncated ? (
             <div className="px-2 pt-1 text-[11px] text-muted-foreground">
