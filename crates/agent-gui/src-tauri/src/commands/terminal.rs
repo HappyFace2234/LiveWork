@@ -3,9 +3,9 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::runtime::terminal::{
-    terminal_shell_options as runtime_terminal_shell_options, TerminalListResponse,
-    TerminalReadTailResponse, TerminalSessionRecord, TerminalSessionRegistry,
+    TerminalListResponse, TerminalReadTailResponse, TerminalSessionRecord, TerminalSessionRegistry,
     TerminalShellOptionsResponse, TerminalSnapshotResponse,
+    terminal_shell_options as runtime_terminal_shell_options,
 };
 
 #[tauri::command(rename_all = "snake_case")]

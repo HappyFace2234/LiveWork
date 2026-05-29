@@ -1,9 +1,9 @@
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use ignore::WalkBuilder;
 use lopdf::Document as PdfDocument;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::Url;
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -100,7 +100,7 @@ fn sanitize_rel_path_core(input: &str) -> Result<Option<PathBuf>, FsError> {
     for c in p.components() {
         match c {
             Component::Prefix(_) | Component::RootDir => {
-                return Err(FsError::InvalidRelPath(input.to_string()))
+                return Err(FsError::InvalidRelPath(input.to_string()));
             }
             Component::ParentDir => return Err(FsError::InvalidRelPath(input.to_string())),
             Component::CurDir => {}
@@ -1631,7 +1631,7 @@ fn read_url_image_source(source: &str) -> Result<ReadResponse, String> {
             return Err(FsError::Other(format!(
                 "Image.url only supports http and https, got {scheme}"
             ))
-            .to_string())
+            .to_string());
         }
     }
 

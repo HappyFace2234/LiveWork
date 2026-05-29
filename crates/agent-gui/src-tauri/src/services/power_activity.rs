@@ -133,23 +133,25 @@ fn prune_expired_requests(state: &mut PowerActivityState) {
 fn spawn_watchdog(state: Arc<Mutex<PowerActivityState>>) -> bool {
     thread::Builder::new()
         .name("liveagent-power-activity-watchdog".to_string())
-        .spawn(move || loop {
-            thread::sleep(POWER_ACTIVITY_WATCHDOG_INTERVAL);
-            let should_continue = match state.lock() {
-                Ok(mut state) => {
-                    prune_expired_requests(&mut state);
-                    sync_keep_awake(&mut state);
-                    if state.requests.is_empty() {
-                        state.watchdog_running = false;
-                        false
-                    } else {
-                        true
+        .spawn(move || {
+            loop {
+                thread::sleep(POWER_ACTIVITY_WATCHDOG_INTERVAL);
+                let should_continue = match state.lock() {
+                    Ok(mut state) => {
+                        prune_expired_requests(&mut state);
+                        sync_keep_awake(&mut state);
+                        if state.requests.is_empty() {
+                            state.watchdog_running = false;
+                            false
+                        } else {
+                            true
+                        }
                     }
+                    Err(_) => false,
+                };
+                if !should_continue {
+                    break;
                 }
-                Err(_) => false,
-            };
-            if !should_continue {
-                break;
             }
         })
         .map(|_| true)

@@ -1,15 +1,15 @@
-use reqwest::blocking::Client as HttpClient;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE};
 use reqwest::StatusCode;
 use reqwest::Url;
+use reqwest::blocking::Client as HttpClient;
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use crate::runtime::platform::{
@@ -758,91 +758,93 @@ impl SseTransport {
         let thread_stop = stop.clone();
         let thread_client = client_get.clone();
 
-        let handle = std::thread::spawn(move || loop {
-            if thread_stop.load(Ordering::Relaxed) {
-                break;
-            }
-
-            let mut builder = thread_client.get(thread_sse_url.clone());
-            if !thread_headers.is_empty() {
-                builder = builder.headers(thread_headers.clone());
-            }
-            builder = builder.header(ACCEPT, "text/event-stream");
-
-            let resp = match builder.send() {
-                Ok(r) => r,
-                Err(_) => {
-                    std::thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-            };
-
-            if !resp.status().is_success() {
-                std::thread::sleep(Duration::from_secs(1));
-                continue;
-            }
-
-            let mut reader = BufReader::new(resp);
-            let mut line = String::new();
-            let mut event_name: Option<String> = None;
-            let mut data_lines: Vec<String> = Vec::new();
-
+        let handle = std::thread::spawn(move || {
             loop {
                 if thread_stop.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                line.clear();
-                let n = match reader.read_line(&mut line) {
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                if n == 0 {
                     break;
                 }
 
-                let l = line.trim_end_matches(['\r', '\n']);
-                if l.is_empty() {
-                    if data_lines.is_empty() {
-                        event_name = None;
+                let mut builder = thread_client.get(thread_sse_url.clone());
+                if !thread_headers.is_empty() {
+                    builder = builder.headers(thread_headers.clone());
+                }
+                builder = builder.header(ACCEPT, "text/event-stream");
+
+                let resp = match builder.send() {
+                    Ok(r) => r,
+                    Err(_) => {
+                        std::thread::sleep(Duration::from_secs(1));
                         continue;
                     }
+                };
 
-                    let data = data_lines.join("\n");
-                    data_lines.clear();
+                if !resp.status().is_success() {
+                    std::thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
 
-                    let ty = event_name.take().unwrap_or_else(|| "message".to_string());
+                let mut reader = BufReader::new(resp);
+                let mut line = String::new();
+                let mut event_name: Option<String> = None;
+                let mut data_lines: Vec<String> = Vec::new();
 
-                    if ty == "endpoint" {
-                        let raw = data.trim();
-                        if raw.is_empty() {
+                loop {
+                    if thread_stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    line.clear();
+                    let n = match reader.read_line(&mut line) {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 {
+                        break;
+                    }
+
+                    let l = line.trim_end_matches(['\r', '\n']);
+                    if l.is_empty() {
+                        if data_lines.is_empty() {
+                            event_name = None;
                             continue;
                         }
-                        if let Ok(u) = Url::parse(raw).or_else(|_| thread_sse_url.join(raw)) {
-                            if let Ok(mut locked) = thread_post_url.lock() {
-                                *locked = Some(u);
+
+                        let data = data_lines.join("\n");
+                        data_lines.clear();
+
+                        let ty = event_name.take().unwrap_or_else(|| "message".to_string());
+
+                        if ty == "endpoint" {
+                            let raw = data.trim();
+                            if raw.is_empty() {
+                                continue;
                             }
+                            if let Ok(u) = Url::parse(raw).or_else(|_| thread_sse_url.join(raw)) {
+                                if let Ok(mut locked) = thread_post_url.lock() {
+                                    *locked = Some(u);
+                                }
+                            }
+                            continue;
                         }
+
+                        if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                            let _ = tx.send(v);
+                        }
+
                         continue;
                     }
 
-                    if let Ok(v) = serde_json::from_str::<Value>(&data) {
-                        let _ = tx.send(v);
+                    if l.starts_with(':') {
+                        continue;
                     }
-
-                    continue;
-                }
-
-                if l.starts_with(':') {
-                    continue;
-                }
-                if let Some(rest) = l.strip_prefix("event:") {
-                    event_name = Some(rest.trim().to_string());
-                    continue;
-                }
-                if let Some(rest) = l.strip_prefix("data:") {
-                    data_lines.push(rest.trim_start().to_string());
-                    continue;
+                    if let Some(rest) = l.strip_prefix("event:") {
+                        event_name = Some(rest.trim().to_string());
+                        continue;
+                    }
+                    if let Some(rest) = l.strip_prefix("data:") {
+                        data_lines.push(rest.trim_start().to_string());
+                        continue;
+                    }
                 }
             }
         });

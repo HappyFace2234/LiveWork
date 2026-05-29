@@ -1,6 +1,6 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Number, Value};
+use serde_json::{Map, Number, Value, json};
 use std::{
     collections::HashSet,
     fs,
@@ -9,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::services::cron::{validate_cron_expression, CronManager};
+use crate::services::cron::{CronManager, validate_cron_expression};
 use crate::services::gateway::GatewayController;
 use uuid::Uuid;
 
@@ -142,6 +142,8 @@ pub struct RemoteSettingsPayload {
     pub heartbeat_interval: u64,
     #[serde(default)]
     pub enable_web_terminal: bool,
+    #[serde(default)]
+    pub enable_web_git: bool,
 }
 
 fn default_remote_grpc_port() -> u16 {
@@ -168,6 +170,7 @@ impl Default for RemoteSettingsPayload {
             auto_reconnect: default_remote_auto_reconnect(),
             heartbeat_interval: default_remote_heartbeat_interval(),
             enable_web_terminal: false,
+            enable_web_git: false,
         }
     }
 }
@@ -189,6 +192,7 @@ pub(crate) fn normalize_remote_settings_payload(
         auto_reconnect: payload.auto_reconnect,
         heartbeat_interval: payload.heartbeat_interval.max(1),
         enable_web_terminal: payload.enable_web_terminal,
+        enable_web_git: payload.enable_web_git,
     }
 }
 
@@ -1311,6 +1315,7 @@ pub(crate) fn load_gateway_settings_sync_snapshot(conn: &Connection) -> Result<V
         "remote".to_string(),
         json!({
             "enableWebTerminal": remote.enable_web_terminal,
+            "enableWebGit": remote.enable_web_git,
         }),
     );
     snapshot.insert("customSettings".to_string(), Value::Object(Map::new()));
@@ -1357,8 +1362,14 @@ fn redact_remote_settings(remote: Value) -> Result<Value, String> {
         .or_else(|| remote.get("enable_web_terminal"))
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let enable_web_git = remote
+        .get("enableWebGit")
+        .or_else(|| remote.get("enable_web_git"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     Ok(json!({
         "enableWebTerminal": enable_web_terminal,
+        "enableWebGit": enable_web_git,
     }))
 }
 
@@ -2055,6 +2066,7 @@ mod tests {
             auto_reconnect: true,
             heartbeat_interval: 30,
             enable_web_terminal: false,
+            enable_web_git: false,
         });
 
         assert_eq!(normalized.gateway_url, "https://agent.cnweb.org");

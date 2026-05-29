@@ -392,6 +392,26 @@ export function RemoteSection(props: SettingsSectionProps) {
           </span>
         </div>
 
+        <div className="settings-card-row flex items-center justify-between gap-4 rounded-lg bg-muted/30 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium">{t("settings.remoteWebGit")}</div>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {t("settings.remoteWebGitHint")}
+            </p>
+          </div>
+          <span
+            className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
+              settings.remote.enableWebGit
+                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                : "bg-muted text-muted-foreground"
+            }`}
+          >
+            {settings.remote.enableWebGit
+              ? t("settings.cronViewStatusEnabled")
+              : t("settings.cronViewStatusDisabled")}
+          </span>
+        </div>
+
         <div className="space-y-1.5">
           <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <Radio className="h-3 w-3" />

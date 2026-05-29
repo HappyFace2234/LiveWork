@@ -13,6 +13,7 @@ import {
   type MentionComposerHandle,
   type MentionComposerSkill,
 } from "../../components/chat/MentionComposer";
+import { GitBranchSelector } from "../../components/git/GitBranchSelector";
 import { Button } from "../../components/ui/button";
 import {
   Select,
@@ -27,6 +28,7 @@ import {
   type PendingUploadedFile,
 } from "../../lib/chat/uploadedFiles";
 import { cn } from "../../lib/shared/utils";
+import type { GitClient } from "../../lib/git/types";
 import {
   DEFAULT_CHAT_RUNTIME_CONTROLS,
   type ChatRuntimeControls,
@@ -67,6 +69,10 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   isAgentMode: boolean;
   chatRuntimeControls: ChatRuntimeControls;
   reasoningOptions: ReasoningLevel[];
+  gitClient?: GitClient | null;
+  gitWriteEnabled?: boolean;
+  gitDisabledMessage?: string;
+  onGitChanged?: (workdir: string) => void;
   onSend: () => void;
   onStop: () => void;
   onComposerBusyChange: (isBusy: boolean) => void;
@@ -87,6 +93,10 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
     isAgentMode,
     chatRuntimeControls,
     reasoningOptions,
+    gitClient,
+    gitWriteEnabled = true,
+    gitDisabledMessage,
+    onGitChanged,
     onSend,
     onStop,
     onComposerBusyChange,
@@ -374,6 +384,15 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
                   </SelectContent>
                 </Select>
               ) : null}
+
+              <GitBranchSelector
+                workdir={workdir}
+                gitClient={gitClient}
+                disabled={controlsDisabled}
+                canWrite={gitWriteEnabled}
+                disabledMessage={gitDisabledMessage}
+                onChanged={() => onGitChanged?.(workdir)}
+              />
             </div>
 
             <Button

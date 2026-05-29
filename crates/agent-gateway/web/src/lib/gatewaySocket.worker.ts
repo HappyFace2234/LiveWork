@@ -481,6 +481,30 @@ async function resolveRequest(client: GatewayWebSocketClient, method: string, pa
       return client.cronManage(payload as CronManagePayload);
     case "memory.manage":
       return client.memoryManage(payload as MemoryManagePayload);
+    case "git.status":
+    case "git.branches":
+    case "git.init":
+    case "git.switch_branch":
+    case "git.create_branch":
+    case "git.diff":
+    case "git.log":
+    case "git.commit_diff":
+    case "git.stage":
+    case "git.stage_all":
+    case "git.unstage":
+    case "git.unstage_all":
+    case "git.discard":
+    case "git.discard_all":
+    case "git.add_to_gitignore":
+    case "git.commit":
+    case "git.fetch":
+    case "git.pull":
+    case "git.push":
+      return client.gitRequest(
+        method.slice("git.".length),
+        String(body.workdir ?? ""),
+        (body.args && typeof body.args === "object" ? body.args : {}) as Record<string, unknown>,
+      );
     case "terminal.shell_options":
       return client.terminalShellOptions();
     case "terminal.list":

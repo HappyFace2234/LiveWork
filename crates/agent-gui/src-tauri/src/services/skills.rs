@@ -2548,7 +2548,7 @@ fn validate_skill_dir(skill_dir: &Path) -> SkillValidationResult {
                 return SkillValidationResult {
                     ok: false,
                     errors: vec![
-                        "SKILL.md, skill.md, skill.json, or README.md not found".to_string()
+                        "SKILL.md, skill.md, skill.json, or README.md not found".to_string(),
                     ],
                     metadata: None,
                 };

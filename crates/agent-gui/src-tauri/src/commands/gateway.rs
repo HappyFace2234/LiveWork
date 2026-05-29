@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::commands::settings::{load_remote_settings, open_db, parse_remote_settings_payload};
 use crate::services::gateway::{
-    build_history_sync_activity, GatewayController, GatewayStatusSnapshot,
+    GatewayController, GatewayStatusSnapshot, build_history_sync_activity,
 };
 
 #[tauri::command]

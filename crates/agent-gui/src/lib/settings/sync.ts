@@ -2,6 +2,7 @@ import {
   type AppSettings,
   normalizeChatRuntimeControls,
   normalizeProjectToolsFileTreeSettings,
+  normalizeProjectToolsGitReviewSettings,
   normalizeSettings,
   workspaceProjectPathKey,
 } from "./index";
@@ -18,7 +19,7 @@ export type GatewaySettingsSyncPayload = {
   agents: AppSettings["agents"];
   hooks: AppSettings["hooks"];
   cron: AppSettings["cron"];
-  remote?: Pick<AppSettings["remote"], "enableWebTerminal">;
+  remote?: Pick<AppSettings["remote"], "enableWebTerminal" | "enableWebGit">;
   memory: AppSettings["memory"];
   customSettings: Partial<AppSettings["customSettings"]>;
   skills: AppSettings["skills"];
@@ -246,12 +247,17 @@ function mergeSyncedRemoteSettings(
   incoming: unknown,
 ): AppSettings["remote"] {
   const source = asObject(incoming);
-  if (!Object.hasOwn(source, "enableWebTerminal")) {
+  if (!Object.hasOwn(source, "enableWebTerminal") && !Object.hasOwn(source, "enableWebGit")) {
     return current;
   }
   return {
     ...current,
-    enableWebTerminal: source.enableWebTerminal === true,
+    enableWebTerminal: Object.hasOwn(source, "enableWebTerminal")
+      ? source.enableWebTerminal === true
+      : current.enableWebTerminal,
+    enableWebGit: Object.hasOwn(source, "enableWebGit")
+      ? source.enableWebGit === true
+      : current.enableWebGit,
   };
 }
 
@@ -297,6 +303,21 @@ function mergeSyncedProjectToolsFileTreeSettings(
   };
 }
 
+function mergeSyncedProjectToolsGitReviewSettings(
+  current: AppSettings["customSettings"]["projectToolsGitReview"],
+  incoming: unknown,
+): AppSettings["customSettings"]["projectToolsGitReview"] {
+  const currentState = normalizeProjectToolsGitReviewSettings(current);
+  const incomingState = normalizeProjectToolsGitReviewSettings(incoming);
+  const openFromIncoming = incomingState.openVersion >= currentState.openVersion;
+  return {
+    openProjectPathKeys: openFromIncoming
+      ? incomingState.openProjectPathKeys
+      : currentState.openProjectPathKeys,
+    openVersion: Math.max(currentState.openVersion, incomingState.openVersion),
+  };
+}
+
 export function buildGatewaySettingsSyncPayload(
   settings: AppSettings,
   options: { includeProviderApiKeyUpdates?: boolean } = {},
@@ -310,6 +331,7 @@ export function buildGatewaySettingsSyncPayload(
     cron: settings.cron,
     remote: {
       enableWebTerminal: settings.remote.enableWebTerminal,
+      enableWebGit: settings.remote.enableWebGit,
     },
     memory: settings.memory,
     customSettings: syncableCustomSettings(settings.customSettings),
@@ -370,6 +392,12 @@ export function applyGatewaySettingsSyncPayload(
             incomingCustomSettings.projectToolsFileTree,
           )
         : current.customSettings.projectToolsFileTree,
+      projectToolsGitReview: Object.hasOwn(incomingCustomSettings, "projectToolsGitReview")
+        ? mergeSyncedProjectToolsGitReviewSettings(
+            current.customSettings.projectToolsGitReview,
+            incomingCustomSettings.projectToolsGitReview,
+          )
+        : current.customSettings.projectToolsGitReview,
       chatSidebar: current.customSettings.chatSidebar,
       projectToolsPanel: current.customSettings.projectToolsPanel,
     },

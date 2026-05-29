@@ -127,7 +127,7 @@ export type ChatSidebarSettings = {
   recentCollapsed: boolean;
 };
 
-export type ProjectToolsPanelTab = "terminal" | "fileTree";
+export type ProjectToolsPanelTab = "terminal" | "fileTree" | "gitReview";
 
 export type ProjectToolsPanelSettings = {
   width: number;
@@ -149,6 +149,11 @@ export type ProjectToolsFileTreeSettings = {
   projects: Record<string, ProjectToolsFileTreeProjectState>;
 };
 
+export type ProjectToolsGitReviewSettings = {
+  openProjectPathKeys: string[];
+  openVersion: number;
+};
+
 export type ProjectToolsFileTreeStatePatch = Partial<ProjectToolsFileTreeProjectState> & {
   bumpRevision?: boolean;
   bumpStateVersion?: boolean;
@@ -159,6 +164,7 @@ export type CustomSettings = {
   chatSidebar: ChatSidebarSettings;
   projectToolsPanel: ProjectToolsPanelSettings;
   projectToolsFileTree: ProjectToolsFileTreeSettings;
+  projectToolsGitReview: ProjectToolsGitReviewSettings;
 };
 
 export type UpdateSettings = {
@@ -249,6 +255,7 @@ export type RemoteSettings = {
   autoReconnect: boolean;
   heartbeatInterval: number;
   enableWebTerminal: boolean;
+  enableWebGit: boolean;
 };
 
 export type AppSettings = {
@@ -1039,6 +1046,7 @@ export function normalizeRemoteSettings(input: unknown): RemoteSettings {
     autoReconnect: obj.autoReconnect !== false,
     heartbeatInterval: normalizePositiveInteger(obj.heartbeatInterval, 30),
     enableWebTerminal: obj.enableWebTerminal === true,
+    enableWebGit: obj.enableWebGit === true,
   };
 }
 
@@ -1512,6 +1520,23 @@ export function normalizeProjectToolsFileTreeSettings(
   };
 }
 
+export function normalizeProjectToolsGitReviewSettings(
+  input: unknown,
+): ProjectToolsGitReviewSettings {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const openProjectPathKeys = Array.from(
+    new Set(
+      (Array.isArray(obj.openProjectPathKeys) ? obj.openProjectPathKeys : [])
+        .map((pathKey) => workspaceProjectPathKey(pathKey))
+        .filter(Boolean),
+    ),
+  ).sort();
+  return {
+    openProjectPathKeys,
+    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
+  };
+}
+
 export function normalizeProjectToolsPanelTabOrder(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const order: string[] = [];
@@ -1558,12 +1583,19 @@ export function normalizeCustomSettings(
     obj.projectToolsPanel && typeof obj.projectToolsPanel === "object" ? obj.projectToolsPanel : {}
   ) as Record<string, unknown>;
   const projectToolsPanelActiveTab =
-    projectToolsPanel.activeTab === "terminal" || projectToolsPanel.activeTab === "fileTree"
+    projectToolsPanel.activeTab === "terminal" ||
+    projectToolsPanel.activeTab === "fileTree" ||
+    projectToolsPanel.activeTab === "gitReview"
       ? projectToolsPanel.activeTab
       : "fileTree";
   const projectToolsFileTree = (
     obj.projectToolsFileTree && typeof obj.projectToolsFileTree === "object"
       ? obj.projectToolsFileTree
+      : {}
+  ) as unknown;
+  const projectToolsGitReview = (
+    obj.projectToolsGitReview && typeof obj.projectToolsGitReview === "object"
+      ? obj.projectToolsGitReview
       : {}
   ) as unknown;
   return {
@@ -1579,13 +1611,14 @@ export function normalizeCustomSettings(
       width: normalizeIntegerInRange(
         obj.terminalPanelWidth ?? projectToolsPanel.width ?? legacyTerminalPanel.width,
         320,
-        720,
+        1280,
         420,
       ),
       activeTab: projectToolsPanelActiveTab,
       tabOrders: normalizeProjectToolsPanelTabOrders(projectToolsPanel.tabOrders),
     },
     projectToolsFileTree: normalizeProjectToolsFileTreeSettings(projectToolsFileTree),
+    projectToolsGitReview: normalizeProjectToolsGitReviewSettings(projectToolsGitReview),
   };
 }
 
@@ -1626,6 +1659,7 @@ export function getDefaultSettings(): AppSettings {
       autoReconnect: true,
       heartbeatInterval: 30,
       enableWebTerminal: false,
+      enableWebGit: false,
     },
     memory: normalizeMemorySettings({}, customProviders),
     customSettings: normalizeCustomSettings({}, customProviders),
@@ -1810,13 +1844,27 @@ export function removeProjectToolsProjectState(
     (pathKey) => pathKey !== normalizedPathKey,
   );
   const removedOpenProjectPathKey = nextOpenProjectPathKeys.length !== openProjectPathKeys.length;
+  const gitReviewOpenProjectPathKeys =
+    prev.customSettings.projectToolsGitReview.openProjectPathKeys
+      .map((pathKey) => workspaceProjectPathKey(pathKey))
+      .filter(Boolean);
+  const nextGitReviewOpenProjectPathKeys = gitReviewOpenProjectPathKeys.filter(
+    (pathKey) => pathKey !== normalizedPathKey,
+  );
+  const removedGitReviewOpenProjectPathKey =
+    nextGitReviewOpenProjectPathKeys.length !== gitReviewOpenProjectPathKeys.length;
   const hasFileTreeProjectState = Object.hasOwn(
     prev.customSettings.projectToolsFileTree.projects,
     normalizedPathKey,
   );
   const removedFileTreeState = removedOpenProjectPathKey || hasFileTreeProjectState;
 
-  if (!hasTabOrder && !removedOpenProjectPathKey && !hasFileTreeProjectState) {
+  if (
+    !hasTabOrder &&
+    !removedOpenProjectPathKey &&
+    !removedGitReviewOpenProjectPathKey &&
+    !hasFileTreeProjectState
+  ) {
     return prev;
   }
 
@@ -1848,6 +1896,15 @@ export function removeProjectToolsProjectState(
         ? prev.customSettings.projectToolsFileTree.openVersion + 1
         : prev.customSettings.projectToolsFileTree.openVersion,
       projects,
+    },
+    projectToolsGitReview: {
+      ...prev.customSettings.projectToolsGitReview,
+      openProjectPathKeys: removedGitReviewOpenProjectPathKey
+        ? nextGitReviewOpenProjectPathKeys.sort()
+        : prev.customSettings.projectToolsGitReview.openProjectPathKeys,
+      openVersion: removedGitReviewOpenProjectPathKey
+        ? prev.customSettings.projectToolsGitReview.openVersion + 1
+        : prev.customSettings.projectToolsGitReview.openVersion,
     },
   });
 }
@@ -1898,6 +1955,44 @@ export function updateProjectToolsFileTreeOpen(
       ...prev.customSettings.projectToolsFileTree,
       openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
       openVersion: prev.customSettings.projectToolsFileTree.openVersion + 1,
+    },
+  });
+}
+
+export function isProjectToolsGitReviewOpen(
+  customSettings: CustomSettings,
+  projectPathKey: string,
+): boolean {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  return (
+    normalizedPathKey !== "" &&
+    customSettings.projectToolsGitReview.openProjectPathKeys.includes(normalizedPathKey)
+  );
+}
+
+export function updateProjectToolsGitReviewOpen(
+  prev: AppSettings,
+  projectPathKey: string,
+  open: boolean,
+): AppSettings {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return prev;
+  const openProjectPathKeys = new Set(
+    prev.customSettings.projectToolsGitReview.openProjectPathKeys
+      .map((pathKey) => workspaceProjectPathKey(pathKey))
+      .filter(Boolean),
+  );
+  if (openProjectPathKeys.has(normalizedPathKey) === open) return prev;
+  if (open) {
+    openProjectPathKeys.add(normalizedPathKey);
+  } else {
+    openProjectPathKeys.delete(normalizedPathKey);
+  }
+  return updateCustomSettings(prev, {
+    projectToolsGitReview: {
+      ...prev.customSettings.projectToolsGitReview,
+      openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
+      openVersion: prev.customSettings.projectToolsGitReview.openVersion + 1,
     },
   });
 }

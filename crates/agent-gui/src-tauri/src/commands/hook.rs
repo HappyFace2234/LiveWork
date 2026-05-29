@@ -1,6 +1,6 @@
-use crate::runtime::shell_runner::{run_shell_script, ShellRunResponse};
+use crate::runtime::shell_runner::{ShellRunResponse, run_shell_script};
 use crate::runtime::task_runner::{
-    resolve_workdir, run_http_requests_sync, HttpExecutionResult, HttpRequestInput,
+    HttpExecutionResult, HttpRequestInput, resolve_workdir, run_http_requests_sync,
 };
 
 const DEFAULT_HOOK_SCRIPT_TIMEOUT_MS: u64 = 60_000;

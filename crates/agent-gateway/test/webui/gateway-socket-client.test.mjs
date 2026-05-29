@@ -142,6 +142,48 @@ test("GatewayWebSocketClient authenticates once and sends status requests over /
   resetGatewayWebSocketClient();
 });
 
+test("GatewayWebSocketClient sends git requests with workdir and args", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient(" token ");
+  const gitPromise = client.gitRequest("diff", "/workspace/project", { mode: "branch" });
+  const socket = await connectAndAuth();
+  await waitFor(() => socket.sent.some((message) => message.type === "git.diff"), "git.diff envelope");
+  const request = socket.sent.find((message) => message.type === "git.diff");
+  assert.deepEqual(request.payload, {
+    workdir: "/workspace/project",
+    args: { mode: "branch" },
+  });
+  socket.receive({
+    id: request.id,
+    type: "response",
+    payload: { patch: "diff --git a/file b/file" },
+  });
+
+  assert.deepEqual(await gitPromise, { patch: "diff --git a/file b/file" });
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient does not recover mutating git requests", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient(" token ");
+  const stagePromise = client.gitRequest("stage", "/workspace/project", { path: "src/main.rs" });
+  const socket = await connectAndAuth();
+  await waitFor(() => socket.sent.some((message) => message.type === "git.stage"), "git.stage envelope");
+  socket.close({ code: 1006, wasClean: false });
+
+  await assert.rejects(stagePromise, /Gateway WebSocket disconnected/);
+  assert.equal(FakeWebSocket.instances.length, 1);
+  resetGatewayWebSocketClient();
+});
+
 test("SharedWorker gateway client sends conversation cancel even without a local stream", async () => {
   installBrowser();
   FakeSharedWorker.instances = [];

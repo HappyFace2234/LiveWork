@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -12,7 +12,7 @@ use crate::commands::settings::{
     append_cron_task, delete_cron_task, load_cron, load_cron_task, open_db, update_cron_task,
 };
 use crate::runtime::platform::expand_tilde_path;
-use crate::services::cron::{list_logs_for_task, CronExecutionLogRecord, CronManager};
+use crate::services::cron::{CronExecutionLogRecord, CronManager, list_logs_for_task};
 use crate::services::gateway::GatewayController;
 use crate::services::power_activity::PowerActivityManager;
 pub use crate::services::skills::{
@@ -1605,8 +1605,8 @@ pub async fn system_list_skill_files() -> Result<SystemListSkillFilesResponse, S
 }
 
 #[tauri::command]
-pub async fn system_ensure_builtin_skills(
-) -> Result<Vec<crate::services::skills::SystemBuiltinSkillSeedResponse>, String> {
+pub async fn system_ensure_builtin_skills()
+-> Result<Vec<crate::services::skills::SystemBuiltinSkillSeedResponse>, String> {
     tauri::async_runtime::spawn_blocking(crate::services::skills::ensure_builtin_agent_skills_sync)
         .await
         .map_err(|e| format!("system_ensure_builtin_skills join failed: {e}"))?

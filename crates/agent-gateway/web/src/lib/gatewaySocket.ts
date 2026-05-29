@@ -739,6 +739,24 @@ export class GatewayWebSocketClient {
     return this.request<T>("memory.manage", payload);
   }
 
+  async gitRequest<T = unknown>(
+    action: string,
+    workdir: string,
+    args: Record<string, unknown> = {},
+  ): Promise<T> {
+    const requestType = `git.${action}`;
+    if (
+      action === "status" ||
+      action === "branches" ||
+      action === "diff" ||
+      action === "log" ||
+      action === "commit_diff"
+    ) {
+      return this.requestWithRecovery<T>(requestType, { workdir, args });
+    }
+    return this.request<T>(requestType, { workdir, args });
+  }
+
   async terminalShellOptions(): Promise<TerminalShellOptions> {
     return normalizeTerminalShellOptions(
       await this.requestWithRecovery<RawTerminalResponse>("terminal.shell_options", {}),
@@ -1805,6 +1823,11 @@ export type GatewayWebSocketClientLike = {
   cancelChat(conversationId: string): Promise<void>;
   cronManage(payload: CronManagePayload): Promise<CronManageResponse>;
   memoryManage<T = unknown>(payload: MemoryManagePayload): Promise<T>;
+  gitRequest<T = unknown>(
+    action: string,
+    workdir: string,
+    args?: Record<string, unknown>,
+  ): Promise<T>;
   terminalShellOptions(): Promise<TerminalShellOptions>;
   listTerminals(projectPathKey?: string): Promise<TerminalSession[]>;
   createTerminal(params: {
@@ -2275,6 +2298,14 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
 
   async memoryManage<T = unknown>(payload: MemoryManagePayload): Promise<T> {
     return this.request<T>("memory.manage", payload);
+  }
+
+  async gitRequest<T = unknown>(
+    action: string,
+    workdir: string,
+    args: Record<string, unknown> = {},
+  ): Promise<T> {
+    return this.request<T>(`git.${action}`, { workdir, args });
   }
 
   async terminalShellOptions(): Promise<TerminalShellOptions> {

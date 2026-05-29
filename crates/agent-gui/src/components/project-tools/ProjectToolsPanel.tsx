@@ -19,6 +19,7 @@ import type {
   ProjectToolsFileTreeStatePatch,
   ProjectToolsPanelTab,
 } from "../../lib/settings";
+import type { GitClient } from "../../lib/git/types";
 import { cn } from "../../lib/shared/utils";
 import type {
   TerminalClient,
@@ -27,7 +28,7 @@ import type {
   TerminalShellOption,
   TerminalSnapshot,
 } from "../../lib/terminal/types";
-import { Check, ChevronRight, FolderTree, GripVertical, Plus, Terminal, X } from "../icons";
+import { Check, ChevronRight, FolderTree, GitBranch, GripVertical, Plus, Terminal, X } from "../icons";
 import { Button } from "../ui/button";
 import {
   DropdownMenu,
@@ -38,13 +39,17 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
+import { GitReviewPanel } from "./GitReviewPanel";
 import { ProjectFileTreePanel } from "./ProjectFileTreePanel";
 
 const MIN_PANEL_WIDTH = 320;
-const MAX_PANEL_WIDTH = 720;
+const DEFAULT_MAX_PANEL_WIDTH = 720;
+const ABSOLUTE_MAX_PANEL_WIDTH = 1280;
+const MIN_MAIN_CONTENT_WIDTH = 420;
 const DEFAULT_TERMINAL_COLS = 80;
 const DEFAULT_TERMINAL_ROWS = 24;
 const FILE_TREE_TAB_ID = "__file_tree__";
+const GIT_REVIEW_TAB_ID = "__git_review__";
 
 type ProjectToolsPanelProps = {
   isOpen: boolean;
@@ -54,16 +59,22 @@ type ProjectToolsPanelProps = {
   width: number;
   theme: "light" | "dark";
   disabledMessage?: string;
+  terminalDisabledMessage?: string;
   activeTab: ProjectToolsPanelTab;
   tabOrder?: string[];
   fileTreeOpen: boolean;
   fileTreeState: ProjectToolsFileTreeProjectState;
+  gitReviewOpen: boolean;
   client: TerminalClient;
+  gitClient?: GitClient | null;
+  gitWriteEnabled?: boolean;
+  gitDisabledMessage?: string;
   onWidthChange: (width: number) => void;
   onActiveTabChange: (tab: ProjectToolsPanelTab) => void;
   onTabOrderChange?: (tabOrder: string[]) => void;
   onFileTreeOpenChange: (open: boolean) => void;
   onFileTreeStateChange: (patch: ProjectToolsFileTreeStatePatch) => void;
+  onGitReviewOpenChange: (open: boolean) => void;
   onSessionsChange?: (sessions: TerminalSession[]) => void;
   onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
   onClose?: () => void;
@@ -71,6 +82,34 @@ type ProjectToolsPanelProps = {
 
 function sortSessions(sessions: TerminalSession[]) {
   return [...sessions].sort((a, b) => a.createdAt - b.createdAt);
+}
+
+function getFallbackMaxPanelWidth() {
+  if (typeof window === "undefined") return DEFAULT_MAX_PANEL_WIDTH;
+  return Math.max(
+    DEFAULT_MAX_PANEL_WIDTH,
+    Math.min(ABSOLUTE_MAX_PANEL_WIDTH, window.innerWidth - MIN_MAIN_CONTENT_WIDTH),
+  );
+}
+
+function getDynamicMaxPanelWidth(panel: HTMLElement | null) {
+  if (!panel) return getFallbackMaxPanelWidth();
+  const sibling = panel.previousElementSibling;
+  const siblingWidth =
+    sibling instanceof HTMLElement ? sibling.getBoundingClientRect().width : 0;
+  const panelWidth = panel.getBoundingClientRect().width;
+  const hostWidth = siblingWidth + panelWidth;
+  if (!Number.isFinite(hostWidth) || hostWidth <= 0) {
+    return getFallbackMaxPanelWidth();
+  }
+  return Math.max(
+    MIN_PANEL_WIDTH,
+    Math.min(ABSOLUTE_MAX_PANEL_WIDTH, Math.floor(hostWidth - MIN_MAIN_CONTENT_WIDTH)),
+  );
+}
+
+function clampPanelWidth(width: number, maxWidth: number) {
+  return Math.min(maxWidth, Math.max(MIN_PANEL_WIDTH, width));
 }
 
 function areSessionsEqual(left: TerminalSession[], right: TerminalSession[]) {
@@ -102,6 +141,19 @@ function formatTerminalSessionTitle(title: string, terminalLabel: string) {
   return match[1] ? `${terminalLabel} ${match[1]}` : terminalLabel;
 }
 
+function dirname(path: string) {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const index = normalized.lastIndexOf("/");
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+
+function expandedPathsForFileTreePath(path: string) {
+  const normalized = path.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const parts = normalized.split("/").filter(Boolean);
+  const dirs = parts.slice(0, -1);
+  return ["", ...dirs.map((_, index) => parts.slice(0, index + 1).join("/"))];
+}
+
 type ProjectToolsTab =
   | {
       id: string;
@@ -111,6 +163,10 @@ type ProjectToolsTab =
   | {
       id: typeof FILE_TREE_TAB_ID;
       kind: "fileTree";
+    }
+  | {
+      id: typeof GIT_REVIEW_TAB_ID;
+      kind: "gitReview";
     };
 
 type TabDragState = {
@@ -501,16 +557,22 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     width,
     theme,
     disabledMessage,
+    terminalDisabledMessage,
     activeTab,
     tabOrder = [],
     fileTreeOpen,
     fileTreeState,
+    gitReviewOpen,
     client,
+    gitClient,
+    gitWriteEnabled = true,
+    gitDisabledMessage,
     onWidthChange,
     onActiveTabChange,
     onTabOrderChange,
     onFileTreeOpenChange,
     onFileTreeStateChange,
+    onGitReviewOpenChange,
     onSessionsChange,
     onInsertFileMention,
     onClose,
@@ -527,9 +589,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [shouldRenderContent, setShouldRenderContent] = useState(isOpen);
   const [widthCollapsed, setWidthCollapsed] = useState(!isOpen);
-  const [, setIsResizing] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const [maxPanelWidth, setMaxPanelWidth] = useState(getFallbackMaxPanelWidth);
   const projectReady = projectPathKey.trim() !== "" && cwd.trim() !== "" && !disabledMessage;
-  const clampedWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, width));
+  const terminalReady = projectReady && !terminalDisabledMessage;
+  const clampedWidth = clampPanelWidth(width, maxPanelWidth);
   const [draftWidth, setDraftWidth] = useState(clampedWidth);
   const lastProjectPathKeyRef = useRef(projectPathKey);
   const pendingResizeWidthRef = useRef(clampedWidth);
@@ -539,13 +604,19 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
   const tabsScrollRef = useRef<HTMLDivElement | null>(null);
   const tabDragRef = useRef<TabDragState | null>(null);
   const suppressedTabClickRef = useRef("");
-  const panelWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, draftWidth));
+  const panelWidth = clampPanelWidth(draftWidth, maxPanelWidth);
   const panelStyle = { "--project-tools-panel-width": `${panelWidth}px` } as CSSProperties;
   const isControlled = externalSessions !== undefined;
   const fileTreeInitialized = Boolean(projectPathKey && fileTreeOpen);
+  const gitReviewInitialized = Boolean(projectPathKey && gitReviewOpen);
   const previousFileTreeInitializedRef = useRef(fileTreeInitialized);
+  const previousGitReviewInitializedRef = useRef(gitReviewInitialized);
   const currentActiveTab: ProjectToolsPanelTab =
-    activeTab === "fileTree" && fileTreeInitialized ? "fileTree" : "terminal";
+    activeTab === "gitReview" && gitReviewInitialized
+      ? "gitReview"
+      : activeTab === "fileTree" && fileTreeInitialized
+        ? "fileTree"
+        : "terminal";
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId) ?? sessions[0] ?? null,
@@ -563,10 +634,15 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
       kind: "terminal",
       session,
     }));
-    return fileTreeInitialized
-      ? [...terminalTabs, { id: FILE_TREE_TAB_ID, kind: "fileTree" }]
-      : terminalTabs;
-  }, [fileTreeInitialized, sessions]);
+    const nextTabs: ProjectToolsTab[] = [...terminalTabs];
+    if (fileTreeInitialized) {
+      nextTabs.push({ id: FILE_TREE_TAB_ID, kind: "fileTree" });
+    }
+    if (gitReviewInitialized) {
+      nextTabs.push({ id: GIT_REVIEW_TAB_ID, kind: "gitReview" });
+    }
+    return nextTabs;
+  }, [fileTreeInitialized, gitReviewInitialized, sessions]);
   const effectiveTabOrder = draftTabOrder ?? tabOrder;
   const orderedProjectTabs = useMemo(
     () => orderProjectToolsTabs(visibleTabs, effectiveTabOrder),
@@ -589,6 +665,18 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
       onActiveTabChange("terminal");
     }
   }, [activeTab, fileTreeInitialized, onActiveTabChange]);
+
+  useEffect(() => {
+    const previousGitReviewInitialized = previousGitReviewInitializedRef.current;
+    previousGitReviewInitializedRef.current = gitReviewInitialized;
+    if (gitReviewInitialized && !previousGitReviewInitialized) {
+      onActiveTabChange("gitReview");
+      return;
+    }
+    if (!gitReviewInitialized && previousGitReviewInitialized && activeTab === "gitReview") {
+      onActiveTabChange("terminal");
+    }
+  }, [activeTab, gitReviewInitialized, onActiveTabChange]);
 
   const publishSessions = useCallback(
     (nextSessions: TerminalSession[], options?: { notifyParent?: boolean }) => {
@@ -616,7 +704,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
   }, [externalSessions]);
 
   const refreshSessions = useCallback(() => {
-    if (!projectReady) {
+    if (!terminalReady) {
       publishSessions([], { notifyParent: false });
       return;
     }
@@ -629,7 +717,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
-  }, [client, isControlled, projectPathKey, projectReady, publishSessions]);
+  }, [client, isControlled, projectPathKey, publishSessions, terminalReady]);
 
   useEffect(() => {
     if (!isOpen || isControlled) return;
@@ -641,6 +729,40 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     pendingResizeWidthRef.current = clampedWidth;
     setDraftWidth(clampedWidth);
   }, [clampedWidth]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const panel = panelRef.current;
+    let frameId = 0;
+    const updateMaxWidth = () => {
+      frameId = 0;
+      setMaxPanelWidth(getDynamicMaxPanelWidth(panel));
+    };
+    const scheduleUpdate = () => {
+      if (frameId !== 0) return;
+      frameId = window.requestAnimationFrame(updateMaxWidth);
+    };
+    scheduleUpdate();
+    window.addEventListener("resize", scheduleUpdate);
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleUpdate);
+    if (panel) {
+      resizeObserver?.observe(panel);
+      if (panel.previousElementSibling instanceof HTMLElement) {
+        resizeObserver?.observe(panel.previousElementSibling);
+      }
+      if (panel.parentElement) {
+        resizeObserver?.observe(panel.parentElement);
+      }
+    }
+    return () => {
+      window.removeEventListener("resize", scheduleUpdate);
+      if (frameId !== 0) {
+        window.cancelAnimationFrame(frameId);
+      }
+      resizeObserver?.disconnect();
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     return () => {
@@ -670,7 +792,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
   }, [isOpen]);
 
   useEffect(() => {
-    if (!projectReady) {
+    if (!terminalReady) {
       setShellOptions([]);
       return;
     }
@@ -689,10 +811,10 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [client, projectReady]);
+  }, [client, terminalReady]);
 
   useEffect(() => {
-    if (!projectReady || isControlled) return;
+    if (!terminalReady || isControlled) return;
     return client.subscribe((event) => {
       if (event.projectPathKey !== projectPathKey) return;
       if (event.kind === "output") return;
@@ -714,7 +836,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
         return sorted;
       });
     });
-  }, [client, isControlled, onSessionsChange, projectPathKey, projectReady]);
+  }, [client, isControlled, onSessionsChange, projectPathKey, terminalReady]);
 
   useEffect(() => {
     if (lastProjectPathKeyRef.current === projectPathKey) return;
@@ -750,7 +872,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
 
   const createTerminal = useCallback(
     (shell?: string) => {
-      if (!projectReady || creating) return;
+      if (!terminalReady || creating) return;
       setCreating(true);
       setError(null);
       void client
@@ -776,7 +898,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
         .catch((err) => setError(err instanceof Error ? err.message : String(err)))
         .finally(() => setCreating(false));
     },
-    [client, creating, cwd, onActiveTabChange, onSessionsChange, projectPathKey, projectReady],
+    [client, creating, cwd, onActiveTabChange, onSessionsChange, projectPathKey, terminalReady],
   );
 
   const handleCreate = useCallback(() => {
@@ -977,9 +1099,9 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
       };
 
       const handleMove = (moveEvent: globalThis.MouseEvent) => {
-        const nextWidth = Math.min(
-          MAX_PANEL_WIDTH,
-          Math.max(MIN_PANEL_WIDTH, startWidth + startX - moveEvent.clientX),
+        const nextWidth = clampPanelWidth(
+          startWidth + startX - moveEvent.clientX,
+          getDynamicMaxPanelWidth(panelRef.current),
         );
         scheduleDraftWidth(nextWidth);
       };
@@ -1006,12 +1128,43 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     [clampedWidth, onWidthChange, panelWidth],
   );
 
-  const showFirstOpenChooser = projectReady && sessions.length === 0 && !fileTreeInitialized;
+  const showFirstOpenChooser =
+    projectReady && sessions.length === 0 && !fileTreeInitialized && !gitReviewInitialized;
 
   const startFileTree = useCallback(() => {
     setFileTreeInitialized(true);
     onActiveTabChange("fileTree");
   }, [onActiveTabChange, setFileTreeInitialized]);
+
+  const revealPathInFileTree = useCallback(
+    (path: string) => {
+      const normalizedPath = path.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (!projectReady) return;
+      const selectedPath = normalizedPath.endsWith("/") ? dirname(normalizedPath) : normalizedPath;
+      const expandedPaths = Array.from(
+        new Set([
+          ...fileTreeState.expandedPaths,
+          ...expandedPathsForFileTreePath(selectedPath),
+        ]),
+      );
+      setFileTreeInitialized(true);
+      onFileTreeStateChange({
+        query: "",
+        selectedPath,
+        expandedPaths,
+        bumpRevision: true,
+        bumpStateVersion: true,
+      });
+      onActiveTabChange("fileTree");
+    },
+    [
+      fileTreeState.expandedPaths,
+      onActiveTabChange,
+      onFileTreeStateChange,
+      projectReady,
+      setFileTreeInitialized,
+    ],
+  );
 
   const closeFileTree = useCallback(() => {
     setFileTreeInitialized(false);
@@ -1020,11 +1173,24 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     }
   }, [activeTab, onActiveTabChange, setFileTreeInitialized]);
 
+  const startGitReview = useCallback(() => {
+    if (!projectReady) return;
+    onGitReviewOpenChange(true);
+    onActiveTabChange("gitReview");
+  }, [onActiveTabChange, onGitReviewOpenChange, projectReady]);
+
+  const closeGitReview = useCallback(() => {
+    onGitReviewOpenChange(false);
+    if (activeTab === "gitReview") {
+      onActiveTabChange("terminal");
+    }
+  }, [activeTab, onActiveTabChange, onGitReviewOpenChange]);
+
   const renderCreateTerminalMenuItem = () => {
     if (shellOptions.length > 1) {
       return (
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger disabled={!projectReady || creating} className="gap-2 text-xs">
+          <DropdownMenuSubTrigger disabled={!terminalReady || creating} className="gap-2 text-xs">
             <Terminal className="h-3.5 w-3.5" />
             <span className="min-w-0 flex-1">{t("projectTools.newTerminal")}</span>
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
@@ -1034,7 +1200,7 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
               <DropdownMenuItem
                 key={option.id}
                 onSelect={() => createTerminal(option.id)}
-                disabled={!projectReady || creating}
+                disabled={!terminalReady || creating}
                 className="gap-2 text-xs"
                 title={option.command || option.label}
               >
@@ -1050,8 +1216,9 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
     return (
       <DropdownMenuItem
         onSelect={handleCreate}
-        disabled={!projectReady || creating}
+        disabled={!terminalReady || creating}
         className="gap-2 text-xs"
+        title={terminalDisabledMessage}
       >
         <Terminal className="h-3.5 w-3.5" />
         {t("projectTools.newTerminal")}
@@ -1061,11 +1228,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
 
   return (
     <aside
+      ref={panelRef}
       aria-hidden={!isOpen}
       inert={!isOpen}
       data-state={isOpen ? "open" : "closed"}
       className={cn(
-        "fixed inset-x-0 bottom-0 z-40 flex h-[min(72vh,34rem)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-background shadow-2xl transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:relative md:inset-auto md:z-10 md:h-full md:shadow-none",
+        "fixed inset-x-0 bottom-0 z-40 flex h-[min(72vh,34rem)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-background shadow-2xl transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:relative md:inset-auto md:z-10 md:h-full md:overflow-visible md:shadow-none",
         isOpen
           ? "pointer-events-auto translate-y-0 border-t border-border opacity-100 md:w-[var(--project-tools-panel-width)] md:translate-x-0 md:border-l md:border-t-0"
           : "pointer-events-none translate-y-full border-t border-transparent opacity-0 md:translate-x-3 md:translate-y-0 md:border-l-0 md:border-t-0",
@@ -1087,9 +1255,21 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
               type="button"
               aria-label={t("projectTools.resizePanel")}
               title={t("projectTools.resizePanel")}
-              className="absolute inset-y-0 left-0 hidden w-1 cursor-col-resize border-0 bg-transparent p-0 md:block"
+              className={cn(
+                "group absolute inset-y-0 left-0 z-[90] hidden w-4 -translate-x-1/2 cursor-col-resize touch-none items-center justify-center border-0 bg-transparent p-0 md:flex",
+                "focus-visible:outline-none",
+              )}
               onMouseDown={handleResizeStart}
-            />
+            >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "h-10 w-0.5 rounded-full bg-muted-foreground/25 opacity-70 shadow-sm transition-[height,background-color,opacity]",
+                  "group-hover:h-16 group-hover:bg-primary/60 group-hover:opacity-100 group-focus-visible:h-16 group-focus-visible:bg-primary group-focus-visible:opacity-100",
+                  isResizing && "h-20 bg-primary opacity-100",
+                )}
+              />
+            </button>
             <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
               <div
                 ref={tabsScrollRef}
@@ -1139,6 +1319,57 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                           onClick={(event) => {
                             event.stopPropagation();
                             closeFileTree();
+                          }}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    );
+                  }
+
+                  if (tab.kind === "gitReview") {
+                    return (
+                      <div
+                        key={tab.id}
+                        data-project-tools-tab-id={tab.id}
+                        className={cn(
+                          "group flex h-8 max-w-[12rem] shrink-0 select-none items-center gap-1 rounded-md border border-transparent px-1.5 text-xs text-muted-foreground transition-[background-color,border-color,color,opacity,transform,box-shadow] hover:bg-muted/80 hover:text-foreground",
+                          currentActiveTab === "gitReview" &&
+                            "border-border bg-muted text-foreground shadow-sm",
+                          draggingTabId === tab.id &&
+                            "z-10 scale-[0.98] opacity-80 shadow-md ring-1 ring-ring",
+                        )}
+                        title={t("projectTools.gitReviewTitle")}
+                      >
+                        {renderTabDragHandle(tab.id, t("projectTools.gitReviewTitle"))}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (consumeSuppressedTabClick(tab.id)) return;
+                            onActiveTabChange("gitReview");
+                          }}
+                          className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left text-inherit"
+                        >
+                          <GitBranch className="h-3.5 w-3.5 shrink-0" />
+                          <span className="min-w-0 truncate">
+                            {t("projectTools.gitReviewTitle")}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          data-project-tools-tab-action="close"
+                          aria-label={t("projectTools.closeGitReview")}
+                          title={t("projectTools.closeGitReview")}
+                          className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                          onPointerDown={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onMouseDown={(event) => {
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeGitReview();
                           }}
                         >
                           <X className="h-3 w-3" />
@@ -1245,6 +1476,14 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                     <FolderTree className="h-3.5 w-3.5" />
                     {t("projectTools.newFileTree")}
                   </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={startGitReview}
+                    disabled={!projectReady}
+                    className="gap-2 text-xs"
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    {t("projectTools.newGitReview")}
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
               {onClose ? (
@@ -1298,11 +1537,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                 {disabledMessage}
               </div>
             ) : showFirstOpenChooser ? (
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-4 sm:grid-cols-2">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-4 sm:grid-cols-3">
                 <button
                   type="button"
                   onClick={handleCreate}
-                  disabled={!projectReady || creating}
+                  disabled={!terminalReady || creating}
+                  title={terminalDisabledMessage}
                   className="flex min-h-36 flex-col items-center justify-center gap-3 rounded-lg border border-border bg-background px-4 py-5 text-center text-sm text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50"
                 >
                   <Terminal className="h-8 w-8 text-muted-foreground" />
@@ -1315,6 +1555,14 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                 >
                   <FolderTree className="h-8 w-8 text-muted-foreground" />
                   <span className="font-medium">{t("projectTools.newFileTree")}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={startGitReview}
+                  className="flex min-h-36 flex-col items-center justify-center gap-3 rounded-lg border border-border bg-background px-4 py-5 text-center text-sm text-foreground transition-colors hover:bg-muted"
+                >
+                  <GitBranch className="h-8 w-8 text-muted-foreground" />
+                  <span className="font-medium">{t("projectTools.newGitReview")}</span>
                 </button>
                 {loading ? (
                   <div className="col-span-full text-center text-xs text-muted-foreground">
@@ -1346,6 +1594,23 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                     />
                   </div>
                 ) : null}
+                {gitReviewInitialized ? (
+                  <div
+                    className={cn(
+                      "min-h-0 flex-1",
+                      currentActiveTab === "gitReview" ? "block" : "hidden",
+                    )}
+                  >
+                    <GitReviewPanel
+                      key={`${projectPathKey}:git-review`}
+                      cwd={cwd}
+                      gitClient={gitClient}
+	                      canWrite={gitWriteEnabled}
+	                      disabledMessage={gitDisabledMessage}
+	                      onRevealInFileTree={revealPathInFileTree}
+	                    />
+                  </div>
+                ) : null}
                 {currentActiveTab === "terminal" ? (
                   activeSession ? (
                     <div className="flex min-h-0 flex-1 flex-col">
@@ -1367,7 +1632,12 @@ export function ProjectToolsPanel(props: ProjectToolsPanelProps) {
                   ) : (
                     <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
                       <Terminal className="h-8 w-8 text-muted-foreground" />
-                      <Button onClick={handleCreate} disabled={!projectReady || creating}>
+                      {terminalDisabledMessage ? (
+                        <div className="max-w-xs text-xs text-muted-foreground">
+                          {terminalDisabledMessage}
+                        </div>
+                      ) : null}
+                      <Button onClick={handleCreate} disabled={!terminalReady || creating}>
                         {t("projectTools.newTerminal")}
                       </Button>
                       {loading ? (

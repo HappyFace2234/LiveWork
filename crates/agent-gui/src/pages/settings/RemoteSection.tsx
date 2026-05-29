@@ -381,7 +381,7 @@ export function RemoteSection(props: SettingsSectionProps) {
           {t("settings.remoteAdvanced")}
         </div>
 
-        <div className="grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-3 lg:grid-cols-4">
           <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/30 px-4 py-3">
             <div className="min-w-0 flex-1">
               <div className="text-sm font-medium">{t("settings.remoteAutoReconnect")}</div>
@@ -439,6 +439,24 @@ export function RemoteSection(props: SettingsSectionProps) {
               onToggle={() =>
                 updateRemoteSettings(setSettings, {
                   enableWebTerminal: !settings.remote.enableWebTerminal,
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-lg bg-muted/30 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium">{t("settings.remoteWebGit")}</div>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {t("settings.remoteWebGitHint")}
+              </p>
+            </div>
+            <AgentActivationSwitch
+              checked={settings.remote.enableWebGit}
+              title={t("settings.remoteWebGit")}
+              onToggle={() =>
+                updateRemoteSettings(setSettings, {
+                  enableWebGit: !settings.remote.enableWebGit,
                 })
               }
             />

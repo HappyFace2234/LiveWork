@@ -1266,8 +1266,8 @@ mod tests {
     }
 
     #[test]
-    fn delegate_apply_worktree_changes_falls_back_when_file_is_already_present(
-    ) -> Result<(), String> {
+    fn delegate_apply_worktree_changes_falls_back_when_file_is_already_present()
+    -> Result<(), String> {
         let root = temp_root("fallback-already-present");
         let repo = root.join("repo");
         let worktree = root.join("worktree");
@@ -1289,11 +1289,13 @@ mod tests {
         assert_eq!(result.apply_method.as_deref(), Some("file_copy_fallback"));
         assert_eq!(result.skipped_reason.as_deref(), Some("already_applied"));
         assert!(result.copied_files.is_empty());
-        assert!(result
-            .fallback_reason
-            .as_deref()
-            .unwrap_or("")
-            .contains("already exists"));
+        assert!(
+            result
+                .fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("already exists")
+        );
 
         let _ = fs::remove_dir_all(root);
         Ok(())
@@ -1353,8 +1355,8 @@ mod tests {
     }
 
     #[test]
-    fn delegate_apply_worktree_changes_does_not_overwrite_parent_head_after_3way_conflict(
-    ) -> Result<(), String> {
+    fn delegate_apply_worktree_changes_does_not_overwrite_parent_head_after_3way_conflict()
+    -> Result<(), String> {
         let root = temp_root("apply-3way-conflict");
         let repo = root.join("repo");
         let worktree = root.join("worktree");

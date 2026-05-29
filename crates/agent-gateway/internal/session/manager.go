@@ -579,6 +579,18 @@ func (m *Manager) WebTerminalEnabled() bool {
 	return ok && enabled
 }
 
+func (m *Manager) WebGitEnabled() bool {
+	m.settingsSnapshotMu.RLock()
+	defer m.settingsSnapshotMu.RUnlock()
+
+	remote, ok := m.settingsSnapshot["remote"].(map[string]any)
+	if !ok {
+		return false
+	}
+	enabled, ok := remote["enableWebGit"].(bool)
+	return ok && enabled
+}
+
 func (m *Manager) updateSettingsSnapshot(event *gatewayv1.SettingsSyncEvent) {
 	if event == nil {
 		return

@@ -4,6 +4,7 @@ pub mod cron;
 pub mod delegate;
 pub mod fs;
 pub mod gateway;
+pub mod git;
 pub mod history_db;
 pub mod hook;
 pub mod mcp;

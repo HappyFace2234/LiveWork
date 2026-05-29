@@ -1,7 +1,7 @@
 use std::{collections::HashSet, sync::Arc};
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::commands::{
     chat_history,
@@ -9,15 +9,16 @@ use crate::commands::{
         fs_create_dir_sync, fs_delete_sync, fs_list_sync, fs_mention_list_sync, fs_rename_sync,
         fs_write_text_sync,
     },
+    git::git_gateway_action_sync,
     settings::{load_providers, open_db},
     system::{
-        system_create_project_folder_sync, system_import_uploaded_readable_files_sync,
-        system_list_skill_files_sync, system_manage_cron_task_sync,
-        system_read_skill_metadata_sync, system_read_skill_text_sync,
-        system_read_uploaded_image_preview_sync, SystemReadableFileUploadInput,
+        SystemReadableFileUploadInput, system_create_project_folder_sync,
+        system_import_uploaded_readable_files_sync, system_list_skill_files_sync,
+        system_manage_cron_task_sync, system_read_skill_metadata_sync, system_read_skill_text_sync,
+        system_read_uploaded_image_preview_sync,
     },
 };
-use crate::services::cron::{clear_logs_sync, list_logs_sync, CronManager};
+use crate::services::cron::{CronManager, clear_logs_sync, list_logs_sync};
 use crate::services::gateway::proto;
 use crate::services::memory::{
     MemoryAcceptArgs, MemoryBatchArgs, MemoryDeleteArgs, MemoryListArgs,
@@ -606,6 +607,19 @@ pub async fn handle_fs_delete(
             path: response.path,
             kind: response.kind,
         })
+}
+
+pub async fn handle_git_request(request: proto::GitRequest) -> Result<proto::GitResponse, String> {
+    let action = request.action.trim().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = git_gateway_action_sync(action.clone(), request.workdir, request.args_json)?;
+        Ok(proto::GitResponse {
+            action,
+            result_json: result.to_string(),
+        })
+    })
+    .await
+    .map_err(|e| format!("gateway git request join failed: {e}"))?
 }
 
 pub async fn handle_upload_readable_files(
@@ -1361,7 +1375,7 @@ fn sanitize_provider_summary(provider: &Value) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::{
         flatten_history_messages_json, flatten_history_messages_json_window, parse_cron_logs_limit,

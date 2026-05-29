@@ -62,6 +62,11 @@ type websocketTerminalRequestPayload struct {
 	MaxBytes       *int   `json:"max_bytes"`
 }
 
+type websocketGitRequestPayload struct {
+	Workdir string          `json:"workdir"`
+	Args    json.RawMessage `json:"args,omitempty"`
+}
+
 type websocketChatState struct {
 	cancel          context.CancelFunc
 	conversationID  string
@@ -526,6 +531,8 @@ func (c *websocketConnection) dispatch(req websocketRequest) {
 		c.handleTerminalRequest(req)
 	case "terminal.detach":
 		c.handleTerminalDetach(req)
+	case "git.status", "git.branches", "git.init", "git.switch_branch", "git.create_branch", "git.diff", "git.log", "git.commit_diff", "git.stage", "git.stage_all", "git.unstage", "git.unstage_all", "git.discard", "git.discard_all", "git.add_to_gitignore", "git.commit", "git.fetch", "git.pull", "git.push":
+		c.handleGitRequest(req)
 	case "cron.manage":
 		c.handleCronManage(req)
 	case "provider.models":
@@ -2108,6 +2115,67 @@ func (c *websocketConnection) handleTerminalDetach(req websocketRequest) {
 	_ = c.writeResponse(req.ID, map[string]any{"action": "detach"})
 }
 
+func gitActionFromRequestType(requestType string) string {
+	return strings.TrimPrefix(strings.TrimSpace(requestType), "git.")
+}
+
+func gitActionIsWrite(action string) bool {
+	switch action {
+	case "init", "switch_branch", "create_branch", "stage", "stage_all", "unstage", "unstage_all", "discard", "discard_all", "add_to_gitignore", "commit", "fetch", "pull", "push":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *websocketConnection) handleGitRequest(req websocketRequest) {
+	action := gitActionFromRequestType(req.Type)
+	if gitActionIsWrite(action) && !c.sm.WebGitEnabled() {
+		_ = c.writeError(req.ID, "web git is disabled in desktop Remote settings")
+		return
+	}
+
+	var body websocketGitRequestPayload
+	if err := decodeWebSocketPayload(req.Payload, &body); err != nil {
+		_ = c.writeError(req.ID, "invalid "+req.Type+" payload")
+		return
+	}
+	argsJSON := strings.TrimSpace(string(body.Args))
+	if argsJSON == "" {
+		argsJSON = "{}"
+	}
+	response, err := c.awaitAgentResponse(req.ID, &gatewayv1.GatewayEnvelope{
+		RequestId: req.ID,
+		Timestamp: time.Now().Unix(),
+		Payload: &gatewayv1.GatewayEnvelope_GitRequest{
+			GitRequest: &gatewayv1.GitRequest{
+				Action:   action,
+				Workdir:  strings.TrimSpace(body.Workdir),
+				ArgsJson: argsJSON,
+			},
+		},
+	})
+	if err != nil {
+		_ = c.writeError(req.ID, websocketErrorMessage(err))
+		return
+	}
+	if errResp := response.GetError(); errResp != nil {
+		_ = c.writeError(req.ID, errResp.GetMessage())
+		return
+	}
+	resp := response.GetGitResponse()
+	if resp == nil {
+		_ = c.writeError(req.ID, "unexpected agent response")
+		return
+	}
+	payload, err := websocketGitResultPayload(resp.GetResultJson())
+	if err != nil {
+		_ = c.writeError(req.ID, err.Error())
+		return
+	}
+	_ = c.writeResponse(req.ID, payload)
+}
+
 func (c *websocketConnection) handleCronManage(req websocketRequest) {
 	var body handler.CronManageRequestBody
 	if err := decodeWebSocketPayload(req.Payload, &body); err != nil {
@@ -2847,6 +2915,21 @@ func websocketMemoryResultPayload(raw string) (any, error) {
 	var payload any
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
 		return nil, errors.New("gateway memory response is not valid JSON")
+	}
+	if payload == nil {
+		return map[string]any{}, nil
+	}
+	return payload, nil
+}
+
+func websocketGitResultPayload(raw string) (any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return map[string]any{}, nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return nil, errors.New("gateway git response is not valid JSON")
 	}
 	if payload == nil {
 		return map[string]any{}, nil

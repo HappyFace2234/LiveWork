@@ -60,6 +60,7 @@ message GatewayEnvelope {
     FsCreateDirRequest fs_create_dir = 58;
     FsRenameRequest fs_rename = 59;
     FsDeleteRequest fs_delete = 60;
+    GitRequest git_request = 61;
   }
 }
 
@@ -104,6 +105,7 @@ message AgentEnvelope {
     FsCreateDirResponse fs_create_dir_resp = 61;
     FsRenameResponse fs_rename_resp = 62;
     FsDeleteResponse fs_delete_resp = 63;
+    GitResponse git_response = 64;
     ErrorResponse error = 99;
   }
 }
@@ -218,6 +220,17 @@ message TerminalEvent {
   string data = 5;
   uint64 output_start_offset = 6;
   uint64 output_end_offset = 7;
+}
+
+message GitRequest {
+  string action = 1;
+  string workdir = 2;
+  string args_json = 3;
+}
+
+message GitResponse {
+  string action = 1;
+  string result_json = 2;
 }
 
 message ChatRequest {

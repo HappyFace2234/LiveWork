@@ -9,9 +9,9 @@ use std::{
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Timelike, Utc};
 use regex::Regex;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -6119,12 +6119,14 @@ mod tests {
         store.reconcile().expect("reconcile archives old daily");
 
         assert!(!store.global_daily_dir().join("2000-01-01.md").exists());
-        assert!(store
-            .global_daily_dir()
-            .join(".archive")
-            .join("2000")
-            .join("2000-01-01.md")
-            .exists());
+        assert!(
+            store
+                .global_daily_dir()
+                .join(".archive")
+                .join("2000")
+                .join("2000-01-01.md")
+                .exists()
+        );
         let read = store
             .read(MemoryReadArgs {
                 slug,
@@ -6667,14 +6669,18 @@ mod tests {
             .expect("write project");
 
         let overview = store.overview(Some(workdir_text)).expect("overview");
-        assert!(overview
-            .project
-            .iter()
-            .any(|entry| entry.slug == "project-style"));
-        assert!(!overview
-            .global
-            .iter()
-            .any(|entry| entry.slug == "project-style"));
+        assert!(
+            overview
+                .project
+                .iter()
+                .any(|entry| entry.slug == "project-style")
+        );
+        assert!(
+            !overview
+                .global
+                .iter()
+                .any(|entry| entry.slug == "project-style")
+        );
     }
 
     #[test]
@@ -6735,14 +6741,18 @@ mod tests {
                 && entry.unreviewed
                 && entry.confidence == "medium"
         }));
-        assert!(!overview
-            .user
-            .iter()
-            .any(|entry| entry.slug == "feedback-unreviewed"));
-        assert!(overview
-            .global
-            .iter()
-            .any(|entry| entry.slug == "reference-unreviewed" && entry.unreviewed));
+        assert!(
+            !overview
+                .user
+                .iter()
+                .any(|entry| entry.slug == "feedback-unreviewed")
+        );
+        assert!(
+            overview
+                .global
+                .iter()
+                .any(|entry| entry.slug == "reference-unreviewed" && entry.unreviewed)
+        );
     }
 
     #[test]
@@ -6845,14 +6855,18 @@ mod tests {
             })
             .expect("search current project");
 
-        assert!(search
-            .matches
-            .iter()
-            .any(|item| item.slug == "project-alpha"));
-        assert!(!search
-            .matches
-            .iter()
-            .any(|item| item.slug == "project-beta"));
+        assert!(
+            search
+                .matches
+                .iter()
+                .any(|item| item.slug == "project-alpha")
+        );
+        assert!(
+            !search
+                .matches
+                .iter()
+                .any(|item| item.slug == "project-beta")
+        );
     }
 
     #[test]
@@ -6978,23 +6992,29 @@ mod tests {
             .expect("recent rejections");
 
         assert_eq!(response.entries.len(), 2);
-        assert!(response
-            .entries
-            .iter()
-            .any(|entry| entry.slug == "user-career" && entry.scope == "global"));
+        assert!(
+            response
+                .entries
+                .iter()
+                .any(|entry| entry.slug == "user-career" && entry.scope == "global")
+        );
         assert!(response.entries.iter().any(|entry| {
             entry.slug == "project-plan"
                 && entry.scope == "project"
                 && entry.reason.as_deref() == Some("project A rejection")
         }));
-        assert!(!response
-            .entries
-            .iter()
-            .any(|entry| entry.reason.as_deref() == Some("project B rejection")));
-        assert!(!response
-            .entries
-            .iter()
-            .any(|entry| entry.slug == "tool-removed"));
+        assert!(
+            !response
+                .entries
+                .iter()
+                .any(|entry| entry.reason.as_deref() == Some("project B rejection"))
+        );
+        assert!(
+            !response
+                .entries
+                .iter()
+                .any(|entry| entry.slug == "tool-removed")
+        );
     }
 
     #[test]
@@ -7223,14 +7243,18 @@ mod tests {
 
         assert!(response.updated.is_empty());
         assert!(response.deleted.is_empty());
-        assert!(response
-            .warning_details
-            .iter()
-            .any(|warning| warning.code == "body_too_large"));
-        assert!(response
-            .warning_details
-            .iter()
-            .any(|warning| warning.code == "group_upsert_failed"));
+        assert!(
+            response
+                .warning_details
+                .iter()
+                .any(|warning| warning.code == "body_too_large")
+        );
+        assert!(
+            response
+                .warning_details
+                .iter()
+                .any(|warning| warning.code == "group_upsert_failed")
+        );
         store
             .read(MemoryReadArgs {
                 slug: "organize-large-source".to_string(),

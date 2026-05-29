@@ -7,8 +7,8 @@ use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
@@ -173,7 +173,7 @@ fn sanitize_rel_path_core(input: &str) -> Result<Option<PathBuf>, ShellError> {
     for c in p.components() {
         match c {
             Component::Prefix(_) | Component::RootDir => {
-                return Err(ShellError::InvalidRelPath(input.to_string()))
+                return Err(ShellError::InvalidRelPath(input.to_string()));
             }
             Component::ParentDir => return Err(ShellError::InvalidRelPath(input.to_string())),
             Component::CurDir => {
@@ -694,9 +694,9 @@ process output to a log file, for example: `nohup command > /tmp/liveagent-task.
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_shell_provider, normalize_timeout_ms, run_shell_script, sanitize_rel_path_core,
-        ShellProvider, ShellRunRegistry, DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS,
-        MIN_SHELL_TIMEOUT_MS,
+        DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS, MIN_SHELL_TIMEOUT_MS, ShellProvider,
+        ShellRunRegistry, normalize_shell_provider, normalize_timeout_ms, run_shell_script,
+        sanitize_rel_path_core,
     };
     use std::fs;
     use std::path::PathBuf;

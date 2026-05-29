@@ -5,12 +5,12 @@ use std::{
 };
 
 use axum::{
-    body::{to_bytes, Body},
+    Router,
+    body::{Body, to_bytes},
     extract::{OriginalUri, Path, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::Response,
     routing::{any, get},
-    Router,
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -37,16 +37,14 @@ const TRAILER: &str = "trailer";
 const TRANSFER_ENCODING: &str = "transfer-encoding";
 const UPGRADE: &str = "upgrade";
 const UPSTREAM_ORIGIN_HEADER: &str = "x-liveagent-upstream-origin";
-const DEFAULT_ALLOW_HEADERS: &str =
-    "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,x-liveagent-upstream-origin,x-liveagent-proxy-token";
+const DEFAULT_ALLOW_HEADERS: &str = "authorization,content-type,x-api-key,x-goog-api-key,anthropic-version,x-liveagent-upstream-origin,x-liveagent-proxy-token";
 const ALLOW_METHODS_VALUE: &str = "GET,POST,PUT,PATCH,DELETE,OPTIONS,HEAD";
 const VARY_VALUE: &str = "Origin, Access-Control-Request-Method, Access-Control-Request-Headers";
 const IMAGE_PROXY_MAX_BYTES: usize = 25 * 1024 * 1024;
 const IMAGE_PROXY_TIMEOUT_SECS: u64 = 20;
 const IMAGE_PROXY_ACCEPT: &str = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
 const IMAGE_PROXY_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
-const IMAGE_PROXY_USER_AGENT: &str =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const IMAGE_PROXY_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProxyServerInfo {
@@ -144,7 +142,7 @@ async fn handle_image_proxy(
                 StatusCode::BAD_GATEWAY,
                 &format!("Failed to load image through local proxy: {err}"),
                 &headers,
-            )
+            );
         }
     };
 
@@ -184,7 +182,7 @@ async fn handle_image_proxy(
                 StatusCode::BAD_GATEWAY,
                 &format!("Failed to read image proxy response: {err}"),
                 &headers,
-            )
+            );
         }
     };
     if bytes.len() > IMAGE_PROXY_MAX_BYTES {
@@ -220,7 +218,7 @@ fn validate_image_proxy_url(raw: &str) -> Result<Url, String> {
         scheme => {
             return Err(format!(
                 "Image proxy only supports http and https, got {scheme}"
-            ))
+            ));
         }
     }
     if !url.has_host() || !url.username().is_empty() || url.password().is_some() {

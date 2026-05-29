@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use reqwest::Url;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tauri::Emitter;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -16,13 +16,13 @@ use uuid::Uuid;
 
 use crate::commands::chat_history::{self, ChatHistorySummary};
 use crate::commands::settings::{
-    load_gateway_settings_sync_snapshot, load_remote_settings, normalize_remote_settings_payload,
-    open_db, redact_gateway_settings_sync_payload, RemoteSettingsPayload,
-    PROVIDER_API_KEY_UPDATES_FIELD,
+    PROVIDER_API_KEY_UPDATES_FIELD, RemoteSettingsPayload, load_gateway_settings_sync_snapshot,
+    load_remote_settings, normalize_remote_settings_payload, open_db,
+    redact_gateway_settings_sync_payload,
 };
 use crate::runtime::terminal::{
-    terminal_shell_options, TerminalEventPayload, TerminalSessionRecord, TerminalSessionRegistry,
-    TerminalShellOption, TerminalSnapshotResponse,
+    TerminalEventPayload, TerminalSessionRecord, TerminalSessionRegistry, TerminalShellOption,
+    TerminalSnapshotResponse, terminal_shell_options,
 };
 use crate::services::cron::CronManager;
 use crate::services::gateway_bridge;
@@ -645,7 +645,9 @@ impl GatewayController {
                             .await;
                         if send_result.is_ok() && should_refresh_settings {
                             if let Err(error) = self.refresh_settings_sync_from_db().await {
-                                eprintln!("refresh gateway settings sync after cron manage failed: {error}");
+                                eprintln!(
+                                    "refresh gateway settings sync after cron manage failed: {error}"
+                                );
                             }
                         }
                         send_result
@@ -877,7 +879,7 @@ impl GatewayController {
                         let settings_json = match serialize_settings_sync_payload(&snapshot) {
                             Ok(settings_json) => settings_json,
                             Err(error) => {
-                                return self.send_error_response(request_id, 500, error).await
+                                return self.send_error_response(request_id, 500, error).await;
                             }
                         };
                         self.send_agent_envelope(proto::AgentEnvelope {
@@ -899,13 +901,13 @@ impl GatewayController {
                             match build_local_settings_update_event_payload(snapshot.clone()) {
                                 Ok(payload) => payload,
                                 Err(error) => {
-                                    return self.send_error_response(request_id, 400, error).await
+                                    return self.send_error_response(request_id, 400, error).await;
                                 }
                             };
                         let public_snapshot = match redact_gateway_settings_sync_payload(snapshot) {
                             Ok(payload) => payload,
                             Err(error) => {
-                                return self.send_error_response(request_id, 400, error).await
+                                return self.send_error_response(request_id, 400, error).await;
                             }
                         };
                         if let Err(error) = self.store_settings_snapshot(public_snapshot) {
@@ -1157,6 +1159,19 @@ impl GatewayController {
                             payload: Some(proto::agent_envelope::Payload::SkillManageResp(
                                 response,
                             )),
+                        })
+                        .await
+                    }
+                    Err(error) => self.send_error_response(request_id, 500, error).await,
+                }
+            }
+            Some(proto::gateway_envelope::Payload::GitRequest(request)) => {
+                match gateway_bridge::handle_git_request(request).await {
+                    Ok(response) => {
+                        self.send_agent_envelope(proto::AgentEnvelope {
+                            request_id,
+                            timestamp: now_unix_seconds(),
+                            payload: Some(proto::agent_envelope::Payload::GitResponse(response)),
                         })
                         .await
                     }
@@ -1795,12 +1810,12 @@ fn serialize_settings_sync_payload(payload: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_event_envelope, build_endpoint, build_grpc_url,
+        GatewayStatusSnapshot, build_chat_event_envelope, build_endpoint, build_grpc_url,
         build_local_settings_update_event_payload, merge_settings_sync_snapshot,
-        required_terminal_project_path_key, set_disconnected_status, GatewayStatusSnapshot,
+        required_terminal_project_path_key, set_disconnected_status,
     };
     use crate::commands::settings::RemoteSettingsPayload;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     #[test]
     fn merge_settings_sync_snapshot_keeps_cached_ui_only_fields() {
@@ -1925,6 +1940,7 @@ mod tests {
             auto_reconnect: true,
             heartbeat_interval: 30,
             enable_web_terminal: false,
+            enable_web_git: false,
         };
         let mut status = GatewayStatusSnapshot {
             online: true,
@@ -1972,6 +1988,7 @@ mod tests {
             auto_reconnect: true,
             heartbeat_interval: 30,
             enable_web_terminal: false,
+            enable_web_git: false,
         };
 
         let grpc_url = build_grpc_url(&config).expect("build explicit gRPC endpoint");

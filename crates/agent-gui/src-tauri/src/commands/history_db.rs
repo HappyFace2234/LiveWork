@@ -394,7 +394,10 @@ fn ensure_chat_history_share_columns(conn: &Connection) -> Result<(), String> {
         "chatHistoryShare",
         "聊天历史分享表",
         &[
-            ("token", "ALTER TABLE chatHistoryShare ADD COLUMN token TEXT;"),
+            (
+                "token",
+                "ALTER TABLE chatHistoryShare ADD COLUMN token TEXT;",
+            ),
             (
                 "enabled",
                 "ALTER TABLE chatHistoryShare ADD COLUMN enabled INTEGER NOT NULL DEFAULT 0;",
@@ -721,7 +724,10 @@ fn ensure_subagent_identity_columns(conn: &Connection) -> Result<(), String> {
                 "identity_prompt",
                 "ALTER TABLE subagentIdentity ADD COLUMN identity_prompt TEXT NOT NULL DEFAULT '';",
             ),
-            ("agent_id", "ALTER TABLE subagentIdentity ADD COLUMN agent_id TEXT;"),
+            (
+                "agent_id",
+                "ALTER TABLE subagentIdentity ADD COLUMN agent_id TEXT;",
+            ),
             (
                 "template_name",
                 "ALTER TABLE subagentIdentity ADD COLUMN template_name TEXT;",
@@ -788,8 +794,14 @@ fn ensure_subagent_run_columns(conn: &Connection) -> Result<(), String> {
                 "logical_agent_id",
                 "ALTER TABLE subagentRun ADD COLUMN logical_agent_id TEXT NOT NULL DEFAULT '';",
             ),
-            ("agent_id", "ALTER TABLE subagentRun ADD COLUMN agent_id TEXT;"),
-            ("agent_name", "ALTER TABLE subagentRun ADD COLUMN agent_name TEXT;"),
+            (
+                "agent_id",
+                "ALTER TABLE subagentRun ADD COLUMN agent_id TEXT;",
+            ),
+            (
+                "agent_name",
+                "ALTER TABLE subagentRun ADD COLUMN agent_name TEXT;",
+            ),
             (
                 "description",
                 "ALTER TABLE subagentRun ADD COLUMN description TEXT NOT NULL DEFAULT '';",
@@ -810,8 +822,14 @@ fn ensure_subagent_run_columns(conn: &Connection) -> Result<(), String> {
                 "model",
                 "ALTER TABLE subagentRun ADD COLUMN model TEXT NOT NULL DEFAULT '';",
             ),
-            ("session_id", "ALTER TABLE subagentRun ADD COLUMN session_id TEXT;"),
-            ("workdir", "ALTER TABLE subagentRun ADD COLUMN workdir TEXT;"),
+            (
+                "session_id",
+                "ALTER TABLE subagentRun ADD COLUMN session_id TEXT;",
+            ),
+            (
+                "workdir",
+                "ALTER TABLE subagentRun ADD COLUMN workdir TEXT;",
+            ),
             (
                 "worktree_root",
                 "ALTER TABLE subagentRun ADD COLUMN worktree_root TEXT;",
@@ -848,13 +866,19 @@ fn ensure_subagent_run_columns(conn: &Connection) -> Result<(), String> {
                 "compaction_count",
                 "ALTER TABLE subagentRun ADD COLUMN compaction_count INTEGER NOT NULL DEFAULT 0;",
             ),
-            ("summary", "ALTER TABLE subagentRun ADD COLUMN summary TEXT;"),
+            (
+                "summary",
+                "ALTER TABLE subagentRun ADD COLUMN summary TEXT;",
+            ),
             ("error", "ALTER TABLE subagentRun ADD COLUMN error TEXT;"),
             (
                 "started_at",
                 "ALTER TABLE subagentRun ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;",
             ),
-            ("ended_at", "ALTER TABLE subagentRun ADD COLUMN ended_at INTEGER;"),
+            (
+                "ended_at",
+                "ALTER TABLE subagentRun ADD COLUMN ended_at INTEGER;",
+            ),
             (
                 "created_at",
                 "ALTER TABLE subagentRun ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",

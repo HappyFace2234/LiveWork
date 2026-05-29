@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::Emitter;
@@ -13,10 +13,10 @@ use tokio_cron_scheduler::{Job, JobScheduler};
 use uuid::Uuid;
 
 use crate::commands::settings::open_db;
-use crate::runtime::shell_runner::{run_shell_script, ShellRunResponse};
+use crate::runtime::shell_runner::{ShellRunResponse, run_shell_script};
 use crate::runtime::task_runner::{
-    build_http_client, resolve_workdir, run_single_http_request, HttpExecutionFailure,
-    HttpExecutionResult, HttpRequestInput,
+    HttpExecutionFailure, HttpExecutionResult, HttpRequestInput, build_http_client,
+    resolve_workdir, run_single_http_request,
 };
 use crate::services::gateway::GatewayController;
 
@@ -1717,10 +1717,12 @@ mod tests {
             .expect("begin completion")
             .expect("completion lease");
         assert_eq!(lease.request.execution_id, "exec-1");
-        assert!(manager
-            .take_pending_prompt_runs()
-            .expect("pending snapshot while completing")
-            .is_empty());
+        assert!(
+            manager
+                .take_pending_prompt_runs()
+                .expect("pending snapshot while completing")
+                .is_empty()
+        );
 
         manager
             .abort_prompt_run_completion("exec-1")
@@ -1729,12 +1731,14 @@ mod tests {
             .take_pending_prompt_runs()
             .expect("pending snapshot after abort");
         assert_eq!(runs, vec![request]);
-        assert!(manager
-            .prompt_state
-            .lock()
-            .expect("lock prompt state")
-            .active_prompt_runs
-            .contains_key("task-a"));
+        assert!(
+            manager
+                .prompt_state
+                .lock()
+                .expect("lock prompt state")
+                .active_prompt_runs
+                .contains_key("task-a")
+        );
     }
 
     #[test]
@@ -1759,23 +1763,29 @@ mod tests {
             .finish_prompt_run_completion("exec-1", Some("task-a"))
             .expect("finish completion");
 
-        assert!(manager
-            .prompt_state
-            .lock()
-            .expect("lock prompt state")
-            .active_prompt_runs
-            .is_empty());
-        assert!(manager
-            .prompt_state
-            .lock()
-            .expect("lock prompt state")
-            .pending_prompt_runs
-            .is_empty());
-        assert!(manager
-            .active_runs
-            .lock()
-            .expect("lock active runs")
-            .is_empty());
+        assert!(
+            manager
+                .prompt_state
+                .lock()
+                .expect("lock prompt state")
+                .active_prompt_runs
+                .is_empty()
+        );
+        assert!(
+            manager
+                .prompt_state
+                .lock()
+                .expect("lock prompt state")
+                .pending_prompt_runs
+                .is_empty()
+        );
+        assert!(
+            manager
+                .active_runs
+                .lock()
+                .expect("lock active runs")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1800,12 +1810,14 @@ mod tests {
         assert_eq!(log.task_id, "task-timeout");
         assert!(!log.success);
         assert!(log.output.contains("timed out"));
-        assert!(manager
-            .prompt_state
-            .lock()
-            .expect("lock prompt state")
-            .active_prompt_runs
-            .is_empty());
+        assert!(
+            manager
+                .prompt_state
+                .lock()
+                .expect("lock prompt state")
+                .active_prompt_runs
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1827,17 +1839,21 @@ mod tests {
             result.status,
             CronPromptRunCompletionStatus::AlreadyFinished
         );
-        assert!(manager
-            .prompt_state
-            .lock()
-            .expect("lock prompt state")
-            .pending_prompt_runs
-            .is_empty());
-        assert!(manager
-            .prompt_state
-            .lock()
-            .expect("lock prompt state")
-            .active_prompt_runs
-            .is_empty());
+        assert!(
+            manager
+                .prompt_state
+                .lock()
+                .expect("lock prompt state")
+                .pending_prompt_runs
+                .is_empty()
+        );
+        assert!(
+            manager
+                .prompt_state
+                .lock()
+                .expect("lock prompt state")
+                .active_prompt_runs
+                .is_empty()
+        );
     }
 }
