@@ -1385,14 +1385,14 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
               <button
                 type="button"
                 aria-expanded={!recentCollapsed}
-                className="flex items-center gap-1.5 rounded-md px-1 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground outline-hidden hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground outline-hidden hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => onRecentCollapsedChange?.(!recentCollapsed)}
               >
                 <ChevronRight
                   className={cn(SIDEBAR_SECTION_CHEVRON_CLASS, !recentCollapsed && "rotate-90")}
                 />
                 <MessageSquareText className="h-3.5 w-3.5" />
-                {t("chat.recentConversation")}
+                <span className="min-w-0 truncate">{t("chat.recentConversation")}</span>
               </button>
               <div className="flex items-center gap-1.5">
                 <div className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">

@@ -26,7 +26,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     /* ── Chat Page ── */
     "chat.newConversation": "新对话",
     "chat.pendingTitle": "新会话",
-    "chat.recentConversation": "最近对话",
+    "chat.recentConversation": "最近会话",
     "chat.resizeSidebarSections": "调整项目与最近对话占比",
     "chat.emptyChatHistory": "暂无历史对话",
     "chat.clickNewConversation": "点击上方「新对话」开始聊天",
@@ -1021,7 +1021,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     /* ── Chat Page ── */
     "chat.newConversation": "New Conversation",
     "chat.pendingTitle": "New Chat",
-    "chat.recentConversation": "Recent Conversations",
+    "chat.recentConversation": "CONVERSATION",
     "chat.resizeSidebarSections": "Resize projects and recent conversations",
     "chat.emptyChatHistory": "No conversation history",
     "chat.clickNewConversation": "Click 'New Conversation' above to start chatting",
