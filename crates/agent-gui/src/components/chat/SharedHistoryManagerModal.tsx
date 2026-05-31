@@ -12,6 +12,7 @@ import {
   Link2,
   Loader2,
   Search,
+  RefreshCw,
   Share2,
   X,
 } from "../icons";
@@ -289,28 +290,30 @@ export function SharedHistoryManagerModal({
             </Button>
           </div>
 
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            <div className="rounded-2xl border border-border/60 bg-muted/25 px-3 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="min-w-0 rounded-2xl border border-border/60 bg-muted/25 px-2.5 py-2 sm:px-3">
+              <div className="truncate text-[10px] font-medium uppercase leading-4 text-muted-foreground sm:text-[11px]">
                 {t("sharedHistory.summaryShared")}
               </div>
               <div className="mt-1 text-lg font-semibold text-foreground">
                 {conversations.length}
               </div>
             </div>
-            <div className="rounded-2xl border border-border/60 bg-muted/25 px-3 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <div className="min-w-0 rounded-2xl border border-border/60 bg-muted/25 px-2.5 py-2 sm:px-3">
+              <div className="truncate text-[10px] font-medium uppercase leading-4 text-muted-foreground sm:text-[11px]">
                 {t("sharedHistory.summaryCopyable")}
               </div>
               <div className="mt-1 text-lg font-semibold text-foreground">{copyableCount}</div>
             </div>
-            <div className="rounded-2xl border border-border/60 bg-muted/25 px-3 py-2">
-              <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <div className="min-w-0 rounded-2xl border border-border/60 bg-muted/25 px-2.5 py-2 sm:px-3">
+              <div className="truncate text-[10px] font-medium uppercase leading-4 text-muted-foreground sm:text-[11px]">
                 {t("sharedHistory.summaryStatus")}
               </div>
-              <div className="mt-1 flex items-center gap-2 text-sm font-medium text-foreground">
+              <div className="mt-1 flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground sm:gap-2">
                 {hasLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-sky-500" /> : null}
-                {hasLoading ? t("sharedHistory.syncing") : t("sharedHistory.synced")}
+                <span className="truncate">
+                  {hasLoading ? t("sharedHistory.syncing") : t("sharedHistory.synced")}
+                </span>
               </div>
             </div>
           </div>
@@ -339,9 +342,12 @@ export function SharedHistoryManagerModal({
               type="button"
               variant="outline"
               onClick={onRefresh}
-              className="h-9 shrink-0 rounded-xl border-border/70 px-3 text-xs font-medium"
+              size="icon"
+              className="h-9 w-9 shrink-0 rounded-xl border-border/70"
+              title={t("sharedHistory.refresh")}
+              aria-label={t("sharedHistory.refresh")}
             >
-              {t("sharedHistory.refresh")}
+              <RefreshCw className="h-4 w-4" />
             </Button>
           </div>
         </div>
