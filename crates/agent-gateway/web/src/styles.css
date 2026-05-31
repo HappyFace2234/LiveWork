@@ -33,7 +33,7 @@ html[data-liveagent-webui="gateway"] .chat-history-new-conversation-label {
 
 html[data-liveagent-webui="gateway"] button {
   font-size: 13px;
-  line-height: 1.15;
+  line-height: 1.2;
 }
 
 html[data-liveagent-webui="gateway"] .model-selector-trigger,
@@ -95,6 +95,13 @@ html[data-liveagent-webui="gateway"] .project-tools-panel-tabs {
   scrollbar-width: none;
   -ms-overflow-style: none;
   -webkit-overflow-scrolling: touch;
+}
+
+html[data-liveagent-webui="gateway"] .project-file-tree-panel-scroll {
+  padding-bottom: 16px;
+  padding-bottom: max(16px, env(safe-area-inset-bottom));
+  scroll-padding-bottom: 16px;
+  scroll-padding-bottom: max(16px, env(safe-area-inset-bottom));
 }
 
 html[data-liveagent-webui="gateway"] .project-tools-panel-tabs::-webkit-scrollbar {

@@ -671,7 +671,7 @@ export function ProjectFileTreePanel(props: {
             role="treeitem"
             tabIndex={-1}
             className={cn(
-              "group flex h-7 select-none items-center gap-1 rounded-md pr-2 text-xs text-muted-foreground hover:bg-muted/70 hover:text-foreground",
+              "group flex min-h-8 select-none items-center gap-1 rounded-md pr-2 text-xs leading-5 text-muted-foreground hover:bg-muted/70 hover:text-foreground",
               selected && "bg-muted text-foreground",
             )}
             style={{ paddingLeft: 6 + depth * 14 }}
@@ -699,7 +699,7 @@ export function ProjectFileTreePanel(props: {
             )}
             <button
               type="button"
-              className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left text-inherit"
+              className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left text-inherit leading-5"
               title={path || cwd}
               onClick={() => {
                 setProjectState((state) => ({ ...state, selectedPath: path }));
@@ -852,7 +852,7 @@ export function ProjectFileTreePanel(props: {
       ) : null}
 
       {query.trim() ? (
-        <div className="max-h-40 shrink-0 overflow-auto border-b border-border/60 px-2 py-2">
+        <div className="project-file-tree-panel-scroll max-h-40 shrink-0 overflow-auto border-b border-border/60 px-2 py-2">
           {searchLoading ? (
             <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -872,7 +872,7 @@ export function ProjectFileTreePanel(props: {
                 <button
                   key={`${entry.kind}:${entry.path}`}
                   type="button"
-                  className="flex h-7 w-full select-none items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className="flex min-h-8 w-full select-none items-center gap-1.5 rounded-md px-2 text-left text-xs leading-5 text-muted-foreground hover:bg-muted hover:text-foreground"
                   title={entry.path}
                   onClick={() => void revealPath(entry.path, entry.kind)}
                 >
@@ -896,7 +896,7 @@ export function ProjectFileTreePanel(props: {
 
       <div
         role="tree"
-        className="min-h-0 flex-1 select-none overflow-auto px-2 py-2"
+        className="project-file-tree-panel-scroll min-h-0 flex-1 select-none overflow-auto px-2 py-2"
         onContextMenu={(event) => openContextMenu(event, selectedPath || ROOT_PATH)}
       >
         {renderNode(ROOT_PATH, 0)}
