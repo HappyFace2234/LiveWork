@@ -7,7 +7,9 @@ import type {
   TunnelUpdateInput,
 } from "@/lib/gatewaySocket";
 import {
+  AlertTriangle,
   Check,
+  ChevronDown,
   Clock3,
   Copy,
   Edit3,
@@ -16,7 +18,7 @@ import {
   Globe,
   Link2,
   Loader2,
-  Save,
+  Plus,
   Trash2,
   X,
 } from "../icons";
@@ -71,6 +73,43 @@ const TTL_OPTIONS: Array<{ value: TunnelTtlSeconds; labelKey: string }> = [
   { value: 14400, labelKey: "projectTools.tunnelTtl4h" },
   { value: 0, labelKey: "projectTools.tunnelTtlInfinite" },
 ];
+
+const TUNNEL_INPUT_CLASS =
+  "h-8 min-w-0 rounded-lg border-border/60 bg-background/80 text-xs transition-[border-color,box-shadow,background-color] focus-visible:border-muted-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-muted-foreground/15 focus-visible:ring-offset-0";
+
+function TtlSegmented({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: TunnelTtlSeconds;
+  onChange: (value: TunnelTtlSeconds) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useLocale();
+  return (
+    <div className="grid min-w-0 grid-cols-4 gap-0.5 rounded-lg bg-muted/70 p-0.5">
+      {TTL_OPTIONS.map((option) => {
+        const active = value === option.value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.value)}
+            disabled={disabled}
+            className={cn(
+              "h-7 min-w-0 truncate rounded-[7px] px-1 text-xs text-muted-foreground transition-all duration-200 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+              active && "bg-background font-medium text-foreground shadow-sm",
+            )}
+          >
+            {t(option.labelKey)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function validateLocalHttpTarget(input: string) {
   const value = input.trim();
@@ -177,6 +216,7 @@ export function LocalTunnelPanel({
   const [targetUrl, setTargetUrl] = useState("http://localhost:3000");
   const [name, setName] = useState("");
   const [ttlSeconds, setTtlSeconds] = useState<TunnelTtlSeconds>(3600);
+  const [createOpen, setCreateOpen] = useState(true);
   const [editingId, setEditingId] = useState("");
   const [editTargetUrl, setEditTargetUrl] = useState("");
   const [editName, setEditName] = useState("");
@@ -407,246 +447,425 @@ export function LocalTunnelPanel({
     !targetValidationKey &&
     (scope !== "project" || Boolean(normalizedProjectPathKey));
   const showCreateForm = scope === "project" && Boolean(normalizedProjectPathKey);
+  const createFieldsDisabled = !showCreateForm || !createOpen || !enabled || creating;
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-background">
-      <div className="shrink-0 border-b border-border px-4 py-3">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+    <div className="flex min-h-0 flex-1 flex-col bg-gradient-to-b from-muted/40 via-muted/15 to-background">
+      <div className="shrink-0 border-b border-border/60 bg-background/70 px-4 pb-3 pt-3.5 backdrop-blur-xl">
+        <div className="flex items-center gap-2.5">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border/60 bg-background/80 text-foreground/70 shadow-[inset_0_1px_0_hsl(0_0%_100%_/_0.6),0_1px_2px_hsl(0_0%_0%_/_0.05)] dark:shadow-none">
             <Globe className="h-4 w-4" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-foreground">
+            <div className="text-sm font-semibold tracking-tight text-foreground">
               {t("projectTools.tunnelTitle")}
             </div>
             <div className="truncate text-xs text-muted-foreground">
               {t("projectTools.tunnelDescription")}
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <div className="flex h-8 items-center rounded-md border border-border bg-background p-0.5">
-              {TUNNEL_SCOPE_OPTIONS.map((option) => {
-                const active = scope === option.scope;
-                const disabled = option.scope === "project" && !normalizedProjectPathKey;
-                const Icon = option.scope === "project" ? Folder : Globe;
-                return (
-                  <button
-                    key={option.scope}
-                    type="button"
-                    aria-label={t(option.labelKey)}
-                    aria-pressed={active}
-                    title={t(option.titleKey)}
-                    disabled={disabled}
-                    onClick={() => {
-                      setScope(option.scope);
-                      setError(null);
-                    }}
-                    className={cn(
-                      "flex h-7 w-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40",
-                      active && "bg-muted text-foreground shadow-sm",
-                    )}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        </div>
+        <div
+          role="group"
+          aria-label={t("projectTools.tunnelScopeGroup")}
+          className="relative mt-3 grid grid-cols-2 gap-0.5 rounded-lg bg-muted/70 p-0.5"
+        >
+          <div
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute inset-y-0 left-0 z-0 w-1/2 transform-gpu rounded-[7px] bg-background shadow-sm transition-transform duration-200 ease-out motion-reduce:transition-none",
+              scope === "global" ? "translate-x-full" : "translate-x-0",
+            )}
+          />
+          {TUNNEL_SCOPE_OPTIONS.map((option) => {
+            const active = scope === option.scope;
+            const disabled = option.scope === "project" && !normalizedProjectPathKey;
+            const Icon = option.scope === "project" ? Folder : Globe;
+            return (
+              <button
+                key={option.scope}
+                type="button"
+                aria-pressed={active}
+                title={t(option.titleKey)}
+                disabled={disabled}
+                onClick={() => {
+                  setScope(option.scope);
+                  setError(null);
+                }}
+                className={cn(
+                  "relative z-10 flex h-7 min-w-0 transform-gpu items-center justify-center gap-1.5 rounded-[7px] px-2 text-xs text-muted-foreground transition-[color,transform] duration-200 ease-out hover:text-foreground active:scale-[0.98] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 motion-reduce:transition-none motion-reduce:active:scale-100",
+                  active && "font-medium text-foreground",
+                )}
+              >
+                <Icon className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate">{t(option.labelKey)}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {disabledMessage || showCreateForm ? (
-        <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-3">
-          {disabledMessage ? (
-            <div className="mb-3 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              {disabledMessage}
-            </div>
-          ) : null}
-          {showCreateForm ? (
-            <div className="grid min-w-0 gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="local-tunnel-target" className="text-xs">
-                  {t("projectTools.tunnelTargetUrl")}
-                </Label>
-                <Input
-                  id="local-tunnel-target"
-                  value={targetUrl}
-                  onChange={(event) => setTargetUrl(event.target.value)}
-                  placeholder={t("projectTools.tunnelTargetPlaceholder")}
-                  disabled={!enabled || creating}
-                  className="h-8 min-w-0 text-xs"
-                />
-                {targetValidationKey ? (
-                  <div className="text-xs text-muted-foreground">{t(targetValidationKey)}</div>
-                ) : null}
-              </div>
-              <div className="grid min-w-0 gap-2">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="local-tunnel-name" className="text-xs">
-                    {t("projectTools.tunnelName")}
-                  </Label>
-                  <Input
-                    id="local-tunnel-name"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder={t("projectTools.tunnelNamePlaceholder")}
-                    disabled={!enabled || creating}
-                    className="h-8 min-w-0 text-xs"
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+        {disabledMessage ? (
+          <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs leading-relaxed text-amber-700 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0">{disabledMessage}</span>
+          </div>
+        ) : null}
+
+        {normalizedProjectPathKey ? (
+          <div
+            className={cn(
+              "grid transform-gpu transition-[grid-template-rows,opacity,transform,margin] duration-200 ease-out motion-reduce:transition-none",
+              showCreateForm
+                ? "mb-3 grid-rows-[1fr] translate-y-0 opacity-100"
+                : "mb-0 grid-rows-[0fr] -translate-y-1 opacity-0",
+            )}
+          >
+            <div className="min-h-0 overflow-hidden">
+              <section
+                aria-hidden={!showCreateForm}
+                className={cn(
+                  "overflow-hidden rounded-xl border border-border/60 bg-background/70 shadow-[0_1px_2px_hsl(0_0%_0%_/_0.04)] backdrop-blur-xl transition-[border-color,background-color,box-shadow] duration-200 ease-out motion-reduce:transition-none",
+                  !showCreateForm && "pointer-events-none",
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => setCreateOpen((open) => !open)}
+                  aria-controls="local-tunnel-create-form"
+                  aria-expanded={showCreateForm && createOpen}
+                  disabled={!showCreateForm}
+                  className="flex h-10 w-full items-center gap-2 px-3 text-left transition-colors duration-150 ease-out hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none motion-reduce:transition-none"
+                >
+                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-muted/80 text-muted-foreground">
+                    <Plus className="h-3 w-3" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+                    {t("projectTools.tunnelCreateSection")}
+                  </span>
+                  <ChevronDown
+                    className={cn(
+                      "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 ease-out motion-reduce:transition-none",
+                      showCreateForm && createOpen && "rotate-180",
+                    )}
                   />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label className="text-xs">{t("projectTools.tunnelTtl")}</Label>
-                  <div className="grid h-8 min-w-0 grid-cols-4 overflow-hidden rounded-md border border-input bg-background">
-                    {TTL_OPTIONS.map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => setTtlSeconds(option.value)}
-                        disabled={!enabled || creating}
-                        className={cn(
-                          "min-w-0 truncate border-r border-border px-1.5 text-xs text-muted-foreground last:border-r-0 hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
-                          ttlSeconds === option.value && "bg-muted text-foreground",
-                        )}
+                </button>
+                <div
+                  className={cn(
+                    "grid overflow-hidden transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+                    showCreateForm && createOpen ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+                  )}
+                >
+                  <div className="min-h-0 overflow-hidden">
+                    <form
+                      id="local-tunnel-create-form"
+                      className={cn(
+                        "grid min-w-0 gap-3 border-t border-border/50 px-3 pb-3 pt-3 transition-transform duration-200 ease-out motion-reduce:transition-none",
+                        showCreateForm && createOpen ? "translate-y-0" : "-translate-y-1",
+                      )}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        if (!showCreateForm || !createOpen) return;
+                        createTunnel();
+                      }}
+                    >
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="local-tunnel-target" className="text-xs text-muted-foreground">
+                          {t("projectTools.tunnelTargetUrl")}
+                        </Label>
+                        <Input
+                          id="local-tunnel-target"
+                          value={targetUrl}
+                          onChange={(event) => setTargetUrl(event.target.value)}
+                          placeholder={t("projectTools.tunnelTargetPlaceholder")}
+                          disabled={createFieldsDisabled}
+                          inputMode="url"
+                          autoComplete="off"
+                          spellCheck={false}
+                          className={cn(TUNNEL_INPUT_CLASS, "font-mono")}
+                        />
+                        {targetValidationKey ? (
+                          <div className="flex items-start gap-1 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                            <span className="min-w-0">{t(targetValidationKey)}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="local-tunnel-name" className="text-xs text-muted-foreground">
+                          {t("projectTools.tunnelName")}
+                        </Label>
+                        <Input
+                          id="local-tunnel-name"
+                          value={name}
+                          onChange={(event) => setName(event.target.value)}
+                          placeholder={t("projectTools.tunnelNamePlaceholder")}
+                          disabled={createFieldsDisabled}
+                          autoComplete="off"
+                          className={TUNNEL_INPUT_CLASS}
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label className="text-xs text-muted-foreground">
+                          {t("projectTools.tunnelTtl")}
+                        </Label>
+                        <TtlSegmented
+                          value={ttlSeconds}
+                          onChange={setTtlSeconds}
+                          disabled={createFieldsDisabled}
+                        />
+                      </div>
+                      <Button
+                        type="submit"
+                        size="sm"
+                        className="h-8 gap-1.5 rounded-lg text-xs"
+                        disabled={!showCreateForm || !createOpen || !canCreate}
+                        title={!enabled ? disabledMessage : undefined}
                       >
-                        {t(option.labelKey)}
-                      </button>
-                    ))}
+                        {creating ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Plus className="h-3.5 w-3.5" />
+                        )}
+                        {creating ? t("projectTools.tunnelCreating") : t("projectTools.tunnelCreate")}
+                      </Button>
+                    </form>
                   </div>
                 </div>
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 gap-2 text-xs"
-                disabled={!canCreate}
-                onClick={createTunnel}
-                title={!enabled ? disabledMessage : undefined}
-              >
-                {creating ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Link2 className="h-3.5 w-3.5" />
-                )}
-                {creating ? t("projectTools.tunnelCreating") : t("projectTools.tunnelCreate")}
-              </Button>
+              </section>
             </div>
-          ) : null}
-        </div>
-      ) : null}
+          </div>
+        ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {error ? (
-          <div className="mb-3 rounded-md border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <div className="mb-3 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive">
             {error}
           </div>
         ) : null}
-        {loading && sortedTunnels.length === 0 ? (
-          <div className="flex items-center justify-center gap-2 py-8 text-xs text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            {t("projectTools.tunnelLoading")}
+
+        <div>
+          <div className="flex items-center justify-between px-1 pb-2">
+            <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+              {t("projectTools.tunnelListSection")}
+            </span>
+            {sortedTunnels.length > 0 ? (
+              <span className="rounded-full bg-muted/80 px-1.5 py-px text-[11px] tabular-nums text-muted-foreground">
+                {sortedTunnels.length}
+              </span>
+            ) : null}
           </div>
-        ) : sortedTunnels.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-3 py-10 text-center text-xs text-muted-foreground">
-            <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
-              <Globe className="h-6 w-6" />
+          {loading && sortedTunnels.length === 0 ? (
+            <div className="grid gap-2">
+              <span className="sr-only">{t("projectTools.tunnelLoading")}</span>
+              <div className="hub-frost-skeleton h-24" aria-hidden />
+              <div className="hub-frost-skeleton h-24 opacity-70" aria-hidden />
             </div>
-            <div>{t("projectTools.tunnelEmpty")}</div>
-          </div>
-        ) : (
-          <div className="grid gap-2">
-            {sortedTunnels.map((tunnel) => {
-              const hasExpiry = tunnel.expiresAt > 0;
-              const remaining = hasExpiry ? tunnel.expiresAt - nowSeconds : 0;
-              const expired = tunnel.status === "expired" || (hasExpiry && remaining <= 0);
-              const isEditing = editingId === tunnel.id;
-              const updating = savingId === tunnel.id;
-              const tunnelProjectPathKey = normalizeProjectPathKey(tunnel.projectPathKey);
-              return (
-                <div
-                  key={tunnel.id}
-                  className="min-w-0 overflow-hidden rounded-lg border border-border bg-background px-3 py-2.5 shadow-sm"
-                >
-                  <div className="flex items-start gap-2">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <Link2 className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0 flex-1 overflow-hidden">
-                      <div className="flex min-w-0 items-center gap-2">
-                        <div className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium text-foreground">
-                          {displayTunnelName(tunnel)}
-                        </div>
+          ) : sortedTunnels.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed border-border/70 bg-background/40 px-4 py-10 text-center">
+              <div className="mb-1.5 flex h-12 w-12 items-center justify-center rounded-2xl border border-border/50 bg-background/80 text-muted-foreground/70 shadow-[inset_0_1px_0_hsl(0_0%_100%_/_0.6),0_1px_3px_hsl(0_0%_0%_/_0.05)] dark:shadow-none">
+                <Globe className="h-5 w-5" />
+              </div>
+              <div className="text-xs font-medium text-foreground/80">
+                {t("projectTools.tunnelEmpty")}
+              </div>
+              {showCreateForm ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {t("projectTools.tunnelEmptyHintCreate")}
+                </div>
+              ) : normalizedProjectPathKey ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {t("projectTools.tunnelEmptyHintProject")}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="grid gap-2">
+              {sortedTunnels.map((tunnel) => {
+                const hasExpiry = tunnel.expiresAt > 0;
+                const remaining = hasExpiry ? tunnel.expiresAt - nowSeconds : 0;
+                const expired = tunnel.status === "expired" || (hasExpiry && remaining <= 0);
+                const isEditing = editingId === tunnel.id;
+                const updating = savingId === tunnel.id;
+                const tunnelProjectPathKey = normalizeProjectPathKey(tunnel.projectPathKey);
+                const handleEditKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+                  if (event.nativeEvent.isComposing) return;
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    updateTunnel(tunnel);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    cancelEdit();
+                  }
+                };
+                return (
+                  <div
+                    key={tunnel.id}
+                    className="min-w-0 overflow-hidden rounded-xl border border-border/60 bg-background/70 shadow-[0_1px_2px_hsl(0_0%_0%_/_0.04)] backdrop-blur-xl transition-shadow duration-200 hover:shadow-[0_3px_10px_hsl(0_0%_0%_/_0.07)]"
+                  >
+                    <div className="flex min-w-0 items-center gap-2 px-3 pt-2.5">
+                      <div className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+                        {displayTunnelName(tunnel)}
+                      </div>
+                      <span
+                        className={cn(
+                          "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium",
+                          tunnel.status === "offline"
+                            ? "border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                            : expired
+                              ? "border-border/60 bg-muted/70 text-muted-foreground"
+                              : "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                        )}
+                      >
                         <span
                           className={cn(
-                            "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium",
+                            "h-1.5 w-1.5 rounded-full",
                             tunnel.status === "offline"
-                              ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                              ? "bg-amber-500"
                               : expired
-                                ? "bg-muted text-muted-foreground"
-                                : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
+                                ? "bg-muted-foreground/50"
+                                : "animate-pulse bg-emerald-500 motion-reduce:animate-none",
                           )}
-                        >
-                          {t(tunnelStatusKey(expired ? "expired" : tunnel.status))}
-                        </span>
-                      </div>
-                      {isEditing ? (
-                        <div className="mt-2 grid min-w-0 gap-2">
-                          <Input
-                            value={editTargetUrl}
-                            onChange={(event) => setEditTargetUrl(event.target.value)}
-                            disabled={!enabled || updating}
-                            className="h-8 min-w-0 text-xs"
-                            aria-label={t("projectTools.tunnelTargetUrl")}
-                          />
-                          {editTargetValidationKey ? (
-                            <div className="text-xs text-muted-foreground">
-                              {t(editTargetValidationKey)}
-                            </div>
-                          ) : null}
-                          <div className="grid min-w-0 gap-2">
+                        />
+                        {t(tunnelStatusKey(expired ? "expired" : tunnel.status))}
+                      </span>
+                    </div>
+
+                    {isEditing ? (
+                      <>
+                        <div className="grid min-w-0 gap-2.5 px-3 pb-1 pt-2">
+                          <div className="grid gap-1.5">
+                            <Label
+                              htmlFor={`tunnel-edit-target-${tunnel.id}`}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t("projectTools.tunnelTargetUrl")}
+                            </Label>
                             <Input
+                              id={`tunnel-edit-target-${tunnel.id}`}
+                              value={editTargetUrl}
+                              onChange={(event) => setEditTargetUrl(event.target.value)}
+                              onKeyDown={handleEditKeyDown}
+                              disabled={!enabled || updating}
+                              inputMode="url"
+                              autoComplete="off"
+                              spellCheck={false}
+                              className={cn(TUNNEL_INPUT_CLASS, "font-mono")}
+                            />
+                            {editTargetValidationKey ? (
+                              <div className="flex items-start gap-1 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                                <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+                                <span className="min-w-0">{t(editTargetValidationKey)}</span>
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="grid gap-1.5">
+                            <Label
+                              htmlFor={`tunnel-edit-name-${tunnel.id}`}
+                              className="text-xs text-muted-foreground"
+                            >
+                              {t("projectTools.tunnelName")}
+                            </Label>
+                            <Input
+                              id={`tunnel-edit-name-${tunnel.id}`}
                               value={editName}
                               onChange={(event) => setEditName(event.target.value)}
+                              onKeyDown={handleEditKeyDown}
                               placeholder={t("projectTools.tunnelNamePlaceholder")}
                               disabled={!enabled || updating}
-                              className="h-8 min-w-0 text-xs"
-                              aria-label={t("projectTools.tunnelName")}
+                              autoComplete="off"
+                              className={TUNNEL_INPUT_CLASS}
                             />
-                            <div className="grid gap-1.5">
-                              <Label className="text-xs">{t("projectTools.tunnelTtl")}</Label>
-                              <div className="grid h-8 min-w-0 grid-cols-4 overflow-hidden rounded-md border border-input bg-background">
-                                {TTL_OPTIONS.map((option) => (
-                                  <button
-                                    key={option.value}
-                                    type="button"
-                                    onClick={() => setEditTtlSeconds(option.value)}
-                                    disabled={!enabled || updating}
-                                    className={cn(
-                                      "min-w-0 truncate border-r border-border px-1.5 text-xs text-muted-foreground last:border-r-0 hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50",
-                                      editTtlSeconds === option.value && "bg-muted text-foreground",
-                                    )}
-                                  >
-                                    {t(option.labelKey)}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
+                          </div>
+                          <div className="grid gap-1.5">
+                            <Label className="text-xs text-muted-foreground">
+                              {t("projectTools.tunnelTtl")}
+                            </Label>
+                            <TtlSegmented
+                              value={editTtlSeconds}
+                              onChange={setEditTtlSeconds}
+                              disabled={!enabled || updating}
+                            />
                           </div>
                         </div>
-                      ) : (
-                        <>
-                          <div className="mt-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted-foreground">
-                            {t("projectTools.tunnelTarget")}: {tunnel.targetUrl}
-                          </div>
-                          <div className="mt-1 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                            <Globe className="h-3.5 w-3.5 shrink-0" />
-                            <span className="block min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                              {tunnel.publicUrl}
-                            </span>
-                          </div>
-                          <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-                            <span className="inline-flex min-w-0 items-center gap-1">
-                              <Clock3 className="h-3.5 w-3.5 shrink-0" />
-                              <span className="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+                        <div className="mt-1.5 flex items-center justify-end gap-1.5 border-t border-border/40 px-3 py-1.5">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1 rounded-lg px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                            disabled={updating}
+                            onClick={cancelEdit}
+                            title={t("projectTools.tunnelCancelEdit")}
+                          >
+                            <X className="h-3.5 w-3.5" />
+                            {t("settings.cancel")}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-7 gap-1 rounded-lg px-2.5 text-xs"
+                            disabled={!enabled || updating || Boolean(editTargetValidationKey)}
+                            onClick={() => updateTunnel(tunnel)}
+                            title={
+                              updating
+                                ? t("projectTools.tunnelUpdating")
+                                : t("projectTools.tunnelSave")
+                            }
+                          >
+                            {updating ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Check className="h-3.5 w-3.5" />
+                            )}
+                            {t("settings.save")}
+                          </Button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => copyLink(tunnel)}
+                          disabled={!tunnel.publicUrl}
+                          title={
+                            copiedId === tunnel.id
+                              ? t("projectTools.tunnelCopied")
+                              : t("projectTools.tunnelCopyLink")
+                          }
+                          aria-label={
+                            copiedId === tunnel.id
+                              ? t("projectTools.tunnelCopied")
+                              : t("projectTools.tunnelCopyLink")
+                          }
+                          className="mx-3 mt-2 flex w-[calc(100%-1.5rem)] min-w-0 items-center gap-1.5 rounded-lg border border-border/50 bg-muted/40 px-2 py-1.5 text-left transition-colors duration-150 hover:border-border hover:bg-muted/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
+                        >
+                          <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/85">
+                            {tunnel.publicUrl}
+                          </span>
+                          {copiedId === tunnel.id ? (
+                            <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                          ) : (
+                            <Copy className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" />
+                          )}
+                        </button>
+                        <div
+                          className="mt-1.5 flex min-w-0 items-center gap-1 px-3 text-[11px] text-muted-foreground"
+                          title={tunnel.targetUrl}
+                        >
+                          <Link2 className="h-3 w-3 shrink-0" />
+                          <span className="shrink-0">{t("projectTools.tunnelTarget")}</span>
+                          <span className="min-w-0 truncate font-mono">{tunnel.targetUrl}</span>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/40 py-1 pl-3 pr-1.5">
+                          <div className="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
+                            <span
+                              className="inline-flex min-w-0 items-center gap-1"
+                              title={hasExpiry ? formatDateTime(tunnel.expiresAt) : undefined}
+                            >
+                              <Clock3 className="h-3 w-3 shrink-0" />
+                              <span className="min-w-0 truncate tabular-nums">
                                 {!hasExpiry
                                   ? t("projectTools.tunnelTtlInfinite")
                                   : expired
@@ -658,7 +877,7 @@ export function LocalTunnelPanel({
                               </span>
                             </span>
                             {scope === "global" ? (
-                              <span>
+                              <span className="shrink-0 rounded-full bg-muted/80 px-1.5 py-px text-[10px]">
                                 {t(
                                   tunnelProjectPathKey
                                     ? "projectTools.tunnelScopeProjectBadge"
@@ -666,117 +885,58 @@ export function LocalTunnelPanel({
                                 )}
                               </span>
                             ) : null}
-                            {hasExpiry ? <span>{formatDateTime(tunnel.expiresAt)}</span> : null}
                           </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center justify-end gap-1.5">
-                    {isEditing ? (
-                      <>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
-                          disabled={!enabled || updating || Boolean(editTargetValidationKey)}
-                          onClick={() => updateTunnel(tunnel)}
-                          title={
-                            updating
-                              ? t("projectTools.tunnelUpdating")
-                              : t("projectTools.tunnelSave")
-                          }
-                        >
-                          {updating ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Save className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
-                          disabled={updating}
-                          onClick={cancelEdit}
-                          title={t("projectTools.tunnelCancelEdit")}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </>
-                    ) : (
-                      <>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
-                          disabled={!enabled || expired}
-                          onClick={() => beginEdit(tunnel)}
-                          title={!enabled ? disabledMessage : t("projectTools.tunnelEdit")}
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
-                          disabled={!tunnel.publicUrl}
-                          onClick={() => copyLink(tunnel)}
-                          title={
-                            copiedId === tunnel.id
-                              ? t("projectTools.tunnelCopied")
-                              : t("projectTools.tunnelCopyLink")
-                          }
-                          aria-label={
-                            copiedId === tunnel.id
-                              ? t("projectTools.tunnelCopied")
-                              : t("projectTools.tunnelCopyLink")
-                          }
-                        >
-                          {copiedId === tunnel.id ? (
-                            <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-                          ) : (
-                            <Copy className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md text-muted-foreground hover:text-foreground"
-                          disabled={!tunnel.publicUrl || expired}
-                          onClick={() => openLink(tunnel)}
-                          title={t("projectTools.tunnelOpenLink")}
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                          disabled={!enabled || closingId === tunnel.id}
-                          onClick={() => closeTunnel(tunnel.id)}
-                          title={!enabled ? disabledMessage : t("projectTools.tunnelClose")}
-                        >
-                          {closingId === tunnel.id ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground"
+                              disabled={!enabled || expired}
+                              onClick={() => beginEdit(tunnel)}
+                              title={!enabled ? disabledMessage : t("projectTools.tunnelEdit")}
+                              aria-label={t("projectTools.tunnelEdit")}
+                            >
+                              <Edit3 className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 rounded-lg text-muted-foreground hover:text-foreground"
+                              disabled={!tunnel.publicUrl || expired}
+                              onClick={() => openLink(tunnel)}
+                              title={t("projectTools.tunnelOpenLink")}
+                              aria-label={t("projectTools.tunnelOpenLink")}
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 rounded-lg text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              disabled={!enabled || closingId === tunnel.id}
+                              onClick={() => closeTunnel(tunnel.id)}
+                              title={!enabled ? disabledMessage : t("projectTools.tunnelClose")}
+                              aria-label={t("projectTools.tunnelClose")}
+                            >
+                              {closingId === tunnel.id ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-3.5 w-3.5" />
+                              )}
+                            </Button>
+                          </div>
+                        </div>
                       </>
                     )}
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
