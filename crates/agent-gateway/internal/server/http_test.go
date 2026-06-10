@@ -29,6 +29,9 @@ func TestNewHTTPServerServesRootWithoutRedirect(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "<title>LiveAgent Gateway</title>") {
 		t.Fatalf("expected WebUI index.html, got body %q", rec.Body.String())
 	}
+	if cacheControl := rec.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("Cache-Control = %q, want no-store for index.html", cacheControl)
+	}
 }
 
 func TestNewHTTPServerServesSpaFallbackWithoutRedirect(t *testing.T) {
@@ -46,6 +49,30 @@ func TestNewHTTPServerServesSpaFallbackWithoutRedirect(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "<title>LiveAgent Gateway</title>") {
 		t.Fatalf("expected WebUI index.html, got body %q", rec.Body.String())
+	}
+}
+
+func TestNewHTTPServerDoesNotFallbackMissingStaticAssetsToIndex(t *testing.T) {
+	handler := NewHTTPServer(&config.Config{Token: "dev-token"}, session.NewManager())
+
+	for _, target := range []string{
+		"http://gateway.test/assets/missing-module.js",
+		"http://gateway.test/assets/missing-style.css",
+		"http://gateway.test/missing-icon.svg",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want %d", target, rec.Code, http.StatusNotFound)
+		}
+		if strings.Contains(rec.Body.String(), "<title>LiveAgent Gateway</title>") {
+			t.Fatalf("%s returned SPA index fallback for a missing static asset", target)
+		}
+		if contentType := rec.Header().Get("Content-Type"); strings.Contains(contentType, "text/html") {
+			t.Fatalf("%s Content-Type = %q, want non-html 404", target, contentType)
+		}
 	}
 }
 

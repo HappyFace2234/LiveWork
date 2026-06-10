@@ -43,6 +43,7 @@ func NewHTTPServer(cfg *config.Config, sm *session.Manager) http.Handler {
 	}
 	fileServer := http.FileServer(http.FS(webFS))
 	serveIndex := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(indexHTML))
 	}
@@ -58,16 +59,32 @@ func NewHTTPServer(cfg *config.Config, sm *session.Manager) http.Handler {
 		if err == nil {
 			if stat, statErr := file.Stat(); statErr == nil && !stat.IsDir() {
 				_ = file.Close()
+				if strings.HasPrefix(cleanPath, "assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				fileServer.ServeHTTP(w, r)
 				return
 			}
 			_ = file.Close()
 		}
 
+		if isWebUIStaticAssetPath(cleanPath) {
+			http.NotFound(w, r)
+			return
+		}
+
 		serveIndex(w, r)
 	})
 
 	return rootMux
+}
+
+func isWebUIStaticAssetPath(cleanPath string) bool {
+	cleanPath = strings.TrimSpace(cleanPath)
+	if cleanPath == "" || cleanPath == "." || cleanPath == "index.html" {
+		return false
+	}
+	return strings.HasPrefix(cleanPath, "assets/") || path.Ext(cleanPath) != ""
 }
 
 func publicHistoryShare(cfg *config.Config, sm *session.Manager) http.HandlerFunc {
