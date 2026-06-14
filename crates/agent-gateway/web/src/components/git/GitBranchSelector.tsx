@@ -489,9 +489,9 @@ export function GitBranchSelector(props: {
           title={visibleError || (!canWrite ? disabledMessage : "") || label}
         >
           {loading || mutating || initializing ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />
           ) : (
-            <GitBranch className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
+            <GitBranch className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
           )}
           <span className="min-w-0 truncate">{label}</span>
         </DropdownMenuTrigger>
