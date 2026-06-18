@@ -304,7 +304,7 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
   const keepCaretSlot = useStreamingMode;
 
   return (
-    <div ref={codeCopyRootRef} style={{ display: "contents" }}>
+    <div ref={codeCopyRootRef}>
       <Streamdown
         className={cn(
           "chat-markdown max-w-none break-words",
