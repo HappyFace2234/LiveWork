@@ -55,6 +55,10 @@ type GatewaySocketEnvelope = {
 type StatusListener = (status: AgentStatus | null, error: string | null) => void;
 type HistoryListener = (event: GatewayHistoryEvent) => void;
 type SettingsListener = (event: GatewaySettingsSyncPayload) => void;
+type GatewaySettingsUpdateResponse = {
+  accepted?: boolean;
+  message?: string;
+};
 type TerminalListener = (event: TerminalEvent) => void;
 type SftpTransferListener = (event: SftpTransferEvent) => void;
 
@@ -1906,7 +1910,10 @@ export class GatewayWebSocketClient {
   }
 
   async updateSettings(payload: GatewaySettingsSyncUpdatePayload): Promise<void> {
-    await this.request("settings.update", payload);
+    const response = await this.request<GatewaySettingsUpdateResponse>("settings.update", payload);
+    if (response?.accepted === false) {
+      throw new Error(response.message?.trim() || "SSH 设置已在另一端更新，已刷新为最新状态，请重新提交。");
+    }
   }
 
   async resetSshKnownHost(params: { host: string; port: number }): Promise<SshKnownHostResetResult> {
@@ -3506,7 +3513,10 @@ class SharedWorkerGatewayWebSocketClient implements GatewayWebSocketClientLike {
   }
 
   async updateSettings(payload: GatewaySettingsSyncUpdatePayload): Promise<void> {
-    await this.request("settings.update", payload);
+    const response = await this.request<GatewaySettingsUpdateResponse>("settings.update", payload);
+    if (response?.accepted === false) {
+      throw new Error(response.message?.trim() || "SSH 设置已在另一端更新，已刷新为最新状态，请重新提交。");
+    }
   }
 
   async resetSshKnownHost(params: { host: string; port: number }): Promise<SshKnownHostResetResult> {

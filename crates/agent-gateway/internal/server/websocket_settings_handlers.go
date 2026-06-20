@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -70,7 +71,7 @@ func (c *websocketConnection) handleSettingsUpdate(req websocketRequest) {
 		_ = c.writeError(req.ID, "unexpected agent response")
 		return
 	}
-	if settingsResp.GetAccepted() {
+	if settingsResp.GetAccepted() && !settingsUpdateHasSshPatch(payloadJSON) {
 		c.sm.ApplySettingsJSONPreservingRemote(payloadJSON)
 	}
 
@@ -78,6 +79,15 @@ func (c *websocketConnection) handleSettingsUpdate(req websocketRequest) {
 		"accepted": settingsResp.GetAccepted(),
 		"message":  strings.TrimSpace(settingsResp.GetMessage()),
 	})
+}
+
+func settingsUpdateHasSshPatch(payloadJSON string) bool {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return false
+	}
+	_, ok := payload["sshPatch"]
+	return ok
 }
 
 func (c *websocketConnection) handleSettingsResetSshKnownHost(req websocketRequest) {

@@ -17,7 +17,7 @@ import {
   type SkillsSettings,
   type Theme,
 } from "./index";
-import { buildGatewaySettingsSyncPayload } from "./sync";
+import { buildGatewaySettingsSyncPayload, buildGatewaySettingsSyncUpdatePayload } from "./sync";
 
 const LOCAL_UI_SETTINGS_STORAGE_KEY = "liveagent.ui-settings.v1";
 
@@ -50,11 +50,15 @@ export type SettingsSaveState =
   | { status: "saved" }
   | { status: "error"; message: string };
 
-function toPersistedLocalCustomSettings(
-  customSettings: AppSettings["customSettings"],
-): AppSettings["customSettings"] {
-  return customSettings;
-}
+type SshPatchApplyResponse = {
+  ssh?: unknown;
+  conflict?: string | null;
+};
+
+export type PersistSettingsResult = {
+  ssh?: AppSettings["ssh"];
+  conflict?: string;
+};
 
 function readLocalUiSettings(): {
   skills: SkillsSettings;
@@ -72,14 +76,14 @@ function readLocalUiSettings(): {
     const chatSidebar = (
       obj.chatSidebar && typeof obj.chatSidebar === "object" ? obj.chatSidebar : {}
     ) as Record<string, unknown>;
-    return toPersistedLocalCustomSettings({
+    return {
       conversationTitleModel: normalizeSelectedModel(obj.conversationTitleModel),
       chatSidebar: {
         projectsCollapsed: chatSidebar.projectsCollapsed === true,
         recentCollapsed: chatSidebar.recentCollapsed === true,
       },
       rightDock: normalizeRightDockSettings(obj.rightDock),
-    });
+    };
   }
 
   try {
@@ -138,7 +142,7 @@ function writeLocalUiSettings(
   const payload = {
     skills: settings.skills,
     chatRuntimeControls: settings.chatRuntimeControls,
-    customSettings: toPersistedLocalCustomSettings(settings.customSettings),
+    customSettings: settings.customSettings,
     updates: settings.updates,
     selectedModel: settings.selectedModel,
     theme: settings.theme,
@@ -219,10 +223,12 @@ export async function loadPersistedSettings(): Promise<AppSettings> {
   return (await loadPersistedSettingsWithDefaults()).settings;
 }
 
-export async function persistSettings(prev: AppSettings, next: AppSettings): Promise<void> {
+export async function persistSettings(
+  prev: AppSettings,
+  next: AppSettings,
+): Promise<PersistSettingsResult> {
   const tasks: Promise<unknown>[] = [];
-  const prevLocalCustomSettings = toPersistedLocalCustomSettings(prev.customSettings);
-  const nextLocalCustomSettings = toPersistedLocalCustomSettings(next.customSettings);
+  const result: PersistSettingsResult = {};
 
   if (hasChanged(prev.customProviders, next.customProviders)) {
     tasks.push(
@@ -257,10 +263,23 @@ export async function persistSettings(prev: AppSettings, next: AppSettings): Pro
   }
 
   if (hasChanged(prev.ssh, next.ssh)) {
+    const update = buildGatewaySettingsSyncUpdatePayload(prev, next, {
+      includeProviderApiKeyUpdates: true,
+    });
     tasks.push(
-      invoke("settings_save_ssh", {
-        payload: next.ssh,
-      } as any),
+      invoke<SshPatchApplyResponse>("settings_apply_ssh_patch", {
+        payload: {
+          sshPatch: update.sshPatch ?? {},
+          sshSecretUpdates: update.sshSecretUpdates,
+        },
+      } as any).then((response) => {
+        if (response?.ssh) {
+          result.ssh = normalizeSettings({ ssh: response.ssh as AppSettings["ssh"] }).ssh;
+        }
+        if (response?.conflict) {
+          result.conflict = response.conflict;
+        }
+      }),
     );
   }
 
@@ -299,7 +318,7 @@ export async function persistSettings(prev: AppSettings, next: AppSettings): Pro
   if (
     hasChanged(prev.skills, next.skills) ||
     hasChanged(prev.chatRuntimeControls, next.chatRuntimeControls) ||
-    hasChanged(prevLocalCustomSettings, nextLocalCustomSettings) ||
+    hasChanged(prev.customSettings, next.customSettings) ||
     hasChanged(prev.updates, next.updates) ||
     hasChanged(prev.selectedModel ?? null, next.selectedModel ?? null) ||
     hasChanged(prev.theme, next.theme) ||
@@ -308,7 +327,7 @@ export async function persistSettings(prev: AppSettings, next: AppSettings): Pro
     writeLocalUiSettings({
       skills: next.skills,
       chatRuntimeControls: next.chatRuntimeControls,
-      customSettings: nextLocalCustomSettings,
+      customSettings: next.customSettings,
       updates: next.updates,
       selectedModel: next.selectedModel,
       theme: next.theme,
@@ -317,6 +336,7 @@ export async function persistSettings(prev: AppSettings, next: AppSettings): Pro
   }
 
   await Promise.all(tasks);
+  return result;
 }
 
 export async function publishGatewaySettingsSync(settings: AppSettings): Promise<void> {

@@ -1605,7 +1605,7 @@ test("gateway settings update payload omits unchanged empty ssh hosts for non-ss
   );
 });
 
-test("gateway settings update payload includes ssh when hosts are explicitly deleted", () => {
+test("gateway settings update payload uses sshPatch when hosts are explicitly deleted", () => {
   const current = settings.normalizeSettings({
     ssh: {
       hosts: [
@@ -1631,12 +1631,40 @@ test("gateway settings update payload includes ssh when hosts are explicitly del
     includeProviderApiKeyUpdates: true,
   });
 
-  assert.equal(Object.hasOwn(update, "ssh"), true);
-  assert.deepEqual(update.ssh.hosts, []);
-  assert.deepEqual(update.ssh.projectHostAssociations, {});
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshPatch.hostChanges, [
+    {
+      id: "prod",
+      before: {
+        ...current.ssh.hosts[0],
+        password: "",
+        passwordConfigured: false,
+        privateKey: "",
+        privateKeyConfigured: false,
+        privateKeyPassphrase: "",
+        privateKeyPassphraseConfigured: false,
+        proxy: {
+          type: "socks5",
+          url: "",
+          port: 0,
+          username: "",
+          password: "",
+          passwordConfigured: false,
+        },
+      },
+      after: null,
+    },
+  ]);
+  assert.deepEqual(update.sshPatch.projectAssociationChanges, [
+    {
+      pathKey: "/workspace/project",
+      before: ["prod"],
+      after: [],
+    },
+  ]);
 });
 
-test("gateway settings update payload includes ssh for secret-only ssh updates", () => {
+test("gateway settings update payload uses sshSecretUpdates for secret-only ssh updates", () => {
   const current = settings.normalizeSettings({
     ssh: {
       hosts: [
@@ -1668,7 +1696,8 @@ test("gateway settings update payload includes ssh for secret-only ssh updates",
     includeProviderApiKeyUpdates: true,
   });
 
-  assert.equal(Object.hasOwn(update, "ssh"), true);
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshPatch, {});
   assert.deepEqual(update.sshSecretUpdates, {
     prod: {
       password: "new-password",
@@ -1677,6 +1706,138 @@ test("gateway settings update payload includes ssh for secret-only ssh updates",
 
   const merged = sync.applyGatewaySettingsSyncPayload(current, update);
   assert.equal(merged.ssh.hosts[0].password, "new-password");
+});
+
+test("gateway settings update payload omits unchanged ssh secrets", () => {
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "prod",
+          name: "Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "prod-password",
+        },
+        {
+          id: "staging",
+          name: "Staging",
+          host: "staging.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "staging-password",
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          host: "prod.internal",
+        },
+        current.ssh.hosts[1],
+      ],
+    },
+  });
+
+  const update = sync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.equal(update.sshSecretUpdates, undefined);
+  assert.equal(update.sshPatch.hostChanges.length, 1);
+  assert.equal(update.sshPatch.hostChanges[0].id, "prod");
+});
+
+test("gateway settings update payload sends empty ssh secret updates when secrets are cleared", () => {
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "prod",
+          name: "Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "old-password",
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          password: "",
+          passwordConfigured: false,
+        },
+      ],
+    },
+  });
+
+  const update = sync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshSecretUpdates, {
+    prod: {
+      password: "",
+    },
+  });
+
+  const merged = sync.applyGatewaySettingsSyncPayload(current, update);
+  assert.equal(merged.ssh.hosts[0].password, "");
+  assert.equal(merged.ssh.hosts[0].passwordConfigured, false);
+});
+
+test("gateway settings update payload clears redacted configured ssh secrets", () => {
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "prod",
+          name: "Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "",
+          passwordConfigured: true,
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          passwordConfigured: false,
+        },
+      ],
+    },
+  });
+
+  const update = sync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.deepEqual(update.sshSecretUpdates, {
+    prod: {
+      password: "",
+    },
+  });
 });
 
 test("web storage redaction clears api keys but keeps configured state", () => {

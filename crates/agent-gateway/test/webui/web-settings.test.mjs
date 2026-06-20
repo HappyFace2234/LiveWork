@@ -6,6 +6,7 @@ const loader = createWebModuleLoader();
 const webSettings = loader.loadModule("src/lib/webSettings.ts");
 const settings = loader.loadModule("@/lib/settings/index.ts");
 const settingsSync = loader.loadModule("@/lib/settings/sync.ts");
+const RIGHT_DOCK_TAB_IDS = settings.RIGHT_DOCK_SINGLETON_TAB_IDS;
 
 function installWindow(origin = "https://gateway.example") {
   const store = new Map();
@@ -50,28 +51,45 @@ test("web settings normalization canonicalizes project keyed maps with Windows p
       },
     },
     customSettings: {
-      projectToolsPanel: {
-        activeTabs: {
-          "c:/repo": "terminal",
-          "C:\\Repo\\": "tunnel",
-        },
-        tabOrders: {
-          "C:\\Repo\\": ["terminal"],
-          "c:/repo": ["fileTree", "terminal"],
-        },
-      },
-      projectToolsFileTree: {
-        openProjectPathKeys: ["C:\\Repo\\", "c:/repo"],
+      rightDock: {
         projects: {
-          "C:\\Repo\\": { query: "legacy" },
-          "c:/repo": { query: "canonical" },
+          "C:\\Repo\\": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: [
+              RIGHT_DOCK_TAB_IDS.gitReview,
+              "",
+              RIGHT_DOCK_TAB_IDS.fileTree,
+              RIGHT_DOCK_TAB_IDS.fileTree,
+              "x".repeat(200),
+            ],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "C:\\Repo\\",
+                createdAt: 1,
+                uiState: {
+                  query: "legacy",
+                  selectedPath: "src\\main.ts",
+                  expandedPaths: ["", "src", "src\\components", "src"],
+                  revision: 2,
+                },
+              },
+              [RIGHT_DOCK_TAB_IDS.gitReview]: {
+                id: RIGHT_DOCK_TAB_IDS.gitReview,
+                kind: "gitReview",
+                projectPathKey: "C:\\Repo\\",
+                createdAt: 2,
+              },
+              invalid: {
+                id: "invalid",
+                kind: "unknown",
+                projectPathKey: "C:\\Repo\\",
+                createdAt: 3,
+              },
+            },
+          },
         },
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["C:\\Repo\\", "c:/repo"],
-      },
-      projectToolsSshTunnel: {
-        openProjectPathKeys: ["C:\\Repo\\", "c:/repo"],
       },
     },
   });
@@ -79,25 +97,34 @@ test("web settings normalization canonicalizes project keyed maps with Windows p
   assert.deepEqual(normalized.ssh.projectHostAssociations, {
     "c:/repo": ["host-b"],
   });
-  assert.deepEqual(normalized.customSettings.projectToolsPanel.activeTabs, {
-    "c:/repo": "terminal",
+  assert.deepEqual(Object.keys(normalized.customSettings.rightDock.projects), ["c:/repo"]);
+  assert.deepEqual(normalized.customSettings.rightDock.projects["c:/repo"], {
+    activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+    tabOrder: [RIGHT_DOCK_TAB_IDS.gitReview, RIGHT_DOCK_TAB_IDS.fileTree],
+    tabs: {
+      [RIGHT_DOCK_TAB_IDS.fileTree]: {
+        id: RIGHT_DOCK_TAB_IDS.fileTree,
+        kind: "fileTree",
+        projectPathKey: "c:/repo",
+        createdAt: 1,
+        uiState: {
+          query: "legacy",
+          selectedPath: "src/main.ts",
+          expandedPaths: ["", "src", "src/components"],
+          revision: 2,
+          stateVersion: 0,
+        },
+      },
+      [RIGHT_DOCK_TAB_IDS.gitReview]: {
+        id: RIGHT_DOCK_TAB_IDS.gitReview,
+        kind: "gitReview",
+        projectPathKey: "c:/repo",
+        createdAt: 2,
+      },
+    },
+    openVersion: 0,
+    stateVersion: 0,
   });
-  assert.deepEqual(normalized.customSettings.projectToolsPanel.tabOrders, {
-    "c:/repo": ["fileTree", "terminal"],
-  });
-  assert.deepEqual(normalized.customSettings.projectToolsFileTree.openProjectPathKeys, [
-    "c:/repo",
-  ]);
-  assert.equal(
-    normalized.customSettings.projectToolsFileTree.projects["c:/repo"].query,
-    "canonical",
-  );
-  assert.deepEqual(normalized.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "c:/repo",
-  ]);
-  assert.deepEqual(normalized.customSettings.projectToolsSshTunnel.openProjectPathKeys, [
-    "c:/repo",
-  ]);
 });
 
 test("web chat runtime controls default and follow provider reasoning support", () => {
@@ -252,22 +279,24 @@ test("loadWebSettings forces current gateway URL/token over stale persisted remo
   stale.remote.gatewayUrl = "https://old.example";
   stale.remote.token = "old-token";
   stale.system.workdir = "/workspace";
-  stale.customSettings.projectToolsFileTree = {
-    openProjectPathKeys: ["/stale/project"],
-    openVersion: 1,
-    projects: {},
-  };
-  stale.customSettings.projectToolsGitReview = {
-    openProjectPathKeys: ["/stale/project"],
-    openVersion: 1,
-  };
-  stale.customSettings.projectToolsTunnel = {
-    openProjectPathKeys: ["/stale/project"],
-    openVersion: 1,
-  };
-  stale.customSettings.projectToolsSshTunnel = {
-    openProjectPathKeys: ["/stale/project"],
-    openVersion: 1,
+  stale.customSettings.rightDock = {
+    width: 612,
+    projects: {
+      "/stale/project": {
+        activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+        tabOrder: [RIGHT_DOCK_TAB_IDS.fileTree],
+        tabs: {
+          [RIGHT_DOCK_TAB_IDS.fileTree]: {
+            id: RIGHT_DOCK_TAB_IDS.fileTree,
+            kind: "fileTree",
+            projectPathKey: "/stale/project",
+            createdAt: 1,
+          },
+        },
+        openVersion: 1,
+        stateVersion: 1,
+      },
+    },
   };
   store.set("liveagent.gateway.webui.settings.v1", JSON.stringify(stale));
 
@@ -276,10 +305,8 @@ test("loadWebSettings forces current gateway URL/token over stale persisted remo
   assert.equal(loaded.remote.gatewayUrl, "https://new.example");
   assert.equal(loaded.remote.token, "new-token");
   assert.equal(loaded.remote.enabled, true);
-  assert.deepEqual(loaded.customSettings.projectToolsFileTree.openProjectPathKeys, []);
-  assert.deepEqual(loaded.customSettings.projectToolsGitReview.openProjectPathKeys, []);
-  assert.deepEqual(loaded.customSettings.projectToolsTunnel.openProjectPathKeys, []);
-  assert.deepEqual(loaded.customSettings.projectToolsSshTunnel.openProjectPathKeys, []);
+  assert.equal(loaded.customSettings.rightDock.width, 612);
+  assert.deepEqual(Object.keys(loaded.customSettings.rightDock.projects), ["/stale/project"]);
 });
 
 test("gateway settings sync keeps remote connection local and syncs web terminal setting", () => {
@@ -605,18 +632,12 @@ test("settings update payload omits unchanged empty ssh hosts for non-ssh update
     },
   });
   const staleWeb = settings.normalizeSettings({
-    customSettings: {
-      projectToolsSshTunnel: {
-        openProjectPathKeys: [],
-        openVersion: 0,
-      },
-    },
     ssh: {
       hosts: [],
       projectHostAssociations: {},
     },
   });
-  const nextWeb = settings.updateProjectToolsSshTunnelOpen(staleWeb, "/project-a", true);
+  const nextWeb = settings.openRightDockSingletonTab(staleWeb, "/project-a", "sshTunnel");
 
   const update = settingsSync.buildGatewaySettingsSyncUpdatePayload(staleWeb, nextWeb, {
     includeProviderApiKeyUpdates: true,
@@ -633,10 +654,13 @@ test("settings update payload omits unchanged empty ssh hosts for non-ssh update
   assert.deepEqual(merged.ssh.projectHostAssociations, {
     "/project-a": ["ssh-prod"],
   });
-  assert.equal(settings.isProjectToolsSshTunnelOpen(merged.customSettings, "/project-a"), true);
+  assert.equal(
+    settings.isRightDockSingletonTabOpen(merged.customSettings, "/project-a", "sshTunnel"),
+    true,
+  );
 });
 
-test("settings update payload includes ssh when hosts are explicitly deleted", () => {
+test("settings update payload uses sshPatch when hosts are explicitly deleted", () => {
   installWindow();
   const current = settings.normalizeSettings({
     ssh: {
@@ -663,12 +687,40 @@ test("settings update payload includes ssh when hosts are explicitly deleted", (
     includeProviderApiKeyUpdates: true,
   });
 
-  assert.equal(Object.hasOwn(update, "ssh"), true);
-  assert.deepEqual(update.ssh.hosts, []);
-  assert.deepEqual(update.ssh.projectHostAssociations, {});
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshPatch.hostChanges, [
+    {
+      id: "ssh-prod",
+      before: {
+        ...current.ssh.hosts[0],
+        password: "",
+        passwordConfigured: false,
+        privateKey: "",
+        privateKeyConfigured: false,
+        privateKeyPassphrase: "",
+        privateKeyPassphraseConfigured: false,
+        proxy: {
+          type: "socks5",
+          url: "",
+          port: 0,
+          username: "",
+          password: "",
+          passwordConfigured: false,
+        },
+      },
+      after: null,
+    },
+  ]);
+  assert.deepEqual(update.sshPatch.projectAssociationChanges, [
+    {
+      pathKey: "/project-a",
+      before: ["ssh-prod"],
+      after: [],
+    },
+  ]);
 });
 
-test("settings update payload includes ssh for secret-only ssh updates", () => {
+test("settings update payload uses sshSecretUpdates for secret-only ssh updates", () => {
   installWindow();
   const current = settings.normalizeSettings({
     ssh: {
@@ -701,7 +753,8 @@ test("settings update payload includes ssh for secret-only ssh updates", () => {
     includeProviderApiKeyUpdates: true,
   });
 
-  assert.equal(Object.hasOwn(update, "ssh"), true);
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshPatch, {});
   assert.deepEqual(update.sshSecretUpdates, {
     "ssh-prod": {
       password: "new-password",
@@ -710,6 +763,141 @@ test("settings update payload includes ssh for secret-only ssh updates", () => {
 
   const merged = settingsSync.applyGatewaySettingsSyncPayload(current, update);
   assert.equal(merged.ssh.hosts[0].password, "new-password");
+});
+
+test("settings update payload omits unchanged ssh secrets", () => {
+  installWindow();
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "prod-password",
+        },
+        {
+          id: "ssh-staging",
+          name: "Staging",
+          host: "staging.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "staging-password",
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          host: "prod.internal",
+        },
+        current.ssh.hosts[1],
+      ],
+    },
+  });
+
+  const update = settingsSync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.equal(update.sshSecretUpdates, undefined);
+  assert.equal(update.sshPatch.hostChanges.length, 1);
+  assert.equal(update.sshPatch.hostChanges[0].id, "ssh-prod");
+});
+
+test("settings update payload sends empty ssh secret updates when secrets are cleared", () => {
+  installWindow();
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "old-password",
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          password: "",
+          passwordConfigured: false,
+        },
+      ],
+    },
+  });
+
+  const update = settingsSync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshSecretUpdates, {
+    "ssh-prod": {
+      password: "",
+    },
+  });
+
+  const merged = settingsSync.applyGatewaySettingsSyncPayload(current, update);
+  assert.equal(merged.ssh.hosts[0].password, "");
+  assert.equal(merged.ssh.hosts[0].passwordConfigured, false);
+});
+
+test("settings update payload clears redacted configured ssh secrets", () => {
+  installWindow();
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "ssh-prod",
+          name: "Prod",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "",
+          passwordConfigured: true,
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          passwordConfigured: false,
+        },
+      ],
+    },
+  });
+
+  const update = settingsSync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.deepEqual(update.sshSecretUpdates, {
+    "ssh-prod": {
+      password: "",
+    },
+  });
 });
 
 test("workspace project selection stays out of synced system workdir", () => {
@@ -797,140 +985,118 @@ test("gateway settings sync preserves active workspace project by path when ids 
   assert.equal(synced.system.activeWorkspaceProjectId, "desktop-project-a");
 });
 
-test("gateway settings sync keeps newer project tool tab open state", () => {
+test("gateway settings sync keeps right dock width local and syncs project state", () => {
   installWindow();
   const current = settings.normalizeSettings({
     customSettings: {
-      projectToolsPanel: {
+      rightDock: {
         width: 612,
-        activeTab: "gitReview",
-        activeTabs: {
-          "/web/project": "gitReview",
+        projects: {
+          "/desktop/project": {
+            activeTabId: "desktop-terminal",
+            tabOrder: ["desktop-terminal"],
+            tabs: {
+              "desktop-terminal": {
+                id: "desktop-terminal",
+                kind: "terminal",
+                projectPathKey: "/desktop/project",
+                createdAt: 1,
+              },
+            },
+            openVersion: 1,
+            stateVersion: 1,
+          },
+          "/shared/project": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.fileTree],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/shared/project",
+                createdAt: 2,
+                uiState: {
+                  query: "desktop",
+                  selectedPath: "desktop.ts",
+                  expandedPaths: ["", "src"],
+                  revision: 1,
+                  stateVersion: 3,
+                },
+              },
+            },
+            openVersion: 2,
+            stateVersion: 3,
+          },
         },
-        tabOrders: {
-          "/web/project": ["__git_review__", "__file_tree__"],
-        },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/web/project"],
-        openVersion: 2,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/web/project"],
-        openVersion: 2,
-      },
-      projectToolsSshTunnel: {
-        openProjectPathKeys: ["/web/project"],
-        openVersion: 2,
       },
     },
   });
-
-  const staleSynced = settingsSync.applyGatewaySettingsSyncPayload(current, {
+  const incoming = settings.normalizeSettings({
     customSettings: {
-      projectToolsPanel: {
+      rightDock: {
         width: 360,
-        activeTab: "terminal",
-        tabOrders: {
-          "/desktop/project": ["terminal-1", "__file_tree__"],
+        projects: {
+          "/web/project": {
+            activeTabId: "web-terminal",
+            tabOrder: ["web-terminal"],
+            tabs: {
+              "web-terminal": {
+                id: "web-terminal",
+                kind: "terminal",
+                projectPathKey: "/web/project",
+                createdAt: 3,
+              },
+            },
+            openVersion: 2,
+            stateVersion: 2,
+          },
+          "/shared/project": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.fileTree],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/shared/project",
+                createdAt: 4,
+                uiState: {
+                  query: "web",
+                  selectedPath: "web.ts",
+                  expandedPaths: ["", "packages"],
+                  revision: 2,
+                  stateVersion: 2,
+                },
+              },
+            },
+            openVersion: 5,
+            stateVersion: 2,
+          },
         },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: [],
-        openVersion: 1,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: [],
-        openVersion: 1,
-      },
-      projectToolsSshTunnel: {
-        openProjectPathKeys: [],
-        openVersion: 1,
       },
     },
   });
-  assert.deepEqual(staleSynced.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/web/project",
-  ]);
-  assert.equal(staleSynced.customSettings.projectToolsGitReview.openVersion, 2);
-  assert.deepEqual(staleSynced.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/web/project",
-  ]);
-  assert.equal(staleSynced.customSettings.projectToolsTunnel.openVersion, 2);
-  assert.deepEqual(staleSynced.customSettings.projectToolsSshTunnel.openProjectPathKeys, [
-    "/web/project",
-  ]);
-  assert.equal(staleSynced.customSettings.projectToolsSshTunnel.openVersion, 2);
-  assert.equal(staleSynced.customSettings.projectToolsPanel.width, 612);
-  assert.equal(staleSynced.customSettings.projectToolsPanel.activeTab, "gitReview");
-  assert.deepEqual(staleSynced.customSettings.projectToolsPanel.activeTabs, {
-    "/web/project": "gitReview",
-  });
-  assert.deepEqual(staleSynced.customSettings.projectToolsPanel.tabOrders, {
-    "/web/project": ["__git_review__", "__file_tree__"],
-  });
 
-  const newerSynced = settingsSync.applyGatewaySettingsSyncPayload(staleSynced, {
-    customSettings: {
-      projectToolsPanel: {
-        width: 360,
-        activeTab: "tunnel",
-        activeTabs: {
-          "/desktop/project": "tunnel",
-        },
-        tabOrders: {
-          "/desktop/project": ["terminal-1", "__tunnel__"],
-        },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/desktop/project"],
-        openVersion: 3,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/desktop/project"],
-        openVersion: 3,
-      },
-      projectToolsSshTunnel: {
-        openProjectPathKeys: ["/desktop/project"],
-        openVersion: 3,
-      },
+  const payload = settingsSync.buildGatewaySettingsSyncPayload(incoming);
+  const synced = settingsSync.applyGatewaySettingsSyncPayload(current, payload);
+
+  assert.equal(synced.customSettings.rightDock.width, 612);
+  assert.deepEqual(Object.keys(synced.customSettings.rightDock.projects).sort(), [
+    "/desktop/project",
+    "/shared/project",
+    "/web/project",
+  ]);
+  assert.deepEqual(
+    settings.getRightDockFileTreeState(synced.customSettings, "/shared/project"),
+    {
+      query: "desktop",
+      selectedPath: "desktop.ts",
+      expandedPaths: ["", "src"],
+      revision: 1,
+      stateVersion: 3,
     },
-  });
-  assert.deepEqual(newerSynced.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/desktop/project",
-  ]);
-  assert.equal(newerSynced.customSettings.projectToolsGitReview.openVersion, 3);
-  assert.deepEqual(newerSynced.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/desktop/project",
-  ]);
-  assert.equal(newerSynced.customSettings.projectToolsTunnel.openVersion, 3);
-  assert.deepEqual(newerSynced.customSettings.projectToolsSshTunnel.openProjectPathKeys, [
-    "/desktop/project",
-  ]);
-  assert.equal(newerSynced.customSettings.projectToolsSshTunnel.openVersion, 3);
-  assert.equal(newerSynced.customSettings.projectToolsPanel.width, 612);
-  assert.equal(newerSynced.customSettings.projectToolsPanel.activeTab, "gitReview");
-  assert.deepEqual(newerSynced.customSettings.projectToolsPanel.activeTabs, {
-    "/web/project": "gitReview",
-  });
-  assert.deepEqual(newerSynced.customSettings.projectToolsPanel.tabOrders, {
-    "/web/project": ["__git_review__", "__file_tree__"],
-  });
-
-  const payload = settingsSync.buildGatewaySettingsSyncPayload(newerSynced);
-  assert.equal(Object.hasOwn(payload.customSettings, "projectToolsPanel"), false);
-  assert.deepEqual(payload.customSettings.projectToolsGitReview, {
-    openProjectPathKeys: ["/desktop/project"],
-    openVersion: 3,
-  });
-  assert.deepEqual(payload.customSettings.projectToolsTunnel, {
-    openProjectPathKeys: ["/desktop/project"],
-    openVersion: 3,
-  });
-  assert.deepEqual(payload.customSettings.projectToolsSshTunnel, {
-    openProjectPathKeys: ["/desktop/project"],
-    openVersion: 3,
-  });
+  );
+  assert.equal(synced.customSettings.rightDock.projects["/shared/project"].openVersion, 5);
+  assert.equal(synced.customSettings.rightDock.projects["/shared/project"].stateVersion, 3);
 });
 
 test("gateway settings sync keeps newer project conversation activity", () => {

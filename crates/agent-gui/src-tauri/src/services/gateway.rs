@@ -21,9 +21,10 @@ use uuid::Uuid;
 
 use crate::commands::chat_history::{self, ChatHistorySummary};
 use crate::commands::settings::{
-    load_gateway_settings_sync_snapshot, load_remote_settings, normalize_remote_settings_payload,
-    open_db, redact_gateway_settings_sync_payload, reset_runtime_ssh_known_host,
-    RemoteSettingsPayload, PROVIDER_API_KEY_UPDATES_FIELD, SSH_SECRET_UPDATES_FIELD,
+    apply_ssh_patch_with_conn, load_gateway_settings_sync_snapshot, load_remote_settings,
+    normalize_remote_settings_payload, open_db, redact_gateway_settings_sync_payload,
+    reset_runtime_ssh_known_host, RemoteSettingsPayload, PROVIDER_API_KEY_UPDATES_FIELD,
+    SSH_PATCH_FIELD, SSH_SECRET_UPDATES_FIELD,
 };
 use crate::runtime::project_path::{
     project_path_key as normalize_project_path_key, project_path_keys_equal,
@@ -1065,6 +1066,91 @@ impl GatewayController {
             Some(proto::gateway_envelope::Payload::SettingsUpdate(request)) => {
                 match parse_settings_sync_payload(&request.settings_json) {
                     Ok(snapshot) => {
+                        if snapshot.get(SSH_PATCH_FIELD).is_some() {
+                            let patch_payload = snapshot.clone();
+                            let apply_response =
+                                match tauri::async_runtime::spawn_blocking(move || {
+                                    let mut conn = open_db()?;
+                                    apply_ssh_patch_with_conn(&mut conn, patch_payload)
+                                })
+                                .await
+                                .map_err(|e| format!("settings ssh patch join failed: {e}"))
+                                {
+                                    Ok(Ok(response)) => response,
+                                    Ok(Err(error)) | Err(error) => {
+                                        return self
+                                            .send_error_response(request_id, 500, error)
+                                            .await;
+                                    }
+                                };
+                            if let Some(conflict) = apply_response.conflict {
+                                return self
+                                    .send_agent_envelope(proto::AgentEnvelope {
+                                        request_id,
+                                        timestamp: now_unix_seconds(),
+                                        payload: Some(
+                                            proto::agent_envelope::Payload::SettingsUpdateResp(
+                                                proto::SettingsUpdateResponse {
+                                                    accepted: false,
+                                                    message: conflict,
+                                                },
+                                            ),
+                                        ),
+                                    })
+                                    .await;
+                            }
+
+                            let fresh_snapshot = match self.current_settings_snapshot().await {
+                                Ok(snapshot) => snapshot,
+                                Err(error) => {
+                                    return self.send_error_response(request_id, 500, error).await;
+                                }
+                            };
+                            let merged_ssh =
+                                fresh_snapshot.get("ssh").cloned().unwrap_or(Value::Null);
+                            let event_payload =
+                                match build_local_settings_update_event_payload_with_ssh(
+                                    snapshot.clone(),
+                                    merged_ssh,
+                                ) {
+                                    Ok(payload) => payload,
+                                    Err(error) => {
+                                        return self
+                                            .send_error_response(request_id, 400, error)
+                                            .await;
+                                    }
+                                };
+                            if let Err(error) = self
+                                .app_handle
+                                .emit(GATEWAY_SETTINGS_SYNC_EVENT, event_payload)
+                            {
+                                return self
+                                    .send_error_response(
+                                        request_id,
+                                        500,
+                                        format!("emit gateway settings sync failed: {error}"),
+                                    )
+                                    .await;
+                            }
+                            if let Err(error) = self.publish_settings_sync(fresh_snapshot).await {
+                                eprintln!("publish gateway ssh settings sync failed: {error}");
+                            }
+                            return self
+                                .send_agent_envelope(proto::AgentEnvelope {
+                                    request_id,
+                                    timestamp: now_unix_seconds(),
+                                    payload: Some(
+                                        proto::agent_envelope::Payload::SettingsUpdateResp(
+                                            proto::SettingsUpdateResponse {
+                                                accepted: true,
+                                                message: "ok".to_string(),
+                                            },
+                                        ),
+                                    ),
+                                })
+                                .await;
+                        }
+
                         let event_payload =
                             match build_local_settings_update_event_payload(snapshot.clone()) {
                                 Ok(payload) => payload,
@@ -4273,6 +4359,32 @@ fn build_local_settings_update_event_payload(payload: Value) -> Result<Value, St
     let provider_api_key_updates = event.remove(PROVIDER_API_KEY_UPDATES_FIELD);
     let ssh_secret_updates = event.remove(SSH_SECRET_UPDATES_FIELD);
     event.remove("remote");
+    let mut public_event = match redact_gateway_settings_sync_payload(Value::Object(event))? {
+        Value::Object(map) => map,
+        _ => return Err("gateway settings sync payload must be an object".to_string()),
+    };
+    if let Some(updates) = provider_api_key_updates {
+        public_event.insert(PROVIDER_API_KEY_UPDATES_FIELD.to_string(), updates);
+    }
+    if let Some(updates) = ssh_secret_updates {
+        public_event.insert(SSH_SECRET_UPDATES_FIELD.to_string(), updates);
+    }
+    Ok(Value::Object(public_event))
+}
+
+fn build_local_settings_update_event_payload_with_ssh(
+    payload: Value,
+    ssh: Value,
+) -> Result<Value, String> {
+    let mut event = match payload {
+        Value::Object(map) => map,
+        _ => return Err("gateway settings sync payload must be an object".to_string()),
+    };
+    let provider_api_key_updates = event.remove(PROVIDER_API_KEY_UPDATES_FIELD);
+    let ssh_secret_updates = event.remove(SSH_SECRET_UPDATES_FIELD);
+    event.remove("remote");
+    event.remove(SSH_PATCH_FIELD);
+    event.insert("ssh".to_string(), ssh);
     let mut public_event = match redact_gateway_settings_sync_payload(Value::Object(event))? {
         Value::Object(map) => map,
         _ => return Err("gateway settings sync payload must be an object".to_string()),

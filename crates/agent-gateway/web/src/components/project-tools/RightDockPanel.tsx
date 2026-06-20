@@ -263,7 +263,7 @@ export function RightDockPanel(props: RightDockPanelProps) {
       data-state={isOpen ? "open" : "closed"}
       data-project-tools-resizing={isResizing ? "true" : undefined}
       className={cn(
-        "fixed inset-x-0 bottom-0 z-40 flex h-[min(72vh,34rem)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-background shadow-2xl transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:relative md:inset-auto md:z-10 md:h-full md:overflow-visible md:shadow-none",
+        "project-tools-panel fixed inset-x-0 bottom-0 z-40 flex h-[min(72vh,34rem)] min-h-0 w-full shrink-0 flex-col overflow-hidden bg-background shadow-2xl transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:relative md:inset-auto md:z-10 md:h-full md:overflow-visible md:shadow-none",
         isOpen
           ? "pointer-events-auto translate-y-0 border-t border-border opacity-100 md:w-[var(--project-tools-panel-width)] md:translate-x-0 md:border-l md:border-t-0"
           : "pointer-events-none translate-y-full border-t border-transparent opacity-0 md:translate-x-3 md:translate-y-0 md:border-l-0 md:border-t-0",
@@ -273,7 +273,7 @@ export function RightDockPanel(props: RightDockPanelProps) {
     >
       <div
         className={cn(
-          "flex h-full min-h-0 w-full flex-col transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:w-[var(--project-tools-panel-width)] md:min-w-[var(--project-tools-panel-width)]",
+          "project-tools-panel-inner flex h-full min-h-0 w-full flex-col transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none md:w-[var(--project-tools-panel-width)] md:min-w-[var(--project-tools-panel-width)]",
           isOpen
             ? "translate-y-0 opacity-100 md:translate-x-0"
             : "translate-y-3 opacity-0 md:translate-x-2 md:translate-y-0",
@@ -281,6 +281,7 @@ export function RightDockPanel(props: RightDockPanelProps) {
       >
         {effectiveShouldRenderContent ? (
           <>
+            <div className="project-tools-panel-handle" aria-hidden="true" />
             <button
               type="button"
               aria-label={t("projectTools.resizePanel")}
@@ -300,25 +301,27 @@ export function RightDockPanel(props: RightDockPanelProps) {
                 )}
               />
             </button>
-            <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-              <div
-                ref={tabsScrollRef}
-                className="project-tools-panel-tabs flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden"
-              >
-                <RightDockTabStrip
-                  tabs={orderedProjectTabs}
-                  currentActiveTab={currentActiveTab}
-                  activeSession={activeSession}
-                  pendingCloseSessionId={pendingCloseSessionId}
-                  closingSessionId={closingSessionId}
-                  draggingTabId={draggingTabId}
-                  renderTabDragHandle={renderTabDragHandle}
-                  consumeSuppressedTabClick={consumeSuppressedTabClick}
-                  onActivateTab={activateTab}
-                  onActivateTerminalSession={activateTerminalSession}
-                  onCloseToolTab={closeToolTab}
-                  onCloseTerminalRequest={handleCloseRequest}
-                />
+            <div className="project-tools-panel-header flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+              <div className="project-tools-panel-tabs-shell min-w-0 flex-1">
+                <div
+                  ref={tabsScrollRef}
+                  className="project-tools-panel-tabs flex min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden"
+                >
+                  <RightDockTabStrip
+                    tabs={orderedProjectTabs}
+                    currentActiveTab={currentActiveTab}
+                    activeSession={activeSession}
+                    pendingCloseSessionId={pendingCloseSessionId}
+                    closingSessionId={closingSessionId}
+                    draggingTabId={draggingTabId}
+                    renderTabDragHandle={renderTabDragHandle}
+                    consumeSuppressedTabClick={consumeSuppressedTabClick}
+                    onActivateTab={activateTab}
+                    onActivateTerminalSession={activateTerminalSession}
+                    onCloseToolTab={closeToolTab}
+                    onCloseTerminalRequest={handleCloseRequest}
+                  />
+                </div>
               </div>
               <RightDockCreateMenu
                 open={createMenuOpen}

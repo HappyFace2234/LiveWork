@@ -38,7 +38,7 @@ type ToolTabOptions = {
 };
 
 const TAB_BASE_CLASS =
-  "group relative flex h-8 max-w-[12rem] shrink-0 select-none items-center gap-1 rounded-md border border-transparent px-1.5 text-xs text-muted-foreground transition-[background-color,border-color,color,opacity,transform,box-shadow] hover:bg-muted/80 hover:text-foreground";
+  "project-tools-panel-tab group relative flex h-8 max-w-[12rem] shrink-0 select-none items-center gap-1 rounded-md border border-transparent px-1.5 text-xs text-muted-foreground transition-[background-color,border-color,color,opacity,transform,box-shadow] hover:bg-muted/80 hover:text-foreground";
 
 const CLOSE_BUTTON_CLASS =
   "relative z-10 ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-background hover:text-foreground focus-visible:bg-background focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100";

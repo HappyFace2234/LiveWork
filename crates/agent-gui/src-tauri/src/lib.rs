@@ -117,6 +117,7 @@ macro_rules! app_invoke_handler {
             commands::settings::settings_save_mcp,
             commands::settings::settings_save_agents,
             commands::settings::settings_save_ssh,
+            commands::settings::settings_apply_ssh_patch,
             commands::settings::settings_reset_ssh_known_host,
             commands::settings::settings_save_hooks,
             commands::settings::settings_save_cron,

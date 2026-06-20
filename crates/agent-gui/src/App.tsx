@@ -49,9 +49,7 @@ function AppChrome(props: { children: ReactNode }) {
       }}
     >
       <WindowsTitleBar />
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-background">
-        {props.children}
-      </div>
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-background">{props.children}</div>
     </div>
   );
 }
@@ -188,9 +186,26 @@ export default function App() {
       saveChainRef.current = saveChainRef.current
         .catch(() => undefined)
         .then(() => persistSettings(prev, next))
-        .then(async () => {
+        .then(async (persistResult) => {
+          const publishTarget = persistResult.ssh
+            ? normalizeSettings({
+                ...next,
+                ssh: persistResult.ssh,
+              })
+            : next;
+          if (persistResult.ssh && saveSequenceRef.current === saveSequence) {
+            setSettingsState((current) =>
+              normalizeSettings({
+                ...current,
+                ssh: persistResult.ssh,
+              }),
+            );
+          }
+          if (persistResult.conflict) {
+            throw new Error(persistResult.conflict);
+          }
           if (publishSync) {
-            await publishGatewaySettingsSync(next);
+            await publishGatewaySettingsSync(publishTarget);
           }
         })
         .then(() => {

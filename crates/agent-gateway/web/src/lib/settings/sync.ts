@@ -16,6 +16,22 @@ export type GatewaySshSecretUpdates = Record<
     proxyPassword?: string;
   }
 >;
+export type GatewaySshSyncPatch = {
+  hostChanges?: {
+    id: string;
+    before: AppSettings["ssh"]["hosts"][number] | null;
+    after: AppSettings["ssh"]["hosts"][number] | null;
+  }[];
+  projectAssociationChanges?: {
+    pathKey: string;
+    before: string[];
+    after: string[];
+  }[];
+  hostOrderChange?: {
+    before: string[];
+    after: string[];
+  };
+};
 export type GatewaySettingsSyncProvider = Omit<AppSettings["customProviders"][number], "apiKey"> & {
   apiKeyConfigured?: boolean;
 };
@@ -40,6 +56,7 @@ export type GatewaySettingsSyncPayload = {
   selectedModel: AppSettings["selectedModel"] | null;
   theme: AppSettings["theme"];
   locale: AppSettings["locale"];
+  sshPatch?: GatewaySshSyncPatch;
   providerApiKeyUpdates?: GatewayProviderApiKeyUpdates;
   sshSecretUpdates?: GatewaySshSecretUpdates;
 };
@@ -148,7 +165,7 @@ function collectProviderApiKeyUpdates(
   return Object.keys(updates).length > 0 ? updates : undefined;
 }
 
-function collectSshSecretUpdates(ssh: AppSettings["ssh"]): GatewaySshSecretUpdates | undefined {
+export function collectSshSecretUpdates(ssh: AppSettings["ssh"]): GatewaySshSecretUpdates | undefined {
   const updates: GatewaySshSecretUpdates = {};
   for (const host of ssh.hosts) {
     const id = host.id.trim();
@@ -170,8 +187,140 @@ function collectSshSecretUpdates(ssh: AppSettings["ssh"]): GatewaySshSecretUpdat
   return Object.keys(updates).length > 0 ? updates : undefined;
 }
 
+function readSecret(value: string | undefined): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function hasSecretUpdateField(
+  update: GatewaySshSecretUpdates[string] | undefined,
+  key: keyof GatewaySshSecretUpdates[string],
+) {
+  return update ? Object.prototype.hasOwnProperty.call(update, key) : false;
+}
+
+function collectChangedSshSecretUpdates(
+  prev: AppSettings["ssh"],
+  next: AppSettings["ssh"],
+): GatewaySshSecretUpdates | undefined {
+  const previousHostsById = new Map(prev.hosts.map((host) => [host.id, host]));
+  const updates: GatewaySshSecretUpdates = {};
+
+  for (const host of next.hosts) {
+    const id = host.id.trim();
+    if (!id || host.authType === "agent") continue;
+    const previous = previousHostsById.get(id);
+    const update: GatewaySshSecretUpdates[string] = {};
+
+    if (host.authType === "password") {
+      const password = readSecret(host.password);
+      const passwordConfiguredCleared =
+        previous?.passwordConfigured === true && host.passwordConfigured === false;
+      if (password !== readSecret(previous?.password) || passwordConfiguredCleared) {
+        update.password = password;
+      }
+    }
+
+    if (host.authType === "privateKey") {
+      const privateKey = readSecret(host.privateKey);
+      const privateKeyPassphrase = readSecret(host.privateKeyPassphrase);
+      const privateKeyConfiguredCleared =
+        previous?.privateKeyConfigured === true && host.privateKeyConfigured === false;
+      const privateKeyPassphraseConfiguredCleared =
+        previous?.privateKeyPassphraseConfigured === true &&
+        host.privateKeyPassphraseConfigured === false;
+      if (privateKey !== readSecret(previous?.privateKey) || privateKeyConfiguredCleared) {
+        update.privateKey = privateKey;
+      }
+      if (
+        privateKeyPassphrase !== readSecret(previous?.privateKeyPassphrase) ||
+        privateKeyPassphraseConfiguredCleared
+      ) {
+        update.privateKeyPassphrase = privateKeyPassphrase;
+      }
+    }
+
+    const proxyPassword = readSecret(host.proxy.password);
+    const proxyPasswordConfiguredCleared =
+      previous?.proxy.passwordConfigured === true && host.proxy.passwordConfigured === false;
+    if (proxyPassword !== readSecret(previous?.proxy.password) || proxyPasswordConfiguredCleared) {
+      update.proxyPassword = proxyPassword;
+    }
+
+    if (Object.keys(update).length > 0) {
+      updates[id] = update;
+    }
+  }
+
+  return Object.keys(updates).length > 0 ? updates : undefined;
+}
+
 function redactSshSettingsForGateway(ssh: AppSettings["ssh"]): AppSettings["ssh"] {
   return redactSshSettingsForWebStorage(ssh);
+}
+
+function idsEqual(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function normalizeAssociationEntries(associations: AppSettings["ssh"]["projectHostAssociations"]) {
+  return Object.entries(associations).sort(([left], [right]) => left.localeCompare(right));
+}
+
+export function buildGatewaySshSyncPatch(
+  prev: AppSettings["ssh"],
+  next: AppSettings["ssh"],
+): GatewaySshSyncPatch | undefined {
+  const previousSsh = redactSshSettingsForGateway(prev);
+  const nextSsh = redactSshSettingsForGateway(next);
+  const previousHostsById = new Map(previousSsh.hosts.map((host) => [host.id, host]));
+  const nextHostsById = new Map(nextSsh.hosts.map((host) => [host.id, host]));
+  const hostChanges: NonNullable<GatewaySshSyncPatch["hostChanges"]> = [];
+  const seenHostIds = new Set<string>();
+
+  for (const host of previousSsh.hosts) seenHostIds.add(host.id);
+  for (const host of nextSsh.hosts) seenHostIds.add(host.id);
+
+  for (const hostId of seenHostIds) {
+    const before = previousHostsById.get(hostId) ?? null;
+    const after = nextHostsById.get(hostId) ?? null;
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      hostChanges.push({ id: hostId, before, after });
+    }
+  }
+
+  const previousOrder = previousSsh.hosts.map((host) => host.id);
+  const nextOrder = nextSsh.hosts.map((host) => host.id);
+  const sameHostSet =
+    previousOrder.length === nextOrder.length && previousOrder.every((id) => nextHostsById.has(id));
+  const hostOrderChange =
+    sameHostSet && !idsEqual(previousOrder, nextOrder)
+      ? { before: previousOrder, after: nextOrder }
+      : undefined;
+
+  const projectAssociationChanges: NonNullable<
+    GatewaySshSyncPatch["projectAssociationChanges"]
+  > = [];
+  const previousAssociations = normalizeAssociationEntries(previousSsh.projectHostAssociations);
+  const nextAssociations = normalizeAssociationEntries(nextSsh.projectHostAssociations);
+  const pathKeys = new Set<string>([
+    ...previousAssociations.map(([pathKey]) => pathKey),
+    ...nextAssociations.map(([pathKey]) => pathKey),
+  ]);
+  for (const pathKey of pathKeys) {
+    const before = previousSsh.projectHostAssociations[pathKey] ?? [];
+    const after = nextSsh.projectHostAssociations[pathKey] ?? [];
+    if (!idsEqual(before, after)) {
+      projectAssociationChanges.push({ pathKey, before, after });
+    }
+  }
+
+  const patch: GatewaySshSyncPatch = {};
+  if (hostChanges.length > 0) patch.hostChanges = hostChanges;
+  if (projectAssociationChanges.length > 0) {
+    patch.projectAssociationChanges = projectAssociationChanges;
+  }
+  if (hostOrderChange) patch.hostOrderChange = hostOrderChange;
+  return Object.keys(patch).length > 0 ? patch : undefined;
 }
 
 function syncableCustomSettings(
@@ -308,20 +457,31 @@ function normalizeSshSecretUpdates(value: unknown): GatewaySshSecretUpdates {
     const normalizedId = id.trim();
     if (!normalizedId) continue;
     const updateSource = asObject(rawUpdate);
-    const password = typeof updateSource.password === "string" ? updateSource.password.trim() : "";
-    const privateKey =
-      typeof updateSource.privateKey === "string" ? updateSource.privateKey.trim() : "";
-    const privateKeyPassphrase =
-      typeof updateSource.privateKeyPassphrase === "string"
-        ? updateSource.privateKeyPassphrase.trim()
-        : "";
-    const proxyPassword =
-      typeof updateSource.proxyPassword === "string" ? updateSource.proxyPassword.trim() : "";
     const update: GatewaySshSecretUpdates[string] = {};
-    if (password) update.password = password;
-    if (privateKey) update.privateKey = privateKey;
-    if (privateKeyPassphrase) update.privateKeyPassphrase = privateKeyPassphrase;
-    if (proxyPassword) update.proxyPassword = proxyPassword;
+    if (
+      Object.prototype.hasOwnProperty.call(updateSource, "password") &&
+      typeof updateSource.password === "string"
+    ) {
+      update.password = updateSource.password.trim();
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updateSource, "privateKey") &&
+      typeof updateSource.privateKey === "string"
+    ) {
+      update.privateKey = updateSource.privateKey.trim();
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updateSource, "privateKeyPassphrase") &&
+      typeof updateSource.privateKeyPassphrase === "string"
+    ) {
+      update.privateKeyPassphrase = updateSource.privateKeyPassphrase.trim();
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(updateSource, "proxyPassword") &&
+      typeof updateSource.proxyPassword === "string"
+    ) {
+      update.proxyPassword = updateSource.proxyPassword.trim();
+    }
     if (Object.keys(update).length > 0) {
       updates[normalizedId] = update;
     }
@@ -419,53 +579,177 @@ function mergeSyncedSshSettings(
       const currentHost = currentById.get(host.id);
       const update = secretUpdates[host.id];
       const isAgentAuth = host.authType === "agent";
+      const hasPasswordUpdate = hasSecretUpdateField(update, "password");
+      const hasPrivateKeyUpdate = hasSecretUpdateField(update, "privateKey");
+      const hasPrivateKeyPassphraseUpdate = hasSecretUpdateField(
+        update,
+        "privateKeyPassphrase",
+      );
+      const hasProxyPasswordUpdate = hasSecretUpdateField(update, "proxyPassword");
       const password = isAgentAuth
         ? ""
-        : (update?.password ?? host.password.trim()) || currentHost?.password || "";
+        : hasPasswordUpdate
+          ? readSecret(update?.password)
+          : host.password.trim() || currentHost?.password || "";
       const privateKey =
         isAgentAuth
           ? ""
-          : (update?.privateKey ?? host.privateKey.trim()) || currentHost?.privateKey || "";
+          : hasPrivateKeyUpdate
+            ? readSecret(update?.privateKey)
+            : host.privateKey.trim() || currentHost?.privateKey || "";
       const privateKeyPassphrase =
         isAgentAuth
           ? ""
-          : (update?.privateKeyPassphrase ?? host.privateKeyPassphrase.trim()) ||
-            currentHost?.privateKeyPassphrase ||
-            "";
-      const proxyPassword =
-        (update?.proxyPassword ?? host.proxy.password.trim()) || currentHost?.proxy.password || "";
+          : hasPrivateKeyPassphraseUpdate
+            ? readSecret(update?.privateKeyPassphrase)
+            : host.privateKeyPassphrase.trim() || currentHost?.privateKeyPassphrase || "";
+      const proxyPassword = hasProxyPasswordUpdate
+        ? readSecret(update?.proxyPassword)
+        : host.proxy.password.trim() || currentHost?.proxy.password || "";
       return {
         ...host,
         password,
         passwordConfigured:
           !isAgentAuth &&
-          (password.length > 0 ||
-            host.passwordConfigured === true ||
-            currentHost?.passwordConfigured === true),
+          (hasPasswordUpdate
+            ? password.length > 0
+            : password.length > 0 ||
+              host.passwordConfigured === true ||
+              currentHost?.passwordConfigured === true),
         privateKey,
         privateKeyConfigured:
           !isAgentAuth &&
-          (privateKey.length > 0 ||
-            host.privateKeyPath.trim().length > 0 ||
-            host.privateKeyConfigured === true ||
-            currentHost?.privateKeyConfigured === true),
+          (hasPrivateKeyUpdate
+            ? privateKey.length > 0 || host.privateKeyPath.trim().length > 0
+            : privateKey.length > 0 ||
+              host.privateKeyPath.trim().length > 0 ||
+              host.privateKeyConfigured === true ||
+              currentHost?.privateKeyConfigured === true),
         privateKeyPassphrase,
         privateKeyPassphraseConfigured:
           !isAgentAuth &&
-          (privateKeyPassphrase.length > 0 ||
-            host.privateKeyPassphraseConfigured === true ||
-            currentHost?.privateKeyPassphraseConfigured === true),
+          (hasPrivateKeyPassphraseUpdate
+            ? privateKeyPassphrase.length > 0
+            : privateKeyPassphrase.length > 0 ||
+              host.privateKeyPassphraseConfigured === true ||
+              currentHost?.privateKeyPassphraseConfigured === true),
         proxy: {
           ...host.proxy,
           password: proxyPassword,
           passwordConfigured:
-            proxyPassword.length > 0 ||
-            host.proxy.passwordConfigured === true ||
-            currentHost?.proxy.passwordConfigured === true,
+            hasProxyPasswordUpdate
+              ? proxyPassword.length > 0
+              : proxyPassword.length > 0 ||
+                host.proxy.passwordConfigured === true ||
+                currentHost?.proxy.passwordConfigured === true,
         },
       };
     }),
   };
+}
+
+function applySyncedSshPatch(
+  current: AppSettings["ssh"],
+  patch: unknown,
+  secretUpdates: GatewaySshSecretUpdates,
+): AppSettings["ssh"] {
+  const source = asObject(patch) as GatewaySshSyncPatch;
+  const hostsById = new Map(current.hosts.map((host) => [host.id, { ...host }]));
+  let hostOrder = current.hosts.map((host) => host.id);
+
+  for (const change of Array.isArray(source.hostChanges) ? source.hostChanges : []) {
+    const id = typeof change?.id === "string" ? change.id.trim() : "";
+    if (!id) continue;
+    if (change.after === null) {
+      hostsById.delete(id);
+      hostOrder = hostOrder.filter((hostId) => hostId !== id);
+      continue;
+    }
+    const normalized = normalizeSettings({
+      ssh: { hosts: [change.after], projectHostAssociations: {} },
+    }).ssh.hosts[0];
+    if (!normalized) continue;
+    const existing = hostsById.get(id);
+    hostsById.set(id, {
+      ...existing,
+      ...normalized,
+      password: normalized.password || existing?.password || "",
+      privateKey: normalized.privateKey || existing?.privateKey || "",
+      privateKeyPassphrase:
+        normalized.privateKeyPassphrase || existing?.privateKeyPassphrase || "",
+      proxy: {
+        ...normalized.proxy,
+        password: normalized.proxy.password || existing?.proxy.password || "",
+      },
+    });
+    if (!hostOrder.includes(id)) hostOrder.push(id);
+  }
+
+  const orderChange = asObject(source.hostOrderChange);
+  if (Array.isArray(orderChange.after)) {
+    const requestedOrder = orderChange.after
+      .filter((id): id is string => typeof id === "string")
+      .map((id) => id.trim())
+      .filter((id) => id && hostsById.has(id));
+    const ordered = new Set(requestedOrder);
+    hostOrder = [
+      ...requestedOrder,
+      ...hostOrder.filter((id) => hostsById.has(id) && !ordered.has(id)),
+    ];
+  } else {
+    hostOrder = hostOrder.filter((id) => hostsById.has(id));
+  }
+
+  for (const [id, update] of Object.entries(secretUpdates)) {
+    const host = hostsById.get(id);
+    if (!host || host.authType === "agent") continue;
+    if (host.authType === "password" && hasSecretUpdateField(update, "password")) {
+      host.password = readSecret(update.password);
+      host.passwordConfigured = host.password.length > 0;
+    }
+    if (host.authType === "privateKey") {
+      if (hasSecretUpdateField(update, "privateKey")) {
+        host.privateKey = readSecret(update.privateKey);
+        host.privateKeyConfigured =
+          host.privateKey.length > 0 || host.privateKeyPath.trim().length > 0;
+      }
+      if (hasSecretUpdateField(update, "privateKeyPassphrase")) {
+        host.privateKeyPassphrase = readSecret(update.privateKeyPassphrase);
+        host.privateKeyPassphraseConfigured = host.privateKeyPassphrase.length > 0;
+      }
+    }
+    if (hasSecretUpdateField(update, "proxyPassword")) {
+      const proxyPassword = readSecret(update.proxyPassword);
+      host.proxy = {
+        ...host.proxy,
+        password: proxyPassword,
+        passwordConfigured: proxyPassword.length > 0,
+      };
+    }
+  }
+
+  const projectHostAssociations = { ...current.projectHostAssociations };
+  for (const change of Array.isArray(source.projectAssociationChanges)
+    ? source.projectAssociationChanges
+    : []) {
+    const pathKey = typeof change?.pathKey === "string" ? change.pathKey.trim() : "";
+    if (!pathKey) continue;
+    const after = Array.isArray(change.after)
+      ? change.after.filter((id): id is string => typeof id === "string")
+      : [];
+    if (after.length > 0) {
+      projectHostAssociations[pathKey] = after;
+    } else {
+      delete projectHostAssociations[pathKey];
+    }
+  }
+
+  return normalizeSettings({
+    ssh: {
+      hosts: hostOrder.map((id) => hostsById.get(id)).filter((host): host is AppSettings["ssh"]["hosts"][number] => Boolean(host)),
+      projectHostAssociations,
+    },
+  }).ssh;
 }
 
 function mergeSyncedRightDockSettings(
@@ -548,22 +832,35 @@ export function buildGatewaySettingsSyncUpdatePayload(
   options: { includeProviderApiKeyUpdates?: boolean } = {},
 ): GatewaySettingsSyncUpdatePayload {
   const previousPayload = buildGatewaySettingsSyncPayload(prev);
-  const nextPayload = buildGatewaySettingsSyncPayload(next, options);
+  const nextPayload = buildGatewaySettingsSyncPayload(next);
   const update: GatewaySettingsSyncUpdatePayload = {};
+  const sshPatch = buildGatewaySshSyncPatch(prev.ssh, next.ssh);
 
   for (const field of GATEWAY_SETTINGS_SYNC_FIELDS) {
+    if (field === "ssh") {
+      if (sshPatch) {
+        update.sshPatch = sshPatch;
+      }
+      continue;
+    }
     if (JSON.stringify(previousPayload[field]) !== JSON.stringify(nextPayload[field])) {
       (update as Record<string, unknown>)[field] = nextPayload[field];
     }
   }
 
-  if (nextPayload.providerApiKeyUpdates) {
+  const providerApiKeyUpdates = options.includeProviderApiKeyUpdates
+    ? collectProviderApiKeyUpdates(next.customProviders)
+    : undefined;
+  if (providerApiKeyUpdates) {
     update.customProviders ??= nextPayload.customProviders;
-    update.providerApiKeyUpdates = nextPayload.providerApiKeyUpdates;
+    update.providerApiKeyUpdates = providerApiKeyUpdates;
   }
-  if (nextPayload.sshSecretUpdates) {
-    update.ssh ??= nextPayload.ssh;
-    update.sshSecretUpdates = nextPayload.sshSecretUpdates;
+  const sshSecretUpdates = options.includeProviderApiKeyUpdates
+    ? collectChangedSshSecretUpdates(prev.ssh, next.ssh)
+    : undefined;
+  if (sshSecretUpdates) {
+    update.sshPatch ??= sshPatch ?? {};
+    update.sshSecretUpdates = sshSecretUpdates;
   }
 
   return update;
@@ -603,7 +900,9 @@ export function applyGatewaySettingsSyncPayload(
     agents: (source.agents as AppSettings["agents"] | undefined) ?? current.agents,
     ssh: Object.prototype.hasOwnProperty.call(source, "ssh")
       ? mergeSyncedSshSettings(current.ssh, source.ssh, sshSecretUpdates)
-      : current.ssh,
+      : Object.prototype.hasOwnProperty.call(source, "sshPatch")
+        ? applySyncedSshPatch(current.ssh, source.sshPatch, sshSecretUpdates)
+        : current.ssh,
     hooks: (source.hooks as AppSettings["hooks"] | undefined) ?? current.hooks,
     cron: (source.cron as AppSettings["cron"] | undefined) ?? current.cron,
     memory: memory as AppSettings["memory"],

@@ -2206,6 +2206,20 @@ export default function App() {
           }
         })
         .catch((error) => {
+          if (syncGateway && api) {
+            void api
+              .getSettings()
+              .then((payload) => {
+                setSettingsState((current) => {
+                  const refreshed = redactSettingsForWebStorage(
+                    resolveAppWorkspaceProjects(applyGatewaySettingsSyncPayload(current, payload)),
+                  );
+                  persistWebSettings(refreshed);
+                  return refreshed;
+                });
+              })
+              .catch(() => undefined);
+          }
           if (settingsSaveSequenceRef.current === saveSequence) {
             setSettingsSaveState({
               status: "error",
