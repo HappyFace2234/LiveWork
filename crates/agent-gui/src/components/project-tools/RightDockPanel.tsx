@@ -1,31 +1,35 @@
-import { useCallback, useState } from "react";
-import { useLocale } from "../../i18n";
 import {
-  type RightDockFileTreeState,
-  type RightDockFileTreeStatePatch,
-  type RightDockProjectState,
-  type SshHostConfig,
-} from "../../lib/settings";
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { useLocale } from "../../i18n";
 import type { GitClient } from "../../lib/git/types";
-import { cn } from "../../lib/shared/utils";
 import type {
-  TerminalClient,
-  TerminalSession,
-} from "../../lib/terminal/types";
+  RightDockFileTreeState,
+  RightDockFileTreeStatePatch,
+  RightDockProjectState,
+  SshHostConfig,
+} from "../../lib/settings";
+import { cn } from "../../lib/shared/utils";
+import type { TerminalClient, TerminalSession } from "../../lib/terminal/types";
 import { X } from "../icons";
 import { Button } from "../ui/button";
 import type { GitCommitContextPayload, GitFileContextPayload } from "./GitReviewPanel";
 import type { LocalTunnelClient } from "./LocalTunnelPanel";
 import { RightDockContent } from "./RightDockContent";
+import { RightDockChooser, RightDockCreateMenu } from "./RightDockLauncher";
+import { RightDockTabStrip } from "./RightDockTabStrip";
 import {
   dirname,
   expandedPathsForFileTreePath,
   formatTerminalSessionTitle,
-  rightDockTabRequiresProject,
   type RightDockSingletonTabKind,
+  rightDockTabRequiresProject,
 } from "./rightDockModel";
-import { RightDockChooser, RightDockCreateMenu } from "./RightDockLauncher";
-import { RightDockTabStrip } from "./RightDockTabStrip";
 import { useRightDockPanelWidth } from "./useRightDockPanelWidth";
 import { useRightDockProjectTabs } from "./useRightDockProjectTabs";
 import { useRightDockSessions } from "./useRightDockSessions";
@@ -67,6 +71,238 @@ type RightDockPanelProps = {
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
   onClose?: () => void;
 };
+
+type RightDockTabsScrollbarState = {
+  visible: boolean;
+  thumbLeft: number;
+  thumbWidth: number;
+};
+
+type RightDockTabsScrollbarDragState = {
+  pointerId: number;
+  startScrollLeft: number;
+  startX: number;
+};
+
+const RIGHT_DOCK_TABS_SCROLLBAR_MIN_THUMB_WIDTH = 28;
+
+function RightDockTabsScrollbar(props: { scrollRef: RefObject<HTMLDivElement | null> }) {
+  const { scrollRef } = props;
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const dragStateRef = useRef<RightDockTabsScrollbarDragState | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [scrollbar, setScrollbar] = useState<RightDockTabsScrollbarState>({
+    visible: false,
+    thumbLeft: 0,
+    thumbWidth: RIGHT_DOCK_TABS_SCROLLBAR_MIN_THUMB_WIDTH,
+  });
+
+  const updateScrollbar = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      setScrollbar((current) =>
+        current.visible
+          ? {
+              visible: false,
+              thumbLeft: 0,
+              thumbWidth: RIGHT_DOCK_TABS_SCROLLBAR_MIN_THUMB_WIDTH,
+            }
+          : current,
+      );
+      return;
+    }
+
+    const maxScrollLeft = element.scrollWidth - element.clientWidth;
+    if (maxScrollLeft <= 1 || element.clientWidth <= 0 || element.scrollWidth <= 0) {
+      setScrollbar((current) =>
+        current.visible
+          ? {
+              visible: false,
+              thumbLeft: 0,
+              thumbWidth: RIGHT_DOCK_TABS_SCROLLBAR_MIN_THUMB_WIDTH,
+            }
+          : current,
+      );
+      return;
+    }
+
+    const trackWidth = element.clientWidth;
+    const thumbWidth = Math.min(
+      trackWidth,
+      Math.max(
+        RIGHT_DOCK_TABS_SCROLLBAR_MIN_THUMB_WIDTH,
+        (element.clientWidth / element.scrollWidth) * trackWidth,
+      ),
+    );
+    const maxThumbLeft = Math.max(0, trackWidth - thumbWidth);
+    const thumbLeft = maxScrollLeft > 0 ? (element.scrollLeft / maxScrollLeft) * maxThumbLeft : 0;
+    const nextScrollbar = {
+      visible: true,
+      thumbLeft,
+      thumbWidth,
+    };
+
+    setScrollbar((current) => {
+      if (
+        current.visible === nextScrollbar.visible &&
+        Math.abs(current.thumbLeft - nextScrollbar.thumbLeft) < 0.5 &&
+        Math.abs(current.thumbWidth - nextScrollbar.thumbWidth) < 0.5
+      ) {
+        return current;
+      }
+      return nextScrollbar;
+    });
+  }, [scrollRef]);
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      updateScrollbar();
+      return;
+    }
+
+    let animationFrame = 0;
+    const scheduleUpdate = () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updateScrollbar);
+    };
+
+    scheduleUpdate();
+    element.addEventListener("scroll", updateScrollbar, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+
+    const resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(element);
+    for (const child of Array.from(element.children)) {
+      resizeObserver.observe(child);
+    }
+
+    const mutationObserver = new MutationObserver(scheduleUpdate);
+    mutationObserver.observe(element, {
+      attributes: true,
+      characterData: true,
+      childList: true,
+      subtree: true,
+    });
+
+    return () => {
+      if (animationFrame) window.cancelAnimationFrame(animationFrame);
+      element.removeEventListener("scroll", updateScrollbar);
+      window.removeEventListener("resize", scheduleUpdate);
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, [scrollRef, updateScrollbar]);
+
+  const scrollToThumbLeft = useCallback(
+    (thumbLeft: number) => {
+      const element = scrollRef.current;
+      const track = trackRef.current;
+      if (!element || !track) return;
+
+      const maxScrollLeft = element.scrollWidth - element.clientWidth;
+      const maxThumbLeft = Math.max(0, track.clientWidth - scrollbar.thumbWidth);
+      if (maxScrollLeft <= 0 || maxThumbLeft <= 0) return;
+
+      element.scrollLeft = (thumbLeft / maxThumbLeft) * maxScrollLeft;
+    },
+    [scrollRef, scrollbar.thumbWidth],
+  );
+
+  const handlePointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!scrollbar.visible || event.button !== 0) return;
+
+      const element = scrollRef.current;
+      const track = trackRef.current;
+      if (!element || !track) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+
+      const target = event.target;
+      const isThumb =
+        target instanceof HTMLElement &&
+        target.closest(".project-tools-panel-tabs-scrollbar-thumb") !== null;
+
+      if (!isThumb) {
+        const rect = track.getBoundingClientRect();
+        const maxThumbLeft = Math.max(0, track.clientWidth - scrollbar.thumbWidth);
+        const nextThumbLeft = Math.min(
+          maxThumbLeft,
+          Math.max(0, event.clientX - rect.left - scrollbar.thumbWidth / 2),
+        );
+        scrollToThumbLeft(nextThumbLeft);
+      }
+
+      dragStateRef.current = {
+        pointerId: event.pointerId,
+        startScrollLeft: element.scrollLeft,
+        startX: event.clientX,
+      };
+      setDragging(true);
+      updateScrollbar();
+    },
+    [scrollRef, scrollToThumbLeft, scrollbar.thumbWidth, scrollbar.visible, updateScrollbar],
+  );
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const dragState = dragStateRef.current;
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+      const element = scrollRef.current;
+      const track = trackRef.current;
+      if (!element || !track) return;
+
+      event.preventDefault();
+      const maxScrollLeft = element.scrollWidth - element.clientWidth;
+      const maxThumbLeft = Math.max(1, track.clientWidth - scrollbar.thumbWidth);
+      const scrollDelta = ((event.clientX - dragState.startX) / maxThumbLeft) * maxScrollLeft;
+      element.scrollLeft = Math.min(
+        maxScrollLeft,
+        Math.max(0, dragState.startScrollLeft + scrollDelta),
+      );
+    },
+    [scrollRef, scrollbar.thumbWidth],
+  );
+
+  const finishDrag = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current;
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+
+    dragStateRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setDragging(false);
+  }, []);
+
+  return (
+    <div
+      ref={trackRef}
+      aria-hidden={!scrollbar.visible}
+      className={cn(
+        "project-tools-panel-tabs-scrollbar",
+        scrollbar.visible && "project-tools-panel-tabs-scrollbar-visible",
+        dragging && "project-tools-panel-tabs-scrollbar-dragging",
+      )}
+      onPointerCancel={finishDrag}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={finishDrag}
+    >
+      <div
+        className="project-tools-panel-tabs-scrollbar-thumb"
+        style={{
+          transform: `translateX(${scrollbar.thumbLeft}px)`,
+          width: `${scrollbar.thumbWidth}px`,
+        }}
+      />
+    </div>
+  );
+}
 
 export function RightDockPanel(props: RightDockPanelProps) {
   const {
@@ -180,20 +416,16 @@ export function RightDockPanel(props: RightDockPanelProps) {
     createTerminal();
   }, [createTerminal]);
 
-  const {
-    consumeSuppressedTabClick,
-    draggingTabId,
-    renderTabDragHandle,
-    tabsScrollRef,
-  } = useRightDockTabReorder({
-    canReorderTabs,
-    onCommitTabOrder: commitTabOrder,
-    onDraftTabOrderChange: setDraftTabOrder,
-    orderedTabIds: orderedProjectTabIds,
-    projectPathKey,
-    reorderHint: t("projectTools.reorderTabHint"),
-    reorderLabel: t("projectTools.reorderTab"),
-  });
+  const { consumeSuppressedTabClick, draggingTabId, renderTabDragHandle, tabsScrollRef } =
+    useRightDockTabReorder({
+      canReorderTabs,
+      onCommitTabOrder: commitTabOrder,
+      onDraftTabOrderChange: setDraftTabOrder,
+      orderedTabIds: orderedProjectTabIds,
+      projectPathKey,
+      reorderHint: t("projectTools.reorderTabHint"),
+      reorderLabel: t("projectTools.reorderTab"),
+    });
 
   const showDisabledMessage = Boolean(
     disabledMessage && !tunnelAvailable && !tunnelInitialized && !sshTunnelInitialized,
@@ -248,12 +480,7 @@ export function RightDockPanel(props: RightDockPanelProps) {
         bumpStateVersion: true,
       });
     },
-    [
-      fileTreeState.expandedPaths,
-      onFileTreeStateChange,
-      projectReady,
-      startToolTab,
-    ],
+    [fileTreeState.expandedPaths, onFileTreeStateChange, projectReady, startToolTab],
   );
 
   return (
@@ -301,25 +528,28 @@ export function RightDockPanel(props: RightDockPanelProps) {
                 )}
               />
             </button>
-            <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
-              <div
-                ref={tabsScrollRef}
-                className="project-tools-panel-tabs flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden"
-              >
-                <RightDockTabStrip
-                  tabs={orderedProjectTabs}
-                  currentActiveTab={currentActiveTab}
-                  activeSession={activeSession}
-                  pendingCloseSessionId={pendingCloseSessionId}
-                  closingSessionId={closingSessionId}
-                  draggingTabId={draggingTabId}
-                  renderTabDragHandle={renderTabDragHandle}
-                  consumeSuppressedTabClick={consumeSuppressedTabClick}
-                  onActivateTab={activateTab}
-                  onActivateTerminalSession={activateTerminalSession}
-                  onCloseToolTab={closeToolTab}
-                  onCloseTerminalRequest={handleCloseRequest}
-                />
+            <div className="project-tools-panel-header flex h-[3.25rem] shrink-0 items-center gap-2 border-b border-border px-3">
+              <div className="project-tools-panel-tabs-shell flex min-w-0 flex-1 flex-col justify-center gap-1">
+                <div
+                  ref={tabsScrollRef}
+                  className="project-tools-panel-tabs flex h-10 min-w-0 items-center gap-1 overflow-x-auto overflow-y-hidden py-1"
+                >
+                  <RightDockTabStrip
+                    tabs={orderedProjectTabs}
+                    currentActiveTab={currentActiveTab}
+                    activeSession={activeSession}
+                    pendingCloseSessionId={pendingCloseSessionId}
+                    closingSessionId={closingSessionId}
+                    draggingTabId={draggingTabId}
+                    renderTabDragHandle={renderTabDragHandle}
+                    consumeSuppressedTabClick={consumeSuppressedTabClick}
+                    onActivateTab={activateTab}
+                    onActivateTerminalSession={activateTerminalSession}
+                    onCloseToolTab={closeToolTab}
+                    onCloseTerminalRequest={handleCloseRequest}
+                  />
+                </div>
+                <RightDockTabsScrollbar scrollRef={tabsScrollRef} />
               </div>
               <RightDockCreateMenu
                 open={createMenuOpen}

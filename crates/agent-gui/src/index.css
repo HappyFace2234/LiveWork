@@ -243,6 +243,57 @@
     background: hsl(var(--muted-foreground) / 0.35);
   }
 
+  .project-tools-panel-tabs {
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .project-tools-panel-tabs::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  .project-tools-panel-tabs-scrollbar {
+    position: relative;
+    height: 4px;
+    flex: 0 0 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: hsl(var(--muted) / 0.42);
+    opacity: 0;
+    pointer-events: none;
+    touch-action: none;
+    transition:
+      background-color 160ms ease,
+      opacity 160ms ease;
+  }
+  .project-tools-panel-tabs-scrollbar-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .project-tools-panel-tabs-scrollbar-thumb {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    min-width: 28px;
+    border-radius: inherit;
+    background: hsl(var(--muted-foreground) / 0.22);
+    box-shadow: inset 0 0 0 1px hsl(var(--background) / 0.82);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+  .project-tools-panel-tabs-scrollbar:hover,
+  .project-tools-panel-tabs-scrollbar-dragging {
+    background: hsl(var(--muted) / 0.5);
+  }
+  .project-tools-panel-tabs-scrollbar:hover .project-tools-panel-tabs-scrollbar-thumb,
+  .project-tools-panel-tabs-scrollbar-dragging .project-tools-panel-tabs-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.36);
+  }
+
   /* Upload file list scrollbar */
   .upload-file-list {
     scrollbar-width: thin;
