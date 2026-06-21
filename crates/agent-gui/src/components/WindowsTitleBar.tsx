@@ -176,8 +176,8 @@ export function WindowsTitleBar({ appUpdate }: { appUpdate?: AppUpdateController
   return (
     <header
       className={cn(
-        "relative z-50 flex h-8 shrink-0 select-none items-center border-b border-black/[0.06] bg-white/65 text-foreground/90 backdrop-blur-2xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/55 dark:border-white/[0.06] dark:bg-neutral-900/70 dark:supports-[backdrop-filter]:bg-neutral-900/55",
-        "shadow-[inset_0_1px_0_rgba(255,255,255,0.7),0_1px_0_rgba(0,0,0,0.04)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_1px_0_rgba(0,0,0,0.4)]",
+        "relative z-50 flex h-8 shrink-0 select-none items-center bg-white/65 text-foreground/90 backdrop-blur-2xl backdrop-saturate-150 supports-[backdrop-filter]:bg-white/55 dark:bg-neutral-900/70 dark:supports-[backdrop-filter]:bg-neutral-900/55",
+        "shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
         !isFocused && "text-foreground/55",
       )}
     >
