@@ -8,6 +8,8 @@ const chatUi = loader.loadModule("src/lib/chatUi.ts");
 const liveStore = loader.loadModule("src/lib/liveConversationStreamStore.ts");
 const liveCommit = loader.loadModule("src/lib/liveConversationCommit.ts");
 const historyShare = loader.loadModule("src/lib/historyShare.ts");
+const requestContextSanitizer = loader.loadModule("src/lib/chat/requestContextSanitizer.ts");
+const conversationState = loader.loadModule("src/lib/chat/conversationState.ts");
 
 test("history share helpers parse and build share URLs", () => {
   assert.equal(historyShare.parseHistoryShareToken("/share/abc123"), "abc123");
@@ -375,6 +377,66 @@ test("normalizeRunningConversationIds trims drops invalid entries and dedupes in
   assert.deepEqual(historySync.normalizeRunningConversationIds(undefined), []);
 });
 
+test("normalizeRunningConversations preserves replay cursors and merges fallback ids", () => {
+  assert.deepEqual(
+    historySync.normalizeRunningConversations(
+      [
+        {
+          conversation_id: " conversation-1 ",
+          run_id: " run-1 ",
+          cwd: " /workspace ",
+          first_seq: 42.9,
+          latest_seq: 99.8,
+          run_epoch: 3.2,
+          updated_at: 123,
+        },
+        {
+          conversation_id: "conversation-1",
+          first_seq: 7,
+        },
+        {
+          conversation_id: "conversation-2",
+          first_seq: 0,
+          latest_seq: -1,
+        },
+      ],
+      ["conversation-2", " conversation-3 "],
+    ),
+    [
+      {
+        conversation_id: "conversation-1",
+        run_id: "run-1",
+        cwd: "/workspace",
+        first_seq: 42,
+        latest_seq: 99,
+        run_epoch: 3,
+        updated_at: 123,
+      },
+      {
+        conversation_id: "conversation-2",
+        run_id: undefined,
+        cwd: undefined,
+        first_seq: undefined,
+        latest_seq: undefined,
+        run_epoch: undefined,
+        updated_at: undefined,
+      },
+      {
+        conversation_id: "conversation-3",
+      },
+    ],
+  );
+});
+
+test("resolveRunningConversationStreamAfterSeq starts remote replay at current run boundary", () => {
+  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(42), 41);
+  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(42.9), 41);
+  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(1), 0);
+  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(0), 0);
+  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(undefined), 0);
+  assert.equal(historySync.resolveRunningConversationStreamAfterSeq("42"), 0);
+});
+
 test("applyGatewayHistoryEvent can protect optimistic titles from summary broadcasts", () => {
   const existing = [
     {
@@ -551,6 +613,245 @@ test("parseHistoryMessagesJson preserves provider tool_use input arguments", () 
     cwd: "crates/agent-gateway/web",
     root: "workspace",
   });
+});
+
+test("WebUI model request sanitizer textifies hosted search and drops aborted rounds", () => {
+  const completedSearch = {
+    type: "hostedSearch",
+    id: "hosted-search-completed",
+    provider: "claude_code",
+    status: "completed",
+    queries: ["LiveAgent DeepSeek web search"],
+    sources: [{ url: "https://example.com/result", title: "Result" }],
+  };
+  const abortedSearch = {
+    type: "hostedSearch",
+    id: "hosted-search-aborted",
+    provider: "claude_code",
+    status: "completed",
+    queries: ["aborted query"],
+    sources: [{ url: "https://example.com/aborted" }],
+  };
+  const toolResult = {
+    role: "toolResult",
+    toolCallId: "call-aborted",
+    toolName: "Read",
+    content: [{ type: "text", text: "partial" }],
+    isError: false,
+    timestamp: 3,
+  };
+
+  const sanitized = requestContextSanitizer.sanitizeContextForModelRequest({
+    messages: [
+      { role: "user", content: "search", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "searching" }, completedSearch],
+        provider: "anthropic",
+        model: "deepseek-chat",
+        api: "anthropic-messages",
+        usage: { totalTokens: 1 },
+        stopReason: "stop",
+        timestamp: 2,
+      },
+      {
+        role: "assistant",
+        content: [abortedSearch],
+        provider: "anthropic",
+        model: "deepseek-chat",
+        api: "anthropic-messages",
+        usage: { totalTokens: 1 },
+        stopReason: "aborted",
+        timestamp: 3,
+      },
+      toolResult,
+    ],
+  });
+
+  assert.deepEqual(sanitized.messages.map((message) => message.role), ["user", "assistant"]);
+  assert.deepEqual(
+    sanitized.messages[1].content.map((block) => block.type),
+    ["thinking", "text"],
+  );
+  assert.match(sanitized.messages[1].content[1].text, /Provider-hosted web search completed/);
+  assert.match(sanitized.messages[1].content[1].text, /https:\/\/example\.com\/result/);
+  assert.doesNotMatch(JSON.stringify(sanitized.messages), /hosted-search-aborted/);
+
+  const state = conversationState.createConversationStateFromContext({
+    messages: [
+      { role: "user", content: "search", timestamp: 1 },
+      {
+        role: "assistant",
+        content: [abortedSearch],
+        provider: "anthropic",
+        model: "deepseek-chat",
+        api: "anthropic-messages",
+        usage: { totalTokens: 1 },
+        stopReason: "aborted",
+        timestamp: 2,
+      },
+      toolResult,
+      { role: "user", content: "continue", timestamp: 4 },
+    ],
+  });
+  assert.deepEqual(
+    conversationState.buildRequestContext(state).messages.map((message) => message.role),
+    ["user", "user"],
+  );
+  assert.deepEqual(
+    conversationState.buildRequestContext(state, { includeAbortedMessages: true }).messages.map(
+      (message) => message.role,
+    ),
+    ["user", "assistant", "toolResult", "user"],
+  );
+});
+
+test("WebUI transcript strips leaked DSML tool call markup from text and thinking", () => {
+  const dsml = [
+    "<||DSML|| tool_calls>",
+    '<||DSML|| invoke name="builtin_web_search">',
+    '<||DSML|| parameter name="query">LiveAgent DSML markup</||DSML|| parameter>',
+    "</||DSML|| invoke>",
+    "</||DSML|| tool_calls>",
+  ].join("\n");
+  const entries = chatUi.parseHistoryMessagesJson(JSON.stringify([
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: `before\n${dsml}\nafter` },
+        { type: "thinking", thinking: `thinking\n${dsml}` },
+      ],
+    },
+  ]));
+  const transcript = chatUi.buildTranscriptItems(entries);
+  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const round = assistant.rounds[0];
+  const allText = JSON.stringify(round.blocks);
+
+  assert.match(allText, /before/);
+  assert.match(allText, /after/);
+  assert.match(allText, /thinking/);
+  assert.doesNotMatch(allText, /DSML/);
+  assert.doesNotMatch(allText, /builtin_web_search/);
+});
+
+test("WebUI transcript hides provider-native web_search tool traces when hosted search exists", () => {
+  const webSearchCall = {
+    type: "toolCall",
+    id: "dsml-tool-call-webui-search",
+    name: "web_search",
+    arguments: { query: "LiveAgent DeepSeek webui search" },
+  };
+  const entries = chatUi.parseHistoryMessagesJson(JSON.stringify([
+    { role: "user", content: "search" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "searching" },
+        {
+          type: "hostedSearch",
+          id: "hosted-search-1",
+          provider: "claude_code",
+          status: "completed",
+          queries: ["LiveAgent DeepSeek webui search"],
+          sources: [{ url: "https://example.com/result", title: "Result" }],
+        },
+        webSearchCall,
+      ],
+      stopReason: "toolUse",
+    },
+    {
+      role: "toolResult",
+      toolCallId: webSearchCall.id,
+      toolName: webSearchCall.name,
+      content: [{ type: "text", text: "Tool web_search not found" }],
+      details: { recoveredProviderNativeWebSearch: true },
+      isError: true,
+    },
+  ]));
+
+  const transcript = chatUi.buildTranscriptItems(entries);
+  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const round = assistant.rounds[0];
+
+  assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
+  assert.equal(round.blocks.some((block) => block.kind === "hostedSearch"), true);
+});
+
+test("WebUI live transcript removes provider-native web_search when hosted search arrives later", () => {
+  let entries = [];
+  entries = chatUi.pushChatEvent(entries, {
+    type: "tool_call",
+    id: "call_00_webui_search",
+    name: "web_search",
+    arguments: { query: "LiveAgent DeepSeek live search" },
+    round: 1,
+  });
+
+  let assistant = chatUi.buildTranscriptItems(entries).find((entry) => entry.kind === "assistant");
+  assert.equal(assistant.rounds[0].blocks.some((block) => block.kind === "tool"), true);
+
+  entries = chatUi.pushChatEvent(entries, {
+    type: "hosted_search",
+    id: "hosted-search-live",
+    provider: "claude_code",
+    status: "completed",
+    queries: ["LiveAgent DeepSeek live search"],
+    sources: [{ url: "https://example.com/live", title: "Live Result" }],
+    round: 1,
+  });
+
+  assistant = chatUi.buildTranscriptItems(entries).find((entry) => entry.kind === "assistant");
+  const round = assistant.rounds[0];
+
+  assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
+  assert.equal(round.blocks.some((block) => block.kind === "hostedSearch"), true);
+  assert.deepEqual(round.runningToolCallIds, []);
+});
+
+test("WebUI live transcript hides recovered provider-native web_search results without hosted search", () => {
+  let entries = [];
+  entries = chatUi.pushChatEvent(entries, {
+    type: "tool_call",
+    id: "call_00_webui_recovered_search",
+    name: "WebSearch",
+    arguments: { query: "LiveAgent recovered search" },
+    round: 1,
+  });
+  entries = chatUi.pushChatEvent(entries, {
+    type: "tool_result",
+    id: "call_00_webui_recovered_search",
+    name: "WebSearch",
+    content: [{ type: "text", text: "Recovered provider-native web search." }],
+    details: { recoveredProviderNativeWebSearch: true },
+    isError: false,
+    round: 1,
+  });
+
+  const transcript = chatUi.buildTranscriptItems(entries);
+  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const round = assistant.rounds[0];
+
+  assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
+  assert.deepEqual(round.runningToolCallIds, []);
+});
+
+test("WebUI live transcript hides recovered DSML provider-native web_search calls immediately", () => {
+  let entries = [];
+  entries = chatUi.pushChatEvent(entries, {
+    type: "tool_call",
+    id: "dsml-tool-call-webui-live-search",
+    name: "builtin_web_search",
+    arguments: { query: "LiveAgent DSML hidden search" },
+    round: 1,
+  });
+
+  const transcript = chatUi.buildTranscriptItems(entries);
+  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const round = assistant.rounds[0];
+
+  assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
+  assert.deepEqual(round.runningToolCallIds, []);
 });
 
 test("pushChatEvent appends streaming text, dedupes tool cards, and dedupes compaction checkpoints", () => {

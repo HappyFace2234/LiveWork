@@ -34,7 +34,7 @@ func TestTunnelResponseRewriteKindFor(t *testing.T) {
 			headers: http.Header{
 				"Content-Type": []string{"application/javascript"},
 			},
-			want: tunnelResponseRewriteJavaScript,
+			want: tunnelResponseRewriteNone,
 		},
 		{
 			name:   "css",
@@ -99,6 +99,7 @@ func TestRewriteTunnelHTMLBodyPrefixesRootRelativeAttributes(t *testing.T) {
 		`<a href="https://example.com/page">external</a>`,
 		`<a href="/t/test-slug/already">already</a>`,
 		`<a href="http://127.0.0.1:3100/api/showcase">absolute target</a>`,
+		`<use xlink:href="/icons.svg#check"></use>`,
 	}, "\n")
 
 	body, changed := rewriteTunnelResponseBody([]byte(input), tunnel, tunnelResponseRewriteHTML)
@@ -108,13 +109,14 @@ func TestRewriteTunnelHTMLBodyPrefixesRootRelativeAttributes(t *testing.T) {
 	output := string(body)
 
 	assertContains(t, output, `href="/t/test-slug/styles.css"`)
-	assertContains(t, output, `src='/t/test-slug/app.js'`)
-	assertContains(t, output, `action=/t/test-slug/api/messages`)
+	assertContains(t, output, `src="/t/test-slug/app.js"`)
+	assertContains(t, output, `action="/t/test-slug/api/messages"`)
 	assertContains(t, output, `href="/t/test-slug/api/health?check=1#ready"`)
 	assertContains(t, output, `href="//cdn.example.com/lib.js"`)
 	assertContains(t, output, `href="https://example.com/page"`)
 	assertContains(t, output, `href="/t/test-slug/already"`)
 	assertContains(t, output, `href="/t/test-slug/api/showcase"`)
+	assertContains(t, output, `xlink:href="/t/test-slug/icons.svg#check"`)
 	assertNotContains(t, output, `/t/test-slug/t/test-slug`)
 }
 
@@ -147,10 +149,10 @@ func TestRewriteTunnelBodyStripsTargetBasePath(t *testing.T) {
 		tunnel,
 		tunnelResponseRewriteJavaScript,
 	)
-	if !changed {
-		t.Fatal("rewriteTunnelResponseBody() did not report a JavaScript change")
+	if changed {
+		t.Fatal("rewriteTunnelResponseBody() reported an unsafe JavaScript change")
 	}
-	assertContains(t, string(jsBody), `fetch("/t/base-slug/api/health?check=1#ready")`)
+	assertContains(t, string(jsBody), `fetch("/app/api/health?check=1#ready")`)
 
 	cssBody, changed := rewriteTunnelResponseBody(
 		[]byte(`body { background: url(/app/images/bg.png); }`),
@@ -163,7 +165,7 @@ func TestRewriteTunnelBodyStripsTargetBasePath(t *testing.T) {
 	assertContains(t, string(cssBody), `url(/t/base-slug/images/bg.png)`)
 }
 
-func TestRewriteTunnelJavaScriptBodyPrefixesRootRelativeStrings(t *testing.T) {
+func TestRewriteTunnelJavaScriptBodyDoesNotRewriteStrings(t *testing.T) {
 	t.Parallel()
 
 	tunnel := tunnelRewriteTestSummary()
@@ -177,18 +179,38 @@ func TestRewriteTunnelJavaScriptBodyPrefixesRootRelativeStrings(t *testing.T) {
 	}, "\n")
 
 	body, changed := rewriteTunnelResponseBody([]byte(input), tunnel, tunnelResponseRewriteJavaScript)
+	if changed {
+		t.Fatal("rewriteTunnelResponseBody() reported an unsafe JavaScript change")
+	}
+	output := string(body)
+
+	assertContains(t, output, `requestJson('/api/showcase')`)
+	assertContains(t, output, `fetch("/api/health?check=1")`)
+	assertContains(t, output, `const root = "/"`)
+	assertContains(t, output, `const external = "https://example.com/api"`)
+	assertContains(t, output, `const cdn = "//cdn.example.com/app.js"`)
+	assertContains(t, output, `const already = "/t/test-slug/api/health"`)
+	assertNotContains(t, output, `/t/test-slug/t/test-slug`)
+}
+
+func TestRewriteTunnelHTMLBodyUsesHTMLParsingBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tunnel := tunnelRewriteTestSummary()
+	input := strings.Join([]string{
+		`<div style="background: url('/images/bg.png')"></div>`,
+		`<script>const markup = '<a href="/api/not-real">';</script>`,
+	}, "\n")
+
+	body, changed := rewriteTunnelResponseBody([]byte(input), tunnel, tunnelResponseRewriteHTML)
 	if !changed {
 		t.Fatal("rewriteTunnelResponseBody() did not report a change")
 	}
 	output := string(body)
 
-	assertContains(t, output, `requestJson('/t/test-slug/api/showcase')`)
-	assertContains(t, output, `fetch("/t/test-slug/api/health?check=1")`)
-	assertContains(t, output, `const root = "/t/test-slug/"`)
-	assertContains(t, output, `const external = "https://example.com/api"`)
-	assertContains(t, output, `const cdn = "//cdn.example.com/app.js"`)
-	assertContains(t, output, `const already = "/t/test-slug/api/health"`)
-	assertNotContains(t, output, `/t/test-slug/t/test-slug`)
+	assertContains(t, output, `style="background: url(&#39;/t/test-slug/images/bg.png&#39;)"`)
+	assertContains(t, output, `<script>const markup = '<a href="/api/not-real">';</script>`)
+	assertNotContains(t, output, `/t/test-slug/api/not-real`)
 }
 
 func TestRewriteTunnelCSSBodyPrefixesRootRelativeURLs(t *testing.T) {
@@ -215,6 +237,25 @@ func TestRewriteTunnelCSSBodyPrefixesRootRelativeURLs(t *testing.T) {
 	assertContains(t, output, `url("//cdn.example.com/bg.png")`)
 	assertContains(t, output, `url(/t/test-slug/images/bg.png)`)
 	assertNotContains(t, output, `/t/test-slug/t/test-slug`)
+}
+
+func TestRewriteTunnelCSSBodyIgnoresEmptyURLTokens(t *testing.T) {
+	t.Parallel()
+
+	tunnel := tunnelRewriteTestSummary()
+	input := strings.Join([]string{
+		`.empty { background: url(   ); }`,
+		`.icon { background: url(/icons/check.svg); }`,
+	}, "\n")
+
+	body, changed := rewriteTunnelResponseBody([]byte(input), tunnel, tunnelResponseRewriteCSS)
+	if !changed {
+		t.Fatal("rewriteTunnelResponseBody() did not report a change")
+	}
+	output := string(body)
+
+	assertContains(t, output, `url(   )`)
+	assertContains(t, output, `url(/t/test-slug/icons/check.svg)`)
 }
 
 func TestParseTunnelPublicPathWithoutTrailingSlash(t *testing.T) {

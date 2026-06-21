@@ -39,6 +39,14 @@ func FetchProviderModels(
 	ctx context.Context,
 	req ProviderModelsRequestBody,
 ) (*ProviderModelsResult, error) {
+	return fetchProviderModelsWithClient(ctx, req, newSafeOutboundHTTPClient(0))
+}
+
+func fetchProviderModelsWithClient(
+	ctx context.Context,
+	req ProviderModelsRequestBody,
+	client outboundHTTPClient,
+) (*ProviderModelsResult, error) {
 	providerType := strings.TrimSpace(req.Type)
 	baseURL := strings.TrimSpace(req.BaseURL)
 	apiKey := strings.TrimSpace(req.APIKey)
@@ -76,8 +84,14 @@ func FetchProviderModels(
 		upstreamReq.Header.Set("anthropic-version", "2023-06-01")
 	}
 
-	resp, err := http.DefaultClient.Do(upstreamReq)
+	resp, err := client.Do(upstreamReq)
 	if err != nil {
+		if isSafeOutboundBlockedError(err) {
+			return nil, &HTTPStatusError{
+				Status:  http.StatusBadRequest,
+				Message: "provider models URL is not allowed",
+			}
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -159,8 +173,8 @@ func buildProviderModelsURL(providerType string, baseURL string) (string, error)
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("base_url cannot contain query parameters or fragments")
 	}
-	if parsed.User != nil {
-		return "", errors.New("base_url cannot include embedded credentials")
+	if err := validateParsedOutboundHTTPURL(parsed); err != nil {
+		return "", errors.New("base_url is not allowed")
 	}
 
 	if providerType == "gemini" {

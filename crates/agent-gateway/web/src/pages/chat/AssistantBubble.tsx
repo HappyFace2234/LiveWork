@@ -28,6 +28,7 @@ import { cn } from "../../lib/shared/utils";
 import {
   previewText,
   safeStringify,
+  shouldDisplayToolTraceItem,
   toolCallArgsForDisplay,
   toolResultMessageToText,
   summarizeToolCall,
@@ -672,6 +673,7 @@ function groupRoundBlocks(blocks: UiRound["blocks"]): GroupedRoundBlock[] {
   let pendingStartIndex = 0;
   let pendingSearches: HostedSearchBlock[] = [];
   let pendingSearchStartIndex = 0;
+  const hasHostedSearch = blocks.some((block) => block.kind === "hostedSearch");
 
   const flushPendingTools = () => {
     if (pendingTools.length === 0) return;
@@ -707,6 +709,9 @@ function groupRoundBlocks(blocks: UiRound["blocks"]): GroupedRoundBlock[] {
 
   blocks.forEach((block, index) => {
     if (block.kind === "tool") {
+      if (!shouldDisplayToolTraceItem(block.item, { hasHostedSearch })) {
+        return;
+      }
       flushPendingSearches();
       if (block.item.toolCall.name === "Image" || isAgentToolName(block.item.toolCall.name)) {
         flushPendingTools();
@@ -2786,16 +2791,23 @@ function RoundContent(props: {
     redactToolContent = false,
   } =
     props;
+  const groupedBlocks = useMemo(() => groupRoundBlocks(round.blocks), [round.blocks]);
   const hasContent =
-    round.blocks.some((block) => {
-      if (block.kind === "tool" || block.kind === "hostedSearch") return true;
+    groupedBlocks.some((block) => {
+      if (
+        block.kind === "tool" ||
+        block.kind === "toolGroup" ||
+        block.kind === "hostedSearch" ||
+        block.kind === "hostedSearchGroup"
+      ) {
+        return true;
+      }
       return block.text.trim().length > 0;
     }) || (isActive && isLive);
   const normalizedToolStatus =
     isActive && isLive ? normalizeLiveToolStatus(toolStatus ?? null) : null;
   const isCompactionStatus = toolStatusVariant === "compaction";
   const isVibingStatus = normalizedToolStatus === VIBING_STATUS;
-  const groupedBlocks = useMemo(() => groupRoundBlocks(round.blocks), [round.blocks]);
   const latestThinkingKey = useMemo(() => {
     for (let index = groupedBlocks.length - 1; index >= 0; index -= 1) {
       const block = groupedBlocks[index];

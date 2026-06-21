@@ -1,6 +1,8 @@
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use russh::client;
+use russh::keys::agent::client::{AgentClient, AgentStream};
+use russh::keys::agent::AgentIdentity;
 use russh::keys::ssh_key::HashAlg;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKey, PublicKeyBase64};
 use russh::ChannelMsg;
@@ -9,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -16,7 +19,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::time::timeout;
 
 use crate::commands::settings::{
@@ -26,6 +30,9 @@ use crate::commands::settings::{
 use crate::runtime::platform::expand_tilde_path;
 #[cfg(windows)]
 use crate::runtime::process::configure_child_process_group;
+use crate::runtime::project_path::{
+    project_path_key as normalize_project_path_key, project_path_keys_equal,
+};
 
 const DEFAULT_ROWS: u16 = 24;
 const DEFAULT_COLS: u16 = 80;
@@ -445,7 +452,7 @@ impl TerminalSessionRegistry {
 
     pub fn list(&self, project_path_key: Option<String>) -> TerminalListResponse {
         let project_key = project_path_key
-            .map(|value| workspace_project_path_key(&value))
+            .map(|value| normalize_project_path_key(&value))
             .filter(|value| !value.is_empty());
         let mut sessions = self
             .sessions
@@ -456,7 +463,7 @@ impl TerminalSessionRegistry {
             .filter(|record| {
                 project_key
                     .as_ref()
-                    .is_none_or(|wanted| &record.project_path_key == wanted)
+                    .is_none_or(|wanted| project_path_keys_equal(&record.project_path_key, wanted))
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|a, b| {
@@ -478,9 +485,9 @@ impl TerminalSessionRegistry {
     ) -> Result<TerminalSnapshotResponse, String> {
         let cwd = canonicalize_workdir(&cwd)?;
         let project_key = project_path_key
-            .map(|value| workspace_project_path_key(&value))
+            .map(|value| normalize_project_path_key(&value))
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| workspace_project_path_key(&cwd.display().to_string()));
+            .unwrap_or_else(|| normalize_project_path_key(&cwd.display().to_string()));
         if project_key.is_empty() {
             return Err("project_path_key is required".to_string());
         }
@@ -599,9 +606,9 @@ impl TerminalSessionRegistry {
     ) -> Result<TerminalSshCreateResponse, String> {
         let cwd = canonicalize_workdir(&cwd)?;
         let project_key = project_path_key
-            .map(|value| workspace_project_path_key(&value))
+            .map(|value| normalize_project_path_key(&value))
             .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| workspace_project_path_key(&cwd.display().to_string()));
+            .unwrap_or_else(|| normalize_project_path_key(&cwd.display().to_string()));
         if project_key.is_empty() {
             return Err("project_path_key is required".to_string());
         }
@@ -698,9 +705,6 @@ impl TerminalSessionRegistry {
     ) -> Result<TerminalSshCreateResponse, String> {
         let host_config = load_runtime_ssh_host(&request.ssh_host_id)?
             .ok_or_else(|| format!("SSH host not found: {}", request.ssh_host_id.trim()))?;
-        if ssh_proxy_configured(&host_config) {
-            return Err("SSH proxy is configured for this host, but V1 SSH terminal does not support proxy connections yet.".to_string());
-        }
         if host_config.host.trim().is_empty() {
             return Err("SSH host is required".to_string());
         }
@@ -721,29 +725,16 @@ impl TerminalSessionRegistry {
 
         let auth = resolve_ssh_auth_material(&host_config)?;
         let captured_host_key = Arc::new(tokio::sync::Mutex::new(None::<CapturedHostKey>));
-        let ssh_client = LiveAgentSshClient {
-            host: host_config.host.clone(),
-            port: host_config.port,
-            captured_host_key: Arc::clone(&captured_host_key),
-        };
-        let config = Arc::new(client::Config {
-            ..Default::default()
-        });
-        let mut handle = match client::connect(
-            config,
-            (host_config.host.as_str(), host_config.port),
-            ssh_client,
-        )
-        .await
-        {
-            Ok(handle) => handle,
-            Err(error) => {
-                if let Some(captured) = captured_host_key.lock().await.clone() {
-                    return self.ssh_host_key_response(request, &host_config, captured);
+        let mut handle =
+            match connect_ssh_handle(&host_config, Arc::clone(&captured_host_key)).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    if let Some(captured) = captured_host_key.lock().await.clone() {
+                        return self.ssh_host_key_response(request, &host_config, captured);
+                    }
+                    return Err(error);
                 }
-                return Err(format!("SSH connection failed: {error}"));
-            }
-        };
+            };
 
         match authenticate_ssh_handle(&mut handle, &host_config, auth).await? {
             SshAuthOutcome::Authenticated => {
@@ -860,37 +851,21 @@ impl TerminalSessionRegistry {
         }
         let host_config = load_runtime_ssh_host(&ssh.host_id)?
             .ok_or_else(|| format!("SSH host not found: {}", ssh.host_id.trim()))?;
-        if ssh_proxy_configured(&host_config) {
-            return Err("SSH proxy is configured for this host, but V1 SSH terminal does not support proxy connections yet.".to_string());
-        }
 
         let auth = resolve_ssh_auth_material(&host_config)?;
         let captured_host_key = Arc::new(tokio::sync::Mutex::new(None::<CapturedHostKey>));
-        let ssh_client = LiveAgentSshClient {
-            host: host_config.host.clone(),
-            port: host_config.port,
-            captured_host_key: Arc::clone(&captured_host_key),
-        };
-        let config = Arc::new(client::Config {
-            ..Default::default()
-        });
-        let mut handle = match client::connect(
-            config,
-            (host_config.host.as_str(), host_config.port),
-            ssh_client,
-        )
-        .await
-        {
-            Ok(handle) => handle,
-            Err(error) => {
-                if captured_host_key.lock().await.is_some() {
-                    return Err(
-                        "SSH host key requires confirmation before reconnecting".to_string()
-                    );
+        let mut handle =
+            match connect_ssh_handle(&host_config, Arc::clone(&captured_host_key)).await {
+                Ok(handle) => handle,
+                Err(error) => {
+                    if captured_host_key.lock().await.is_some() {
+                        return Err(
+                            "SSH host key requires confirmation before reconnecting".to_string()
+                        );
+                    }
+                    return Err(error);
                 }
-                return Err(format!("SSH connection failed: {error}"));
-            }
-        };
+            };
 
         match authenticate_ssh_handle(&mut handle, &host_config, auth).await? {
             SshAuthOutcome::Authenticated => {}
@@ -1466,7 +1441,7 @@ impl TerminalSessionRegistry {
     }
 
     pub fn close_project(&self, project_path_key: String) -> Result<TerminalListResponse, String> {
-        let project_key = workspace_project_path_key(&project_path_key);
+        let project_key = normalize_project_path_key(&project_path_key);
         if project_key.is_empty() {
             return Err("project_path_key is required".to_string());
         }
@@ -1480,7 +1455,9 @@ impl TerminalSessionRegistry {
                     .record
                     .lock()
                     .ok()
-                    .filter(|record| record.project_path_key == project_key)
+                    .filter(|record| {
+                        project_path_keys_equal(&record.project_path_key, &project_key)
+                    })
                     .map(|_| id.clone())
             })
             .collect::<Vec<_>>();
@@ -1507,7 +1484,7 @@ impl TerminalSessionRegistry {
         session_id: Option<String>,
         max_bytes: Option<usize>,
     ) -> Result<TerminalReadTailResponse, String> {
-        let project_key = workspace_project_path_key(&project_path_key);
+        let project_key = normalize_project_path_key(&project_path_key);
         if project_key.is_empty() {
             return Err("project_path_key is required".to_string());
         }
@@ -1535,7 +1512,7 @@ impl TerminalSessionRegistry {
         }
         let selected_id = requested_session_id.unwrap_or_else(|| sessions[0].id.clone());
         let snapshot = self.snapshot(selected_id, max_bytes)?;
-        if snapshot.session.project_path_key != project_key {
+        if !project_path_keys_equal(&snapshot.session.project_path_key, &project_key) {
             return Err("terminal session is outside the current project".to_string());
         }
         Ok(TerminalReadTailResponse {
@@ -1563,7 +1540,9 @@ impl TerminalSessionRegistry {
                 sessions
                     .values()
                     .filter_map(|entry| entry.record.lock().ok())
-                    .filter(|record| record.project_path_key == project_path_key)
+                    .filter(|record| {
+                        project_path_keys_equal(&record.project_path_key, project_path_key)
+                    })
                     .count()
             })
             .unwrap_or(0);
@@ -1582,7 +1561,7 @@ impl TerminalSessionRegistry {
                     .values()
                     .filter_map(|entry| entry.record.lock().ok())
                     .filter(|record| {
-                        record.project_path_key == project_path_key
+                        project_path_keys_equal(&record.project_path_key, project_path_key)
                             && record.kind == "ssh"
                             && record.title.starts_with(base)
                     })
@@ -1820,6 +1799,28 @@ enum ResolvedSshAuth {
         key: String,
         passphrase: Option<String>,
     },
+    Agent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshProxyKind {
+    Socks5,
+    Http,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedSshProxy {
+    kind: SshProxyKind,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshPathProfile {
+    Windows,
+    Posix,
 }
 
 fn ssh_proxy_configured(host: &RuntimeSshHostConfig) -> bool {
@@ -1829,8 +1830,354 @@ fn ssh_proxy_configured(host: &RuntimeSshHostConfig) -> bool {
         || host.proxy.password_configured
 }
 
+async fn connect_ssh_handle(
+    host_config: &RuntimeSshHostConfig,
+    captured_host_key: Arc<tokio::sync::Mutex<Option<CapturedHostKey>>>,
+) -> Result<client::Handle<LiveAgentSshClient>, String> {
+    let ssh_client = LiveAgentSshClient {
+        host: host_config.host.clone(),
+        port: host_config.port,
+        captured_host_key,
+    };
+    let config = Arc::new(client::Config {
+        ..Default::default()
+    });
+    let stream = open_ssh_transport(host_config).await?;
+    client::connect_stream(config, stream, ssh_client)
+        .await
+        .map_err(|error| format!("SSH connection failed: {error}"))
+}
+
+async fn open_ssh_transport(host_config: &RuntimeSshHostConfig) -> Result<TcpStream, String> {
+    if !ssh_proxy_configured(host_config) {
+        return TcpStream::connect((host_config.host.as_str(), host_config.port))
+            .await
+            .map_err(|error| {
+                format!(
+                    "SSH TCP connection to {}:{} failed: {error}",
+                    host_config.host, host_config.port
+                )
+            });
+    }
+
+    let proxy = resolve_ssh_proxy(host_config)?;
+    let mut stream = TcpStream::connect((proxy.host.as_str(), proxy.port))
+        .await
+        .map_err(|error| {
+            format!(
+                "SSH proxy connection to {}:{} failed: {error}",
+                proxy.host, proxy.port
+            )
+        })?;
+    match proxy.kind {
+        SshProxyKind::Http => {
+            http_connect_proxy(
+                &mut stream,
+                host_config.host.as_str(),
+                host_config.port,
+                &proxy,
+            )
+            .await?;
+        }
+        SshProxyKind::Socks5 => {
+            socks5_connect_proxy(
+                &mut stream,
+                host_config.host.as_str(),
+                host_config.port,
+                &proxy,
+            )
+            .await?;
+        }
+    }
+    Ok(stream)
+}
+
+fn resolve_ssh_proxy(host_config: &RuntimeSshHostConfig) -> Result<ResolvedSshProxy, String> {
+    let raw_url = host_config.proxy.url.trim();
+    if raw_url.is_empty() {
+        return Err("SSH proxy host is required".to_string());
+    }
+    let (scheme, authority) = split_proxy_scheme(raw_url);
+    let kind = resolve_proxy_kind(host_config.proxy.proxy_type.as_str(), scheme)?;
+    let authority = authority
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(authority)
+        .trim();
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+    let (proxy_host, url_port) = split_host_port(authority);
+    if proxy_host.trim().is_empty() {
+        return Err("SSH proxy host is required".to_string());
+    }
+    let configured_port = u16::try_from(host_config.proxy.port)
+        .ok()
+        .filter(|port| *port >= 1);
+    let default_port = match kind {
+        SshProxyKind::Socks5 => 1080,
+        SshProxyKind::Http => 8080,
+    };
+    Ok(ResolvedSshProxy {
+        kind,
+        host: proxy_host,
+        port: configured_port.or(url_port).unwrap_or(default_port),
+        username: host_config.proxy.username.trim().to_string(),
+        password: host_config.proxy.password.trim().to_string(),
+    })
+}
+
+fn split_proxy_scheme(input: &str) -> (Option<&str>, &str) {
+    if let Some(index) = input.find("://") {
+        let (scheme, rest) = input.split_at(index);
+        return (Some(scheme), &rest[3..]);
+    }
+    (None, input)
+}
+
+fn resolve_proxy_kind(raw_type: &str, scheme: Option<&str>) -> Result<SshProxyKind, String> {
+    let source = scheme.unwrap_or(raw_type).trim().to_ascii_lowercase();
+    match source.as_str() {
+        "http" => Ok(SshProxyKind::Http),
+        "" | "socks5" | "socks" => Ok(SshProxyKind::Socks5),
+        other => Err(format!("SSH proxy type is not supported: {other}")),
+    }
+}
+
+fn split_host_port(authority: &str) -> (String, Option<u16>) {
+    let authority = authority.trim();
+    if let Some(rest) = authority.strip_prefix('[') {
+        if let Some(end) = rest.find(']') {
+            let host = rest[..end].to_string();
+            let port = rest[end + 1..].strip_prefix(':').and_then(parse_u16_port);
+            return (host, port);
+        }
+    }
+    if let Some((host, port)) = authority.rsplit_once(':') {
+        if !host.contains(':') {
+            return (host.to_string(), parse_u16_port(port));
+        }
+    }
+    (authority.to_string(), None)
+}
+
+fn parse_u16_port(value: &str) -> Option<u16> {
+    value.trim().parse::<u16>().ok().filter(|port| *port >= 1)
+}
+
+async fn http_connect_proxy(
+    stream: &mut TcpStream,
+    target_host: &str,
+    target_port: u16,
+    proxy: &ResolvedSshProxy,
+) -> Result<(), String> {
+    let target = host_port_authority(target_host, target_port);
+    let mut request =
+        format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nProxy-Connection: Keep-Alive\r\n");
+    if !proxy.username.is_empty() || !proxy.password.is_empty() {
+        let token = base64::engine::general_purpose::STANDARD
+            .encode(format!("{}:{}", proxy.username, proxy.password));
+        request.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|error| format!("SSH HTTP proxy CONNECT request failed: {error}"))?;
+
+    let mut response = Vec::with_capacity(512);
+    let mut byte = [0u8; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        if response.len() >= 16 * 1024 {
+            return Err("SSH HTTP proxy CONNECT response is too large".to_string());
+        }
+        let n = stream
+            .read(&mut byte)
+            .await
+            .map_err(|error| format!("SSH HTTP proxy CONNECT response failed: {error}"))?;
+        if n == 0 {
+            return Err("SSH HTTP proxy closed before CONNECT completed".to_string());
+        }
+        response.push(byte[0]);
+    }
+    let text = String::from_utf8_lossy(&response);
+    let status_line = text.lines().next().unwrap_or_default();
+    let status_code = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(0);
+    if !(200..300).contains(&status_code) {
+        return Err(format!(
+            "SSH HTTP proxy CONNECT failed: {}",
+            status_line.trim()
+        ));
+    }
+    Ok(())
+}
+
+async fn socks5_connect_proxy(
+    stream: &mut TcpStream,
+    target_host: &str,
+    target_port: u16,
+    proxy: &ResolvedSshProxy,
+) -> Result<(), String> {
+    let wants_auth = !proxy.username.is_empty() || !proxy.password.is_empty();
+    if wants_auth
+        && (proxy.username.len() > u8::MAX as usize || proxy.password.len() > u8::MAX as usize)
+    {
+        return Err("SSH SOCKS5 proxy username/password is too long".to_string());
+    }
+    let greeting: &[u8] = if wants_auth {
+        &[0x05, 0x02, 0x00, 0x02]
+    } else {
+        &[0x05, 0x01, 0x00]
+    };
+    stream
+        .write_all(greeting)
+        .await
+        .map_err(|error| format!("SSH SOCKS5 proxy greeting failed: {error}"))?;
+    let mut method = [0u8; 2];
+    stream
+        .read_exact(&mut method)
+        .await
+        .map_err(|error| format!("SSH SOCKS5 proxy method response failed: {error}"))?;
+    if method[0] != 0x05 {
+        return Err("SSH SOCKS5 proxy returned an invalid version".to_string());
+    }
+    match method[1] {
+        0x00 => {}
+        0x02 => {
+            let mut auth = Vec::with_capacity(3 + proxy.username.len() + proxy.password.len());
+            auth.push(0x01);
+            auth.push(proxy.username.len() as u8);
+            auth.extend_from_slice(proxy.username.as_bytes());
+            auth.push(proxy.password.len() as u8);
+            auth.extend_from_slice(proxy.password.as_bytes());
+            stream
+                .write_all(&auth)
+                .await
+                .map_err(|error| format!("SSH SOCKS5 proxy auth request failed: {error}"))?;
+            let mut auth_response = [0u8; 2];
+            stream
+                .read_exact(&mut auth_response)
+                .await
+                .map_err(|error| format!("SSH SOCKS5 proxy auth response failed: {error}"))?;
+            if auth_response != [0x01, 0x00] {
+                return Err("SSH SOCKS5 proxy authentication failed".to_string());
+            }
+        }
+        0xff => return Err("SSH SOCKS5 proxy has no acceptable auth method".to_string()),
+        other => {
+            return Err(format!(
+                "SSH SOCKS5 proxy selected unsupported auth method: {other}"
+            ))
+        }
+    }
+
+    let mut request = Vec::new();
+    request.extend_from_slice(&[0x05, 0x01, 0x00]);
+    write_socks5_address(&mut request, target_host)?;
+    request.extend_from_slice(&target_port.to_be_bytes());
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|error| format!("SSH SOCKS5 proxy CONNECT request failed: {error}"))?;
+
+    let mut response = [0u8; 4];
+    stream
+        .read_exact(&mut response)
+        .await
+        .map_err(|error| format!("SSH SOCKS5 proxy CONNECT response failed: {error}"))?;
+    if response[0] != 0x05 {
+        return Err("SSH SOCKS5 proxy returned an invalid CONNECT version".to_string());
+    }
+    if response[1] != 0x00 {
+        return Err(format!(
+            "SSH SOCKS5 proxy CONNECT failed: {}",
+            socks5_reply_label(response[1])
+        ));
+    }
+    let address_len = match response[3] {
+        0x01 => 4,
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(|error| format!("SSH SOCKS5 proxy response failed: {error}"))?;
+            usize::from(len[0])
+        }
+        0x04 => 16,
+        other => {
+            return Err(format!(
+                "SSH SOCKS5 proxy returned unsupported address type: {other}"
+            ))
+        }
+    };
+    let mut discard = vec![0u8; address_len + 2];
+    stream
+        .read_exact(&mut discard)
+        .await
+        .map_err(|error| format!("SSH SOCKS5 proxy response failed: {error}"))?;
+    Ok(())
+}
+
+fn write_socks5_address(out: &mut Vec<u8>, host: &str) -> Result<(), String> {
+    let normalized_host = strip_ipv6_brackets(host.trim());
+    if let Ok(ip) = normalized_host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(ip) => {
+                out.push(0x01);
+                out.extend_from_slice(&ip.octets());
+            }
+            IpAddr::V6(ip) => {
+                out.push(0x04);
+                out.extend_from_slice(&ip.octets());
+            }
+        }
+        return Ok(());
+    }
+    if normalized_host.is_empty() || normalized_host.len() > u8::MAX as usize {
+        return Err("SSH SOCKS5 target host is empty or too long".to_string());
+    }
+    out.push(0x03);
+    out.push(normalized_host.len() as u8);
+    out.extend_from_slice(normalized_host.as_bytes());
+    Ok(())
+}
+
+fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
+}
+
+fn host_port_authority(host: &str, port: u16) -> String {
+    let host = host.trim();
+    if strip_ipv6_brackets(host).parse::<Ipv6Addr>().is_ok() && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn socks5_reply_label(code: u8) -> &'static str {
+    match code {
+        0x01 => "general failure",
+        0x02 => "connection not allowed",
+        0x03 => "network unreachable",
+        0x04 => "host unreachable",
+        0x05 => "connection refused",
+        0x06 => "TTL expired",
+        0x07 => "command not supported",
+        0x08 => "address type not supported",
+        _ => "unknown error",
+    }
+}
+
 fn resolve_ssh_auth_material(host: &RuntimeSshHostConfig) -> Result<ResolvedSshAuth, String> {
-    if host.auth_type == "privateKey" {
+    if host.auth_type == "agent" {
+        Ok(ResolvedSshAuth::Agent)
+    } else if host.auth_type == "privateKey" {
         let key = if !host.private_key.trim().is_empty() {
             host.private_key.trim().to_string()
         } else {
@@ -1838,7 +2185,7 @@ fn resolve_ssh_auth_material(host: &RuntimeSshHostConfig) -> Result<ResolvedSshA
             if path.is_empty() {
                 return Err("SSH private key is not configured".to_string());
             }
-            let expanded = expand_tilde_path(path);
+            let expanded = expand_ssh_private_key_path(path);
             fs::read_to_string(&expanded)
                 .map_err(|error| {
                     format!(
@@ -1864,6 +2211,176 @@ fn resolve_ssh_auth_material(host: &RuntimeSshHostConfig) -> Result<ResolvedSshA
         }
         Ok(ResolvedSshAuth::Password(password))
     }
+}
+
+fn expand_ssh_private_key_path(path: &str) -> PathBuf {
+    let home = dirs::home_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let profile = if cfg!(windows) {
+        SshPathProfile::Windows
+    } else {
+        SshPathProfile::Posix
+    };
+    let expanded = expand_ssh_identity_path_for_profile(&home, path, profile);
+    PathBuf::from(expanded)
+}
+
+fn expand_ssh_identity_path_for_profile(
+    home_path: &str,
+    path: &str,
+    profile: SshPathProfile,
+) -> String {
+    expand_ssh_identity_path_for_profile_with_env(home_path, path, profile, |key| {
+        std::env::var(key).ok()
+    })
+}
+
+fn expand_ssh_identity_path_for_profile_with_env<F>(
+    home_path: &str,
+    path: &str,
+    profile: SshPathProfile,
+    env: F,
+) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let trimmed = strip_wrapping_quotes(path);
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    match profile {
+        SshPathProfile::Windows => expand_windows_ssh_identity_path(home_path, &trimmed, env),
+        SshPathProfile::Posix => expand_posix_ssh_identity_path(home_path, &trimmed),
+    }
+}
+
+fn strip_wrapping_quotes(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.len() >= 2 {
+        let first = trimmed.as_bytes()[0] as char;
+        let last = trimmed.as_bytes()[trimmed.len() - 1] as char;
+        if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+            return trimmed[1..trimmed.len() - 1].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn expand_windows_ssh_identity_path<F>(home_path: &str, path: &str, env: F) -> String
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if is_windows_absolute_path(path) {
+        return path.to_string();
+    }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        return join_windows_identity_path(home_path, rest);
+    }
+    if let Some(rest) = path
+        .strip_prefix("$HOME/")
+        .or_else(|| path.strip_prefix("$HOME\\"))
+    {
+        return join_windows_identity_path(home_path, rest);
+    }
+    if let Some(rest) = path
+        .strip_prefix("${HOME}/")
+        .or_else(|| path.strip_prefix("${HOME}\\"))
+    {
+        return join_windows_identity_path(home_path, rest);
+    }
+    if let Some(rest) = strip_prefix_ci(path, "%USERPROFILE%") {
+        if rest.starts_with('\\') || rest.starts_with('/') {
+            let user_profile = env("USERPROFILE").unwrap_or_else(|| home_path.to_string());
+            return join_windows_identity_path(&user_profile, rest);
+        }
+    }
+    if let Some(rest) = strip_prefix_ci(path, "%HOMEDRIVE%%HOMEPATH%") {
+        if rest.starts_with('\\') || rest.starts_with('/') {
+            let home_drive = env("HOMEDRIVE").unwrap_or_default();
+            let home_path_env = env("HOMEPATH").unwrap_or_default();
+            let home = if home_drive.is_empty() && home_path_env.is_empty() {
+                home_path.to_string()
+            } else {
+                format!("{home_drive}{home_path_env}")
+            };
+            return join_windows_identity_path(&home, rest);
+        }
+    }
+    if path.starts_with('\\') || path.starts_with('/') {
+        return path.to_string();
+    }
+    join_windows_identity_path(home_path, path)
+}
+
+fn expand_posix_ssh_identity_path(home_path: &str, path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return join_posix_identity_path(home_path, rest);
+    }
+    if let Some(rest) = path.strip_prefix("$HOME/") {
+        return join_posix_identity_path(home_path, rest);
+    }
+    if let Some(rest) = path.strip_prefix("${HOME}/") {
+        return join_posix_identity_path(home_path, rest);
+    }
+    if path.starts_with('/') {
+        return trim_trailing_posix_slashes(path);
+    }
+    join_posix_identity_path(home_path, path)
+}
+
+fn is_windows_absolute_path(path: &str) -> bool {
+    if path.starts_with(r"\\?\") || path.starts_with(r"//?/") {
+        return true;
+    }
+    if path.len() >= 3
+        && path.as_bytes()[1] == b':'
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && matches!(path.as_bytes()[2], b'\\' | b'/')
+    {
+        return true;
+    }
+    path.starts_with(r"\\") || path.starts_with("//")
+}
+
+fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+        .then(|| &value[prefix.len()..])
+}
+
+fn join_windows_identity_path(base: &str, child: &str) -> String {
+    let separator = if base.contains('\\') { '\\' } else { '/' };
+    let base = base.trim_end_matches(['\\', '/']);
+    let child = child.trim_start_matches(['\\', '/']);
+    if child.is_empty() {
+        base.to_string()
+    } else if base.is_empty() {
+        child.to_string()
+    } else {
+        format!("{base}{separator}{child}")
+    }
+}
+
+fn join_posix_identity_path(base: &str, child: &str) -> String {
+    let base = base.trim_end_matches('/');
+    let child = child.trim_start_matches('/');
+    if child.is_empty() {
+        base.to_string()
+    } else if base.is_empty() {
+        child.to_string()
+    } else {
+        format!("{base}/{child}")
+    }
+}
+
+fn trim_trailing_posix_slashes(path: &str) -> String {
+    let mut next = path.to_string();
+    while next.len() > 1 && next.ends_with('/') {
+        next.pop();
+    }
+    next
 }
 
 async fn authenticate_ssh_handle(
@@ -1913,6 +2430,118 @@ async fn authenticate_ssh_handle(
             }
             Err("SSH authentication failed".to_string())
         }
+        ResolvedSshAuth::Agent => authenticate_ssh_handle_with_agent(handle, host).await,
+    }
+}
+
+async fn authenticate_ssh_handle_with_agent(
+    handle: &mut client::Handle<LiveAgentSshClient>,
+    host: &RuntimeSshHostConfig,
+) -> Result<SshAuthOutcome, String> {
+    let mut agent = connect_ssh_agent().await?;
+    let identities = agent
+        .request_identities()
+        .await
+        .map_err(|error| format!("SSH agent identity lookup failed: {error}"))?;
+    if identities.is_empty() {
+        return Err("SSH agent has no identities".to_string());
+    }
+
+    let mut can_continue_with_kbi = false;
+    let mut last_error = String::new();
+    for identity in identities {
+        let result =
+            authenticate_ssh_agent_identity(handle, host.username.as_str(), &identity, &mut agent)
+                .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                last_error = error;
+                continue;
+            }
+        };
+        if result.success() {
+            return Ok(SshAuthOutcome::Authenticated);
+        }
+        can_continue_with_kbi |= auth_result_can_continue_with_kbi(&result);
+    }
+
+    if can_continue_with_kbi {
+        let response = handle
+            .authenticate_keyboard_interactive_start(host.username.as_str(), None::<String>)
+            .await
+            .map_err(|error| format!("SSH keyboard-interactive authentication failed: {error}"))?;
+        return continue_keyboard_interactive_auth(handle, response, None).await;
+    }
+
+    if last_error.is_empty() {
+        Err("SSH agent authentication failed".to_string())
+    } else {
+        Err(format!("SSH agent authentication failed: {last_error}"))
+    }
+}
+
+async fn authenticate_ssh_agent_identity(
+    handle: &mut client::Handle<LiveAgentSshClient>,
+    username: &str,
+    identity: &AgentIdentity,
+    agent: &mut AgentClient<Box<dyn AgentStream + Send + Unpin>>,
+) -> Result<client::AuthResult, String> {
+    match identity {
+        AgentIdentity::PublicKey { key, .. } => handle
+            .authenticate_publickey_with(username, key.clone(), Some(HashAlg::Sha256), agent)
+            .await
+            .map_err(|error| error.to_string()),
+        AgentIdentity::Certificate { certificate, .. } => handle
+            .authenticate_certificate_with(
+                username,
+                certificate.clone(),
+                Some(HashAlg::Sha256),
+                agent,
+            )
+            .await
+            .map_err(|error| error.to_string()),
+    }
+}
+
+async fn connect_ssh_agent() -> Result<AgentClient<Box<dyn AgentStream + Send + Unpin>>, String> {
+    #[cfg(windows)]
+    {
+        let mut errors = Vec::new();
+        match AgentClient::connect_pageant().await {
+            Ok(agent) => return Ok(agent.dynamic()),
+            Err(error) => errors.push(format!("Pageant: {error}")),
+        }
+        if let Ok(sock) = std::env::var("SSH_AUTH_SOCK") {
+            let sock = sock.trim();
+            if !sock.is_empty() {
+                match AgentClient::connect_named_pipe(sock).await {
+                    Ok(agent) => return Ok(agent.dynamic()),
+                    Err(error) => errors.push(format!("SSH_AUTH_SOCK named pipe: {error}")),
+                }
+            }
+        }
+        match AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent").await {
+            Ok(agent) => return Ok(agent.dynamic()),
+            Err(error) => errors.push(format!("OpenSSH named pipe: {error}")),
+        }
+        Err(format!(
+            "SSH agent is not available ({})",
+            errors.join("; ")
+        ))
+    }
+
+    #[cfg(unix)]
+    {
+        AgentClient::connect_env()
+            .await
+            .map(|agent| agent.dynamic())
+            .map_err(|error| format!("SSH agent is not available: {error}"))
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    {
+        Err("SSH agent is not supported on this platform".to_string())
     }
 }
 
@@ -2062,9 +2691,6 @@ pub(crate) async fn open_sftp_connection_for_host(
 ) -> Result<TerminalSftpConnection, String> {
     let host_config = load_runtime_ssh_host(ssh_host_id)?
         .ok_or_else(|| format!("SSH host not found: {}", ssh_host_id.trim()))?;
-    if ssh_proxy_configured(&host_config) {
-        return Err("SSH proxy is configured for this host, but V1 SFTP does not support proxy connections yet.".to_string());
-    }
     if host_config.host.trim().is_empty() {
         return Err("SSH host is required".to_string());
     }
@@ -2074,27 +2700,13 @@ pub(crate) async fn open_sftp_connection_for_host(
 
     let auth = resolve_ssh_auth_material(&host_config)?;
     let captured_host_key = Arc::new(tokio::sync::Mutex::new(None::<CapturedHostKey>));
-    let ssh_client = LiveAgentSshClient {
-        host: host_config.host.clone(),
-        port: host_config.port,
-        captured_host_key: Arc::clone(&captured_host_key),
-    };
-    let config = Arc::new(client::Config {
-        ..Default::default()
-    });
-    let mut handle = match client::connect(
-        config,
-        (host_config.host.as_str(), host_config.port),
-        ssh_client,
-    )
-    .await
-    {
+    let mut handle = match connect_ssh_handle(&host_config, Arc::clone(&captured_host_key)).await {
         Ok(handle) => handle,
         Err(error) => {
             if captured_host_key.lock().await.is_some() {
                 return Err("SSH host key requires confirmation before opening SFTP".to_string());
             }
-            return Err(format!("SSH connection failed: {error}"));
+            return Err(error);
         }
     };
 
@@ -2388,18 +3000,12 @@ fn spawn_ssh_reconnect_runner(
     runtime: Arc<SshSessionRuntime>,
     connection_id: usize,
 ) {
-    thread::spawn(move || {
-        let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        else {
-            return;
-        };
-        rt.block_on(async move {
-            registry
-                .handle_ssh_unexpected_disconnect(session_id, runtime, connection_id)
-                .await;
-        });
+    // russh drives each session on the current Tokio runtime, so reconnects must
+    // live on Tauri's long-running runtime rather than a short-lived thread runtime.
+    tauri::async_runtime::spawn(async move {
+        registry
+            .handle_ssh_unexpected_disconnect(session_id, runtime, connection_id)
+            .await;
     });
 }
 
@@ -2559,10 +3165,6 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
-}
-
-fn workspace_project_path_key(path: &str) -> String {
-    path.trim().to_string()
 }
 
 fn canonicalize_workdir(workdir: &str) -> Result<PathBuf, String> {
@@ -2955,6 +3557,148 @@ mod tests {
         });
 
         assert_eq!(message, "Verification\nEnter code\nOTP:");
+    }
+
+    #[test]
+    fn ssh_identity_path_expands_windows_profile_without_posix_rewrites() {
+        let env = |key: &str| match key {
+            "USERPROFILE" => Some(r"C:\Users\Alice".to_string()),
+            "HOMEDRIVE" => Some("C:".to_string()),
+            "HOMEPATH" => Some(r"\Users\Alice".to_string()),
+            _ => None,
+        };
+
+        assert_eq!(
+            expand_ssh_identity_path_for_profile_with_env(
+                r"C:\Users\Alice",
+                r"~\.ssh\id_ed25519",
+                SshPathProfile::Windows,
+                env,
+            ),
+            r"C:\Users\Alice\.ssh\id_ed25519"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile_with_env(
+                r"C:\Users\Alice",
+                r"%USERPROFILE%\.ssh\id_rsa",
+                SshPathProfile::Windows,
+                env,
+            ),
+            r"C:\Users\Alice\.ssh\id_rsa"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile_with_env(
+                r"C:\Users\Alice",
+                r"%HOMEDRIVE%%HOMEPATH%\.ssh\id_rsa",
+                SshPathProfile::Windows,
+                env,
+            ),
+            r"C:\Users\Alice\.ssh\id_rsa"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile_with_env(
+                r"C:\Users\Alice",
+                r"C:Keys\id_rsa",
+                SshPathProfile::Windows,
+                env,
+            ),
+            r"C:\Users\Alice\C:Keys\id_rsa"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile_with_env(
+                r"C:\Users\Alice",
+                r"\\?\C:\Keys\id_rsa",
+                SshPathProfile::Windows,
+                env,
+            ),
+            r"\\?\C:\Keys\id_rsa"
+        );
+    }
+
+    #[test]
+    fn ssh_identity_path_preserves_posix_backslash_semantics() {
+        assert_eq!(
+            expand_ssh_identity_path_for_profile(
+                "/Users/alice",
+                "~/keys/id_ed25519",
+                SshPathProfile::Posix
+            ),
+            "/Users/alice/keys/id_ed25519"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile(
+                "/Users/alice",
+                "$HOME/.ssh/id_rsa",
+                SshPathProfile::Posix
+            ),
+            "/Users/alice/.ssh/id_rsa"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile(
+                "/Users/alice",
+                "${HOME}/.ssh/id_rsa",
+                SshPathProfile::Posix
+            ),
+            "/Users/alice/.ssh/id_rsa"
+        );
+        assert_eq!(
+            expand_ssh_identity_path_for_profile("/Users/alice", r"dir\key", SshPathProfile::Posix),
+            r"/Users/alice/dir\key"
+        );
+    }
+
+    #[test]
+    fn ssh_proxy_parser_resolves_http_and_socks5_endpoints() {
+        let mut host = RuntimeSshHostConfig {
+            id: "prod".to_string(),
+            name: "Production".to_string(),
+            host: "prod.example.com".to_string(),
+            port: 22,
+            username: "deploy".to_string(),
+            auth_type: "agent".to_string(),
+            password: String::new(),
+            private_key: String::new(),
+            private_key_path: String::new(),
+            private_key_passphrase: String::new(),
+            proxy: crate::commands::settings::RuntimeSshProxyConfig {
+                proxy_type: "socks5".to_string(),
+                url: "socks5://127.0.0.1:1081".to_string(),
+                port: 0,
+                username: "proxy-user".to_string(),
+                password: "proxy-pass".to_string(),
+                password_configured: true,
+            },
+        };
+
+        let proxy = resolve_ssh_proxy(&host).expect("resolve socks proxy");
+        assert_eq!(proxy.kind, SshProxyKind::Socks5);
+        assert_eq!(proxy.host, "127.0.0.1");
+        assert_eq!(proxy.port, 1081);
+        assert_eq!(proxy.username, "proxy-user");
+        assert_eq!(proxy.password, "proxy-pass");
+
+        host.proxy.url = "http://proxy.local".to_string();
+        host.proxy.port = 8080;
+        let proxy = resolve_ssh_proxy(&host).expect("resolve http proxy");
+        assert_eq!(proxy.kind, SshProxyKind::Http);
+        assert_eq!(proxy.host, "proxy.local");
+        assert_eq!(proxy.port, 8080);
+    }
+
+    #[test]
+    fn socks5_address_writer_encodes_domain_and_ip_targets() {
+        let mut domain = Vec::new();
+        write_socks5_address(&mut domain, "prod.example.com").expect("domain target");
+        assert_eq!(
+            domain,
+            [&[0x03, 16][..], b"prod.example.com".as_slice(),].concat()
+        );
+
+        let mut ipv4 = Vec::new();
+        write_socks5_address(&mut ipv4, "127.0.0.1").expect("ipv4 target");
+        assert_eq!(ipv4, vec![0x01, 127, 0, 0, 1]);
+
+        assert_eq!(host_port_authority("::1", 22), "[::1]:22");
     }
 
     #[test]

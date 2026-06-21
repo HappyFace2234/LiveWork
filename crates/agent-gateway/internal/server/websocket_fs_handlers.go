@@ -579,10 +579,7 @@ func (c *websocketConnection) handleFsDelete(req websocketRequest) {
 func websocketFsListResponsePayload(resp *gatewayv1.FsListResponse) map[string]any {
 	entryPayload := make([]map[string]any, 0, len(resp.GetEntries()))
 	for _, entry := range resp.GetEntries() {
-		entryPayload = append(entryPayload, map[string]any{
-			"path": entry.GetPath(),
-			"kind": entry.GetKind(),
-		})
+		entryPayload = append(entryPayload, websocketProtoPayload(entry, false))
 	}
 
 	var path any
@@ -602,57 +599,25 @@ func websocketFsListResponsePayload(resp *gatewayv1.FsListResponse) map[string]a
 }
 
 func websocketFsReadEditableTextResponsePayload(resp *gatewayv1.FsReadEditableTextResponse) map[string]any {
-	return map[string]any{
-		"path":        resp.GetPath(),
-		"content":     resp.GetContent(),
-		"mtimeMs":     resp.GetMtimeMs(),
-		"contentHash": resp.GetContentHash(),
-		"sizeBytes":   resp.GetSizeBytes(),
-		"totalLines":  resp.GetTotalLines(),
-	}
+	return websocketProtoPayload(resp, false)
 }
 
 func websocketFsReadWorkspaceImageResponsePayload(resp *gatewayv1.FsReadWorkspaceImageResponse) map[string]any {
-	return map[string]any{
-		"path":        resp.GetPath(),
-		"mimeType":    resp.GetMimeType(),
-		"data":        resp.GetData(),
-		"sizeBytes":   resp.GetSizeBytes(),
-		"mtimeMs":     resp.GetMtimeMs(),
-		"contentHash": resp.GetContentHash(),
-	}
+	return websocketProtoPayload(resp, false)
 }
 
 func websocketFsWriteTextResponsePayload(resp *gatewayv1.FsWriteTextResponse) map[string]any {
-	return map[string]any{
-		"path":          resp.GetPath(),
-		"mode":          resp.GetMode(),
-		"existedBefore": resp.GetExistedBefore(),
-		"bytesWritten":  resp.GetBytesWritten(),
-		"mtimeMs":       resp.GetMtimeMs(),
-		"contentHash":   resp.GetContentHash(),
-		"totalLines":    resp.GetTotalLines(),
-	}
+	return websocketProtoPayload(resp, false)
 }
 
 func websocketFsCreateDirResponsePayload(resp *gatewayv1.FsCreateDirResponse) map[string]any {
-	return map[string]any{
-		"path": resp.GetPath(),
-		"kind": resp.GetKind(),
-	}
+	return websocketProtoPayload(resp, false)
 }
 
 func websocketFsRenameResponsePayload(resp *gatewayv1.FsRenameResponse) map[string]any {
-	return map[string]any{
-		"fromPath": resp.GetFromPath(),
-		"path":     resp.GetPath(),
-		"kind":     resp.GetKind(),
-	}
+	return websocketProtoPayload(resp, false)
 }
 
 func websocketFsDeleteResponsePayload(resp *gatewayv1.FsDeleteResponse) map[string]any {
-	return map[string]any{
-		"path": resp.GetPath(),
-		"kind": resp.GetKind(),
-	}
+	return websocketProtoPayload(resp, false)
 }

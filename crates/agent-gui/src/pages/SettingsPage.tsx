@@ -1,5 +1,4 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
 import {
   ArrowLeft,
   BookOpen,
@@ -12,6 +11,7 @@ import {
   Settings2,
   Zap,
 } from "../components/icons";
+import { isMacOsTauri, MacOsTitleBarSpacer } from "../components/MacOsTitleBarSpacer";
 
 import { useLocale } from "../i18n";
 import { AboutSection } from "./settings/AboutSection";
@@ -121,6 +121,7 @@ export function SettingsPage(props: SettingsPageProps) {
     onBack,
     initialSection = "system",
     hiddenSections = [],
+    appUpdate,
   } = props;
   const { t } = useLocale();
   const [section, setSection] = useState<SectionId>(initialSection);
@@ -184,7 +185,7 @@ export function SettingsPage(props: SettingsPageProps) {
           />
         );
       case "about":
-        return <AboutSection settings={settings} setSettings={setSettings} />;
+        return <AboutSection settings={settings} setSettings={setSettings} appUpdate={appUpdate} />;
       default: {
         const unreachable: never = section;
         return unreachable;
@@ -198,9 +199,7 @@ export function SettingsPage(props: SettingsPageProps) {
     <div className="flex h-full flex-col bg-background">
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-52 shrink-0 flex-col border-r bg-muted/20">
-          {onMac && (
-            <div data-tauri-drag-region className="h-[38px] shrink-0" />
-          )}
+          {onMac && <div data-tauri-drag-region className="h-[38px] shrink-0" />}
           <div className="px-3 pb-1 pt-3">
             <button
               type="button"

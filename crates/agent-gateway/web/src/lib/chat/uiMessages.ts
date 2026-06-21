@@ -566,6 +566,71 @@ function isParentDelegateAgentToolCall(toolCall: ToolCall) {
   return toolCall.name === "Agent" && !isDelegateAgentCardToolCall(toolCall);
 }
 
+function isProviderNativeWebSearchToolName(toolName: string | undefined) {
+  const normalized = toolName?.trim().toLowerCase() ?? "";
+  return (
+    normalized === "builtin_web_search" ||
+    normalized === "websearch" ||
+    normalized === "web_search" ||
+    normalized === "web_search_20250305" ||
+    normalized === "web_search_20260209" ||
+    normalized === "web_search_preview" ||
+    normalized.startsWith("web_search_call")
+  );
+}
+
+function isDsmlRecoveredToolCallId(toolCallId: string | undefined) {
+  return toolCallId?.startsWith("dsml-tool-call-") ?? false;
+}
+
+function isRecoveredProviderNativeWebSearchResult(
+  toolResult: ToolResultMessage | undefined,
+) {
+  const details = toolResult?.details as Record<string, unknown> | undefined;
+  return details?.recoveredProviderNativeWebSearch === true;
+}
+
+export function shouldDisplayToolTraceItem(
+  item: ToolTraceItem,
+  options?: { hasHostedSearch?: boolean },
+) {
+  if (!isProviderNativeWebSearchToolName(item.toolCall.name)) {
+    return true;
+  }
+  if (options?.hasHostedSearch) {
+    return false;
+  }
+  if (isDsmlRecoveredToolCallId(item.toolCall.id)) {
+    return false;
+  }
+  if (isRecoveredProviderNativeWebSearchResult(item.toolResult)) {
+    return false;
+  }
+  return true;
+}
+
+function shouldDisplayToolBlock(
+  toolCall: ToolCall,
+  toolResult: ToolResultMessage | undefined,
+  blocks: UiRoundContentBlock[],
+  options?: { contentHasHostedSearch?: boolean },
+) {
+  return shouldDisplayToolTraceItem(toolResult ? { toolCall, toolResult } : { toolCall }, {
+    hasHostedSearch:
+      options?.contentHasHostedSearch ||
+      blocks.some((block) => block.kind === "hostedSearch"),
+  });
+}
+
+function filterHiddenToolBlocks(blocks: UiRoundContentBlock[]) {
+  const hasHostedSearch = blocks.some((block) => block.kind === "hostedSearch");
+  return blocks.filter(
+    (block) =>
+      block.kind !== "tool" ||
+      shouldDisplayToolTraceItem(block.item, { hasHostedSearch }),
+  );
+}
+
 type DelegateAgentPlaceholder = {
   id: string;
   name?: string;
@@ -1167,6 +1232,7 @@ function upsertToolBlock(
   blocks: UiRoundContentBlock[],
   toolCall: ToolCall,
   toolResult?: ToolResultMessage,
+  options?: { contentHasHostedSearch?: boolean },
 ): UiRoundContentBlock[] {
   if (isParentDelegateAgentToolCall(toolCall)) {
     return appendDelegateAgentPlaceholderBlocks(blocks, toolCall);
@@ -1175,6 +1241,13 @@ function upsertToolBlock(
   const existingIdx = blocks.findIndex(
     (block) => block.kind === "tool" && block.item.toolCall.id === toolCall.id,
   );
+  if (!shouldDisplayToolBlock(toolCall, toolResult, blocks, options)) {
+    return existingIdx >= 0
+      ? blocks.filter(
+          (block) => !(block.kind === "tool" && block.item.toolCall.id === toolCall.id),
+        )
+      : blocks;
+  }
   if (existingIdx >= 0) {
     const existing = blocks[existingIdx];
     if (existing.kind !== "tool") return blocks;
@@ -1214,7 +1287,12 @@ export function getRoundThinkingText(round: Pick<UiRound, "blocks">) {
 }
 
 export function getRoundToolTrace(round: Pick<UiRound, "blocks">): ToolTraceItem[] {
-  return round.blocks.flatMap((block) => (block.kind === "tool" ? [block.item] : []));
+  const hasHostedSearch = round.blocks.some((block) => block.kind === "hostedSearch");
+  return round.blocks.flatMap((block) =>
+    block.kind === "tool" && shouldDisplayToolTraceItem(block.item, { hasHostedSearch })
+      ? [block.item]
+      : [],
+  );
 }
 
 export function getRoundHostedSearches(
@@ -1303,24 +1381,26 @@ function upsertHostedSearchBlock(
     if (lastTextBlock?.kind === "text") {
       const split = splitTextAroundHostedSearch(lastTextBlock.text, hostedSearch);
       if (split) {
-        return [
+        return filterHiddenToolBlocks([
           ...blocks.slice(0, lastTextIndex),
           { kind: "text" as const, text: split.before },
           nextBlock,
           ...(split.after ? [{ kind: "text" as const, text: split.after }] : []),
           ...blocks.slice(lastTextIndex + 1),
-        ];
+        ]);
       }
     }
     const groupedSearchInsertIndex = findHostedSearchGroupInsertIndex(blocks);
     if (groupedSearchInsertIndex >= 0) {
-      return rebalanceHostedSearchTextBoundaries([
-        ...blocks.slice(0, groupedSearchInsertIndex),
-        nextBlock,
-        ...blocks.slice(groupedSearchInsertIndex),
-      ]);
+      return filterHiddenToolBlocks(
+        rebalanceHostedSearchTextBoundaries([
+          ...blocks.slice(0, groupedSearchInsertIndex),
+          nextBlock,
+          ...blocks.slice(groupedSearchInsertIndex),
+        ]),
+      );
     }
-    return rebalanceHostedSearchTextBoundaries([...blocks, nextBlock]);
+    return filterHiddenToolBlocks(rebalanceHostedSearchTextBoundaries([...blocks, nextBlock]));
   }
   const next = blocks.slice();
   const existing = next[idx];
@@ -1329,7 +1409,7 @@ function upsertHostedSearchBlock(
     kind: "hostedSearch",
     item: mergeHostedSearchBlocks(existing.item, hostedSearch),
   };
-  return next;
+  return filterHiddenToolBlocks(next);
 }
 
 export function upsertHostedSearchToRound<
@@ -1379,6 +1459,9 @@ function buildUiRoundBlocks(
   const content = enrichHostedSearchContentWithText(
     assistant.content,
   ) as AssistantMessage["content"];
+  const contentHasHostedSearch = content.some((block) =>
+    Boolean(normalizeHostedSearchBlock(block)),
+  );
   for (const block of content) {
     if (block.type === "text") {
       blocks = appendTextLikeBlock(blocks, "text", block.text);
@@ -1399,7 +1482,7 @@ function buildUiRoundBlocks(
         );
         continue;
       }
-      blocks = upsertToolBlock(blocks, block, toolResult);
+      blocks = upsertToolBlock(blocks, block, toolResult, { contentHasHostedSearch });
       continue;
     }
     const hostedSearch = normalizeHostedSearchBlock(block);

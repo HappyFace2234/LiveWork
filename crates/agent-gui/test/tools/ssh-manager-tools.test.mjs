@@ -148,6 +148,7 @@ test("SSHManager list_hosts redacts configured secrets", async () => {
 
 test("SSHManager create_session defaults SFTP on and refuses SSH prompts", async () => {
   const invocations = [];
+  const changes = [];
   const loader = createTsModuleLoader({
     mocks: {
       "@tauri-apps/api/core": {
@@ -169,6 +170,7 @@ test("SSHManager create_session defaults SFTP on and refuses SSH prompts", async
     projectPathKey: "/workspace",
     hosts: [SSH_HOST],
     associatedHostIds: ["host-1"],
+    onSshSessionsChanged: (change) => changes.push(change),
   });
 
   const result = await bundle.executeToolCall(
@@ -176,6 +178,7 @@ test("SSHManager create_session defaults SFTP on and refuses SSH prompts", async
   );
   assert.equal(result.isError, false);
   assert.equal(result.details.session.session_id, "ssh-session-1");
+  assert.deepEqual(changes, [{ action: "create", projectPathKey: "/workspace" }]);
   assert.deepEqual(invocations, [
     {
       command: "terminal_create_ssh",
@@ -194,6 +197,7 @@ test("SSHManager create_session defaults SFTP on and refuses SSH prompts", async
 
 test("SSHManager exec auto-creates a visible session before running command", async () => {
   const invocations = [];
+  const changes = [];
   const loader = createTsModuleLoader({
     mocks: {
       "@tauri-apps/api/core": {
@@ -229,6 +233,7 @@ test("SSHManager exec auto-creates a visible session before running command", as
     projectPathKey: "/workspace",
     hosts: [SSH_HOST],
     associatedHostIds: ["host-1"],
+    onSshSessionsChanged: (change) => changes.push(change),
   });
 
   const result = await bundle.executeToolCall(
@@ -249,12 +254,14 @@ test("SSHManager exec auto-creates a visible session before running command", as
   assert.equal(invocations[2].args.session_id, "ssh-session-1");
   assert.equal(invocations[2].args.command, "pwd");
   assert.equal(invocations[2].args.cwd, "/srv/app");
+  assert.deepEqual(changes, [{ action: "create", projectPathKey: "/workspace" }]);
   assert.equal(result.details.session_reused, false);
   assert.equal(result.details.session_created, true);
 });
 
 test("SSHManager exec reuses an existing running SSH session for the same host", async () => {
   const invocations = [];
+  const changes = [];
   const loader = createTsModuleLoader({
     mocks: {
       "@tauri-apps/api/core": {
@@ -304,6 +311,7 @@ test("SSHManager exec reuses an existing running SSH session for the same host",
     projectPathKey: "/workspace",
     hosts: [SSH_HOST],
     associatedHostIds: ["host-1"],
+    onSshSessionsChanged: (change) => changes.push(change),
   });
 
   const result = await bundle.executeToolCall(
@@ -320,6 +328,7 @@ test("SSHManager exec reuses an existing running SSH session for the same host",
     ["terminal_list", "terminal_ssh_exec"],
   );
   assert.equal(invocations[1].args.session_id, "ssh-session-reused");
+  assert.deepEqual(changes, []);
   assert.equal(result.details.session_strategy, "reuse_or_create");
   assert.equal(result.details.session_reused, true);
   assert.equal(result.details.session_created, false);

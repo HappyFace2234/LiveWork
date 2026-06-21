@@ -1,6 +1,7 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "../../i18n";
+import { workspaceProjectPathKey } from "../../lib/settings";
 import { cn } from "../../lib/shared/utils";
 import {
   AlertTriangle,
@@ -226,7 +227,7 @@ function tunnelStatusKey(status: TunnelSummary["status"]) {
 }
 
 function normalizeProjectPathKey(value: string | undefined) {
-  return value?.trim() ?? "";
+  return workspaceProjectPathKey(value ?? "");
 }
 
 function ttlFromTunnel(tunnel: TunnelSummary, nowSeconds: number): TunnelTtlSeconds {
@@ -505,10 +506,9 @@ export function LocalTunnelPanel({
             </div>
           </div>
         </div>
-        <div
-          role="group"
+        <fieldset
           aria-label={t("projectTools.tunnelScopeGroup")}
-          className="relative mt-3 grid grid-cols-2 gap-0.5 rounded-lg bg-muted/70 p-0.5"
+          className="relative m-0 mt-3 grid min-w-0 grid-cols-2 gap-0.5 rounded-lg border-0 bg-muted/70 p-0.5"
         >
           <div
             aria-hidden
@@ -542,7 +542,7 @@ export function LocalTunnelPanel({
               </button>
             );
           })}
-        </div>
+        </fieldset>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">

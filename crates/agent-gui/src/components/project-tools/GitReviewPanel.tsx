@@ -18,7 +18,12 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useLocale } from "../../i18n";
-import { computeGitGraph, GRAPH_COLORS, type GraphColor, type GraphRow } from "../../lib/git/gitGraph";
+import {
+  computeGitGraph,
+  GRAPH_COLORS,
+  type GraphColor,
+  type GraphRow,
+} from "../../lib/git/gitGraph";
 import type {
   GitClient,
   GitCommitDetails,
@@ -36,8 +41,8 @@ import { getFileTypeIcon } from "../chat/fileTypeIcons";
 import {
   AlertTriangle,
   BrushCleaning,
-  ChevronRight,
   CheckCircle2,
+  ChevronRight,
   Cloud,
   Copy,
   Download,
@@ -350,16 +355,14 @@ function diffSelectionAutoScrollDelta(
   if (pointer < start + DIFF_SELECTION_AUTOSCROLL_EDGE_PX) {
     const ratio = Math.min(
       1,
-      (start + DIFF_SELECTION_AUTOSCROLL_EDGE_PX - pointer) /
-        DIFF_SELECTION_AUTOSCROLL_EDGE_PX,
+      (start + DIFF_SELECTION_AUTOSCROLL_EDGE_PX - pointer) / DIFF_SELECTION_AUTOSCROLL_EDGE_PX,
     );
     return -Math.max(2, Math.round(ratio * DIFF_SELECTION_AUTOSCROLL_MAX_STEP_PX));
   }
   if (pointer > end - DIFF_SELECTION_AUTOSCROLL_EDGE_PX) {
     const ratio = Math.min(
       1,
-      (pointer - (end - DIFF_SELECTION_AUTOSCROLL_EDGE_PX)) /
-        DIFF_SELECTION_AUTOSCROLL_EDGE_PX,
+      (pointer - (end - DIFF_SELECTION_AUTOSCROLL_EDGE_PX)) / DIFF_SELECTION_AUTOSCROLL_EDGE_PX,
     );
     return Math.max(2, Math.round(ratio * DIFF_SELECTION_AUTOSCROLL_MAX_STEP_PX));
   }
@@ -427,8 +430,7 @@ function resolveDiffSelectionScrollViewports(
     return viewports;
   }
 
-  let current: HTMLElement | null =
-    target instanceof HTMLElement ? target : target.parentElement;
+  let current: HTMLElement | null = target instanceof HTMLElement ? target : target.parentElement;
   while (current && current !== root) {
     addViewport(current);
     current = current.parentElement;
@@ -466,10 +468,7 @@ function resolveDiffHorizontalScrollTargets(
   return targets;
 }
 
-function chooseDiffHorizontalScrollTarget(
-  targets: HTMLElement[],
-  preferred: HTMLElement | null,
-) {
+function chooseDiffHorizontalScrollTarget(targets: HTMLElement[], preferred: HTMLElement | null) {
   if (preferred && targets.includes(preferred) && isDiffHorizontalScrollableElement(preferred)) {
     return preferred;
   }
@@ -486,7 +485,7 @@ function chooseDiffHorizontalScrollTarget(
   return bestTarget;
 }
 
-function isProjectToolsPanelResizing(root: HTMLElement | null) {
+function isRightDockPanelResizing(root: HTMLElement | null) {
   return Boolean(root?.closest('[data-project-tools-resizing="true"]'));
 }
 
@@ -1099,7 +1098,7 @@ function parseDiffStatFile(line: string, index: number): DiffStatFile | null {
     };
   }
 
-  const match = /^(\d+)\s*([+\-]*)/.exec(details);
+  const match = /^(\d+)\s*([+-]*)/.exec(details);
   if (!match?.[1]) return null;
   const changes = Number(match[1]);
   if (!Number.isFinite(changes)) return null;
@@ -1354,7 +1353,7 @@ function DiffContent(props: {
   const { diff, title, error, loading = false, showStat = true } = props;
   const { locale, t } = useLocale();
   const isDark = useIsDark();
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const rootRef = useRef<HTMLElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
   const selectionAutoscrollViewportsRef = useRef<HTMLElement[]>([]);
@@ -1366,6 +1365,7 @@ function DiffContent(props: {
   const diffHorizontalScrollbarTrackRef = useRef<HTMLDivElement | null>(null);
   const diffHorizontalScrollTargetsRef = useRef<HTMLElement[]>([]);
   const diffHorizontalActiveTargetRef = useRef<HTMLElement | null>(null);
+  const diffScrollViewportId = useId();
   const [selectionContextMenu, setSelectionContextMenu] =
     useState<DiffSelectionContextMenuState | null>(null);
   const [diffHorizontalScrollbar, setDiffHorizontalScrollbar] =
@@ -1388,7 +1388,7 @@ function DiffContent(props: {
 
   const updateDiffHorizontalScrollbar = useCallback(() => {
     const root = rootRef.current;
-    if (isProjectToolsPanelResizing(root)) return;
+    if (isRightDockPanelResizing(root)) return;
 
     const trackWidth =
       diffHorizontalScrollbarTrackRef.current?.clientWidth ??
@@ -1707,7 +1707,7 @@ function DiffContent(props: {
   }, [closeSelectionContextMenu, selectionContextMenu]);
 
   const handleContextMenu = useCallback(
-    (event: ReactMouseEvent<HTMLDivElement>) => {
+    (event: ReactMouseEvent<HTMLFieldSetElement>) => {
       if (!isDiffSelectableContentTarget(rootRef.current, event.target)) {
         closeSelectionContextMenu();
         return;
@@ -1729,7 +1729,7 @@ function DiffContent(props: {
   );
 
   const handleSelectionPointerDownCapture = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
+    (event: ReactPointerEvent<HTMLFieldSetElement>) => {
       if (event.button !== 0) return;
       if (!isDiffSelectableContentTarget(rootRef.current, event.target)) return;
 
@@ -1776,15 +1776,15 @@ function DiffContent(props: {
   const selectionContextMenuPosition = selectionContextMenu
     ? clampDiffSelectionContextMenuPosition(selectionContextMenu.x, selectionContextMenu.y)
     : null;
-  const copySelectedTextLabel =
-    locale === "en-US" ? "Copy selected text" : "复制选中文本";
+  const copySelectedTextLabel = locale === "en-US" ? "Copy selected text" : "复制选中文本";
 
   return (
-    <div
-      ref={rootRef}
-      role="group"
+    <fieldset
+      ref={(node) => {
+        rootRef.current = node;
+      }}
       aria-label={title}
-      className="git-review-diff-selectable flex min-h-0 flex-1 select-none flex-col overflow-hidden"
+      className="git-review-diff-selectable m-0 flex min-h-0 min-w-0 flex-1 select-none flex-col overflow-hidden border-0 p-0"
       onContextMenu={handleContextMenu}
       onPointerDownCapture={handleSelectionPointerDownCapture}
     >
@@ -1798,6 +1798,7 @@ function DiffContent(props: {
       ) : null}
       {!error && !showLoadingState && patchChunks.length > 0 ? (
         <div
+          id={diffScrollViewportId}
           ref={(node) => {
             scrollViewportRef.current = node;
           }}
@@ -1814,6 +1815,7 @@ function DiffContent(props: {
       ) : null}
       {!error && !showLoadingState && diff?.patch.trim() && patchChunks.length === 0 ? (
         <pre
+          id={diffScrollViewportId}
           ref={(node) => {
             scrollViewportRef.current = node;
           }}
@@ -1842,10 +1844,12 @@ function DiffContent(props: {
             ref={diffHorizontalScrollbarTrackRef}
             role="scrollbar"
             aria-label={locale === "en-US" ? "Horizontal diff scrollbar" : "diff 横向滚动条"}
+            aria-controls={diffScrollViewportId}
             aria-orientation="horizontal"
             aria-valuemin={0}
             aria-valuemax={Math.round(diffHorizontalScrollbar.maxScrollLeft)}
             aria-valuenow={Math.round(diffHorizontalScrollbar.scrollLeft)}
+            tabIndex={0}
             className="relative h-1.5 overflow-hidden rounded-full bg-muted/35"
             onPointerDown={handleDiffHorizontalScrollbarPointerDown}
           >
@@ -1890,7 +1894,7 @@ function DiffContent(props: {
             document.body,
           )
         : null}
-    </div>
+    </fieldset>
   );
 }
 
@@ -1979,11 +1983,7 @@ function statusTone(entry: GitStatusEntry) {
 
 function isDeletedStatusEntry(entry: GitStatusEntry) {
   if (entry.untracked) return false;
-  return (
-    entry.kind === "deleted" ||
-    entry.indexStatus === "D" ||
-    entry.worktreeStatus === "D"
-  );
+  return entry.kind === "deleted" || entry.indexStatus === "D" || entry.worktreeStatus === "D";
 }
 
 function statusLabel(entry: GitStatusEntry) {
@@ -2192,15 +2192,11 @@ function resolveContainedSelectionText(root: HTMLElement | null) {
 function clampDiffSelectionContextMenuPosition(x: number, y: number) {
   const maxLeft = Math.max(
     DIFF_SELECTION_CONTEXT_MENU_MARGIN,
-    window.innerWidth -
-      DIFF_SELECTION_CONTEXT_MENU_WIDTH -
-      DIFF_SELECTION_CONTEXT_MENU_MARGIN,
+    window.innerWidth - DIFF_SELECTION_CONTEXT_MENU_WIDTH - DIFF_SELECTION_CONTEXT_MENU_MARGIN,
   );
   const maxTop = Math.max(
     DIFF_SELECTION_CONTEXT_MENU_MARGIN,
-    window.innerHeight -
-      DIFF_SELECTION_CONTEXT_MENU_HEIGHT -
-      DIFF_SELECTION_CONTEXT_MENU_MARGIN,
+    window.innerHeight - DIFF_SELECTION_CONTEXT_MENU_HEIGHT - DIFF_SELECTION_CONTEXT_MENU_MARGIN,
   );
 
   return {
@@ -2401,7 +2397,12 @@ const COMMIT_REF_KIND_TITLE: Record<CommitRefKind, string> = {
 };
 
 function normalizeRefRemoteName(remoteName: string | undefined) {
-  return remoteName?.trim().replace(/^refs\/remotes\//, "").replace(/\/HEAD$/, "") ?? "";
+  return (
+    remoteName
+      ?.trim()
+      .replace(/^refs\/remotes\//, "")
+      .replace(/\/HEAD$/, "") ?? ""
+  );
 }
 
 function isLikelyRemoteRefLabel(ref: string, remoteName: string | undefined) {
@@ -2515,20 +2516,11 @@ function commitRefChipClass(kind: CommitRefKind, selected: boolean) {
       );
     case "ref":
     default:
-      return cn(
-        baseClass,
-        "border-border/70 bg-muted/50 text-muted-foreground ring-border/60",
-      );
+      return cn(baseClass, "border-border/70 bg-muted/50 text-muted-foreground ring-border/60");
   }
 }
 
-function CommitRefTagIcon({
-  kind,
-  variant,
-}: {
-  kind: CommitRefKind;
-  variant: "list" | "detail";
-}) {
+function CommitRefTagIcon({ kind, variant }: { kind: CommitRefKind; variant: "list" | "detail" }) {
   const className = cn("shrink-0 opacity-85", variant === "detail" ? "h-3 w-3" : "h-2.5 w-2.5");
   switch (kind) {
     case "head":
@@ -2609,7 +2601,6 @@ function CommitRefTags({
         <span
           key={`${ref.kind}:${ref.label}`}
           title={ref.title}
-          aria-label={ref.title}
           className={cn(
             commitRefChipClass(ref.kind, selected),
             variant === "detail" ? "max-w-[12rem] shrink-0" : "max-w-[8.5rem] shrink",
@@ -2620,9 +2611,7 @@ function CommitRefTags({
         </span>
       ))}
       {hiddenCount > 0 ? (
-        <span
-          className={cn(commitRefChipClass("ref", selected), "shrink-0 px-1.5 leading-[14px]")}
-        >
+        <span className={cn(commitRefChipClass("ref", selected), "shrink-0 px-1.5 leading-[14px]")}>
           +{hiddenCount}
         </span>
       ) : null}
@@ -2772,10 +2761,7 @@ function GitGraphSvgCell({ row }: { row: GraphRow }) {
             return null;
           }
 
-          if (
-            outputIndex < row.outputLanes.length &&
-            lane.id === row.outputLanes[outputIndex].id
-          ) {
+          if (outputIndex < row.outputLanes.length && lane.id === row.outputLanes[outputIndex].id) {
             if (index === outputIndex) {
               outputIndex++;
               return (
@@ -2887,6 +2873,7 @@ function GitGraphContinuationCell({ row }: { row: GraphRow }) {
       <svg
         width={layoutW}
         height={GRAPH_SVG_HEIGHT}
+        aria-hidden="true"
         className="block overflow-visible"
         style={{ shapeRendering: "geometricPrecision" }}
       >
@@ -3144,14 +3131,10 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
   useEffect(() => {
     if (useSplitReviewLayout) return;
     const el =
-      changesStackedPane === "list"
-        ? changesListPaneRef.current
-        : changesDetailPaneRef.current;
+      changesStackedPane === "list" ? changesListPaneRef.current : changesDetailPaneRef.current;
     if (!el) return;
     const cls =
-      changesStackedDir === "back"
-        ? "git-review-pane-enter-back"
-        : "git-review-pane-enter-forward";
+      changesStackedDir === "back" ? "git-review-pane-enter-back" : "git-review-pane-enter-forward";
     el.classList.remove("git-review-pane-enter-forward", "git-review-pane-enter-back");
     void el.offsetHeight;
     el.classList.add(cls);
@@ -3160,14 +3143,10 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
   useEffect(() => {
     if (useSplitReviewLayout) return;
     const el =
-      historyStackedPane === "list"
-        ? historyListPaneRef.current
-        : historyDetailPaneRef.current;
+      historyStackedPane === "list" ? historyListPaneRef.current : historyDetailPaneRef.current;
     if (!el) return;
     const cls =
-      historyStackedDir === "back"
-        ? "git-review-pane-enter-back"
-        : "git-review-pane-enter-forward";
+      historyStackedDir === "back" ? "git-review-pane-enter-back" : "git-review-pane-enter-forward";
     el.classList.remove("git-review-pane-enter-forward", "git-review-pane-enter-back");
     void el.offsetHeight;
     el.classList.add(cls);
@@ -3977,7 +3956,9 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
   });
   const currentHistoryItemIndex = useMemo(() => {
     const selectedIndex = selectedCommitSha
-      ? historyRows.findIndex((row) => row.type === "commit" && row.commit.sha === selectedCommitSha)
+      ? historyRows.findIndex(
+          (row) => row.type === "commit" && row.commit.sha === selectedCommitSha,
+        )
       : -1;
     if (selectedIndex >= 0) return selectedIndex;
 
@@ -4074,26 +4055,29 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
     [loadDiffForPath, useSplitReviewLayout],
   );
 
-  const selectCommit = useCallback((commit: GitCommitSummary) => {
-    selectedCommitShaRef.current = commit.sha;
-    selectedCommitFilePathRef.current = "";
-    setSelectedCommitSha(commit.sha);
-    setSelectedCommitFilePath("");
-    clearCommitDiff();
-    setHistoryDiffTitle("");
-    setHistoryDiffSubtitle("");
-    setHistoryError("");
-    setExpandedCommitShas((current) => {
-      const next = new Set(current);
-      if (next.has(commit.sha)) {
-        next.delete(commit.sha);
-      } else {
-        next.add(commit.sha);
-      }
-      expandedCommitShasRef.current = next;
-      return next;
-    });
-  }, [clearCommitDiff]);
+  const selectCommit = useCallback(
+    (commit: GitCommitSummary) => {
+      selectedCommitShaRef.current = commit.sha;
+      selectedCommitFilePathRef.current = "";
+      setSelectedCommitSha(commit.sha);
+      setSelectedCommitFilePath("");
+      clearCommitDiff();
+      setHistoryDiffTitle("");
+      setHistoryDiffSubtitle("");
+      setHistoryError("");
+      setExpandedCommitShas((current) => {
+        const next = new Set(current);
+        if (next.has(commit.sha)) {
+          next.delete(commit.sha);
+        } else {
+          next.add(commit.sha);
+        }
+        expandedCommitShasRef.current = next;
+        return next;
+      });
+    },
+    [clearCommitDiff],
+  );
 
   const selectCommitFile = useCallback(
     (commit: GitCommitSummary, file: GitCommitFile) => {
@@ -4118,30 +4102,33 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
     [loadCommitDiff, t, useSplitReviewLayout],
   );
 
-  const focusHistoryCommit = useCallback((commit: GitCommitSummary) => {
-    selectedCommitShaRef.current = commit.sha;
-    selectedCommitFilePathRef.current = "";
-    setSelectedCommitSha(commit.sha);
-    setSelectedCommitFilePath("");
-    if (!useSplitReviewLayout) {
-      setHistoryStackedDir("forward");
-      setHistoryStackedPane("detail");
-    }
-    clearCommitDiff();
-    setHistoryDiffTitle("");
-    setHistoryDiffSubtitle("");
-    setHistoryError("");
-    setExpandedCommitShas((current) => {
-      if (current.has(commit.sha)) {
-        expandedCommitShasRef.current = current;
-        return current;
+  const focusHistoryCommit = useCallback(
+    (commit: GitCommitSummary) => {
+      selectedCommitShaRef.current = commit.sha;
+      selectedCommitFilePathRef.current = "";
+      setSelectedCommitSha(commit.sha);
+      setSelectedCommitFilePath("");
+      if (!useSplitReviewLayout) {
+        setHistoryStackedDir("forward");
+        setHistoryStackedPane("detail");
       }
-      const next = new Set(current);
-      next.add(commit.sha);
-      expandedCommitShasRef.current = next;
-      return next;
-    });
-  }, [clearCommitDiff, useSplitReviewLayout]);
+      clearCommitDiff();
+      setHistoryDiffTitle("");
+      setHistoryDiffSubtitle("");
+      setHistoryError("");
+      setExpandedCommitShas((current) => {
+        if (current.has(commit.sha)) {
+          expandedCommitShasRef.current = current;
+          return current;
+        }
+        const next = new Set(current);
+        next.add(commit.sha);
+        expandedCommitShasRef.current = next;
+        return next;
+      });
+    },
+    [clearCommitDiff, useSplitReviewLayout],
+  );
 
   const openHistoryContextMenu = useCallback(
     (
@@ -4164,10 +4151,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
       );
       const menuHeight =
         target.kind === "file" ? HISTORY_FILE_CONTEXT_MENU_HEIGHT : HISTORY_CONTEXT_MENU_HEIGHT;
-      const maxTop = Math.max(
-        8,
-        (panelRect?.height ?? window.innerHeight) - menuHeight - 8,
-      );
+      const maxTop = Math.max(8, (panelRect?.height ?? window.innerHeight) - menuHeight - 8);
       const x = Math.max(8, Math.min(left, maxLeft));
       const y = Math.max(8, Math.min(top, maxTop));
       if (target.kind === "file") {
@@ -4904,8 +4888,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
                   GIT_REVIEW_STACKED_PANE_BUTTON_CLASS,
                   (reviewMode === "changes"
                     ? changesStackedPane === "detail"
-                    : historyStackedPane === "detail") &&
-                    "bg-background text-foreground shadow-sm",
+                    : historyStackedPane === "detail") && "bg-background text-foreground shadow-sm",
                 )}
                 onClick={() => {
                   if (reviewMode === "changes") {
@@ -4935,9 +4918,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
           key="changes"
           className={cn(
             "git-review-tab-enter min-h-0 flex-1 gap-3 overflow-hidden p-3",
-            useSplitReviewLayout
-              ? `grid ${GIT_REVIEW_SPLIT_GRID_CLASS}`
-              : "flex flex-col",
+            useSplitReviewLayout ? `grid ${GIT_REVIEW_SPLIT_GRID_CLASS}` : "flex flex-col",
           )}
         >
           <aside
@@ -5062,9 +5043,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
           key="history"
           className={cn(
             "git-review-tab-enter min-h-0 flex-1 gap-3 overflow-hidden p-3",
-            useSplitReviewLayout
-              ? `grid ${GIT_REVIEW_SPLIT_GRID_CLASS}`
-              : "flex flex-col",
+            useSplitReviewLayout ? `grid ${GIT_REVIEW_SPLIT_GRID_CLASS}` : "flex flex-col",
           )}
         >
           <aside
@@ -5167,7 +5146,6 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
                           <div
                             className="git-review-history-row flex h-[22px] w-full min-w-0 select-none items-center gap-1 px-1.5 text-left text-xs text-muted-foreground transition-colors"
                             title={title}
-                            aria-label={title}
                           >
                             <GitGraphSvgCell row={graphRow} />
                             <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
@@ -5219,9 +5197,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
                             }
                             onClick={() => selectCommitFile(row.commit, row.file)}
                           >
-                            {graphRow ? (
-                              <GitGraphContinuationCell row={graphRow} />
-                            ) : null}
+                            {graphRow ? <GitGraphContinuationCell row={graphRow} /> : null}
                             <TypeIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
                             <span className="min-w-0 flex-1 truncate">
                               <span className="font-medium">{fileName}</span>
@@ -5266,9 +5242,7 @@ export const GitReviewPanel = memo(function GitReviewPanel(props: GitReviewPanel
                           onContextMenu={(event) => openHistoryCommitContextMenu(event, commit)}
                           onClick={() => selectCommit(commit)}
                         >
-                          {graphRow ? (
-                            <GitGraphSvgCell row={graphRow} />
-                          ) : null}
+                          {graphRow ? <GitGraphSvgCell row={graphRow} /> : null}
                           <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
                             {commit.subject || commit.shortSha}
                           </span>

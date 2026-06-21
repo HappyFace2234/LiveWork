@@ -44,6 +44,7 @@ type ParsedSshHost = {
 const SSH_CONFIG_PATH = ".ssh/config";
 const SSH_DIR_PATH = ".ssh";
 const DEFAULT_SSH_PORT = 22;
+type SshPathProfile = "windows" | "posix";
 
 function normalizePath(path: string) {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -51,6 +52,42 @@ function normalizePath(path: string) {
 
 function joinPath(base: string, child: string) {
   const normalizedBase = normalizePath(base);
+  const normalizedChild = child.replace(/^\/+/, "");
+  return normalizedChild ? `${normalizedBase}/${normalizedChild}` : normalizedBase;
+}
+
+function pathProfileFromHome(homePath: string): SshPathProfile {
+  const trimmed = homePath.trim();
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return "windows";
+  if (/^[\\/]{2}/.test(trimmed)) return "windows";
+  if (trimmed.includes("\\")) return "windows";
+  return "posix";
+}
+
+function stripWrappingQuotes(path: string) {
+  const trimmed = path.trim();
+  if (trimmed.length < 2) return trimmed;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  return (first === `"` && last === `"`) || (first === "'" && last === "'")
+    ? trimmed.slice(1, -1)
+    : trimmed;
+}
+
+function isWindowsAbsolutePath(path: string) {
+  if (/^[\\/]{2}\?[\\/]/.test(path)) return true;
+  if (/^[A-Za-z]:[\\/]/.test(path)) return true;
+  return /^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/.test(path);
+}
+
+function joinIdentityPath(homePath: string, child: string, profile: SshPathProfile) {
+  if (profile === "windows") {
+    const separator = homePath.includes("\\") ? "\\" : "/";
+    const normalizedBase = homePath.replace(/[\\/]+$/, "");
+    const normalizedChild = child.replace(/^[\\/]+/, "");
+    return normalizedChild ? `${normalizedBase}${separator}${normalizedChild}` : normalizedBase;
+  }
+  const normalizedBase = homePath.replace(/\/+$/, "");
   const normalizedChild = child.replace(/^\/+/, "");
   return normalizedChild ? `${normalizedBase}/${normalizedChild}` : normalizedBase;
 }
@@ -134,18 +171,48 @@ function isPrivateKeyContent(content: string) {
   return /^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/m.test(content.trim());
 }
 
-function expandIdentityPath(homePath: string, path: string) {
-  const trimmed = path.trim().replace(/^"|"$/g, "");
+export function expandIdentityPath(homePath: string, path: string) {
+  const profile = pathProfileFromHome(homePath);
+  const trimmed = stripWrappingQuotes(path);
   if (!trimmed) return "";
-  if (trimmed.startsWith("~/")) return joinPath(homePath, trimmed.slice(2));
-  if (trimmed.startsWith("$HOME/")) return joinPath(homePath, trimmed.slice(6));
-  if (trimmed.startsWith("/")) return normalizePath(trimmed);
-  return joinPath(homePath, trimmed);
+  if (profile === "windows") {
+    if (isWindowsAbsolutePath(trimmed)) return trimmed;
+    if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+      return joinIdentityPath(homePath, trimmed.slice(2), profile);
+    }
+    if (trimmed.startsWith("$HOME/") || trimmed.startsWith("$HOME\\")) {
+      return joinIdentityPath(homePath, trimmed.slice(6), profile);
+    }
+    if (trimmed.startsWith("${HOME}/") || trimmed.startsWith("${HOME}\\")) {
+      return joinIdentityPath(homePath, trimmed.slice(8), profile);
+    }
+    if (/^%USERPROFILE%[\\/]/i.test(trimmed)) {
+      return joinIdentityPath(homePath, trimmed.slice("%USERPROFILE%".length), profile);
+    }
+    if (/^%HOMEDRIVE%%HOMEPATH%[\\/]/i.test(trimmed)) {
+      return joinIdentityPath(
+        homePath,
+        trimmed.slice("%HOMEDRIVE%%HOMEPATH%".length),
+        profile,
+      );
+    }
+    if (trimmed.startsWith("/") || trimmed.startsWith("\\")) return trimmed;
+    return joinIdentityPath(homePath, trimmed, profile);
+  }
+  if (trimmed.startsWith("~/")) return joinIdentityPath(homePath, trimmed.slice(2), profile);
+  if (trimmed.startsWith("$HOME/")) return joinIdentityPath(homePath, trimmed.slice(6), profile);
+  if (trimmed.startsWith("${HOME}/")) return joinIdentityPath(homePath, trimmed.slice(8), profile);
+  if (trimmed.startsWith("/")) return trimmed.replace(/\/+$/, "");
+  return joinIdentityPath(homePath, trimmed, profile);
 }
 
 function toHomeRelativePath(homePath: string, path: string) {
-  const home = `${normalizePath(homePath)}/`;
-  const normalized = normalizePath(path);
+  const profile = pathProfileFromHome(homePath);
+  const home =
+    profile === "windows"
+      ? `${normalizePath(homePath)}/`
+      : `${homePath.replace(/\/+$/, "")}/`;
+  const normalized = profile === "windows" ? normalizePath(path) : path;
   return normalized.startsWith(home) ? normalized.slice(home.length) : "";
 }
 

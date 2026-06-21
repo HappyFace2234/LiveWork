@@ -261,7 +261,7 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
   const codeCopyRootRef = useEnabledCodeCopyButtons(isAnimating);
 
   return (
-    <div ref={codeCopyRootRef} style={{ display: "contents" }}>
+    <div ref={codeCopyRootRef}>
       <Streamdown
         className={cn(
           "chat-markdown max-w-none break-words",

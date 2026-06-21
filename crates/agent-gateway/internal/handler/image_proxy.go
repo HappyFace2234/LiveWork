@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/gabriel-vasile/mimetype"
 )
 
 const (
@@ -17,7 +19,10 @@ const (
 )
 
 func ImageProxy(timeout time.Duration) http.HandlerFunc {
-	client := &http.Client{Timeout: timeout}
+	return imageProxyWithClient(newSafeOutboundHTTPClient(timeout))
+}
+
+func imageProxyWithClient(client outboundHTTPClient) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		rawURL := strings.TrimSpace(r.URL.Query().Get("url"))
 		targetURL, err := validateImageProxyURL(rawURL)
@@ -35,6 +40,10 @@ func ImageProxy(timeout time.Duration) http.HandlerFunc {
 
 		resp, err := client.Do(upstreamReq)
 		if err != nil {
+			if isSafeOutboundBlockedError(err) {
+				http.Error(w, "image proxy URL is not allowed", http.StatusBadRequest)
+				return
+			}
 			http.Error(w, fmt.Sprintf("failed to load image through proxy: %v", err), http.StatusBadGateway)
 			return
 		}
@@ -89,18 +98,9 @@ func imageProxyReferer(targetURL *url.URL) string {
 }
 
 func validateImageProxyURL(raw string) (*url.URL, error) {
-	if raw == "" {
-		return nil, fmt.Errorf("url is required")
-	}
-	parsed, err := url.Parse(raw)
+	parsed, err := validateOutboundHTTPURL(raw)
 	if err != nil {
-		return nil, fmt.Errorf("image URL must be absolute: %v", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return nil, fmt.Errorf("image proxy only supports http and https, got %s", parsed.Scheme)
-	}
-	if parsed.Host == "" || parsed.User != nil {
-		return nil, fmt.Errorf("image URL must be a valid absolute URL without embedded credentials")
+		return nil, fmt.Errorf("image URL is not allowed: %v", err)
 	}
 	return parsed, nil
 }
@@ -127,43 +127,11 @@ func normalizeImageProxyMime(value string) (string, bool) {
 	}
 }
 
-func looksLikeSVG(body []byte) bool {
-	prefixLen := len(body)
-	if prefixLen > 1024 {
-		prefixLen = 1024
-	}
-	prefix := strings.TrimSpace(strings.TrimPrefix(string(body[:prefixLen]), "\ufeff"))
-	return strings.HasPrefix(prefix, "<svg") || strings.Contains(prefix, "<svg")
-}
-
-func inferImageProxyMimeFromBytes(body []byte) (string, bool) {
-	if len(body) >= 8 && string(body[:8]) == "\x89PNG\r\n\x1a\n" {
-		return "image/png", true
-	}
-	if len(body) >= 3 && body[0] == 0xff && body[1] == 0xd8 && body[2] == 0xff {
-		return "image/jpeg", true
-	}
-	if len(body) >= 6 && (string(body[:6]) == "GIF87a" || string(body[:6]) == "GIF89a") {
-		return "image/gif", true
-	}
-	if len(body) >= 12 && string(body[:4]) == "RIFF" && string(body[8:12]) == "WEBP" {
-		return "image/webp", true
-	}
-	if len(body) >= 2 && string(body[:2]) == "BM" {
-		return "image/bmp", true
-	}
-	if len(body) >= 4 && body[0] == 0x00 && body[1] == 0x00 && body[2] == 0x01 && body[3] == 0x00 {
-		return "image/x-icon", true
-	}
-	if looksLikeSVG(body) {
-		return "image/svg+xml", true
+func resolveImageProxyMime(_ string, body []byte) (string, bool) {
+	if detected := mimetype.Detect(body); detected != nil {
+		if mimeType, ok := normalizeImageProxyMime(detected.String()); ok {
+			return mimeType, true
+		}
 	}
 	return "", false
-}
-
-func resolveImageProxyMime(contentType string, body []byte) (string, bool) {
-	if mimeType, ok := normalizeImageProxyMime(contentType); ok {
-		return mimeType, true
-	}
-	return inferImageProxyMimeFromBytes(body)
 }

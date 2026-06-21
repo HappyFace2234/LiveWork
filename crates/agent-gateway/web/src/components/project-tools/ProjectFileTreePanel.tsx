@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "@/i18n";
 import type {
-  ProjectToolsFileTreeProjectState,
-  ProjectToolsFileTreeStatePatch,
+  RightDockFileTreeState,
+  RightDockFileTreeStatePatch,
 } from "@/lib/settings";
 import { cn } from "@/lib/shared/utils";
 import { getFileTypeIcon } from "../chat/fileTypeIcons";
@@ -147,9 +147,9 @@ export function ProjectFileTreePanel(props: {
   projectPathKey: string;
   cwd: string;
   initialized: boolean;
-  syncState: ProjectToolsFileTreeProjectState;
+  syncState: RightDockFileTreeState;
   onInitializedChange: (initialized: boolean) => void;
-  onSyncStateChange: (patch: ProjectToolsFileTreeStatePatch) => void;
+  onSyncStateChange: (patch: RightDockFileTreeStatePatch) => void;
   onInsertFileMention?: (path: string, kind: FileTreeKind) => void;
   onOpenFile?: (path: string) => void;
 }) {
@@ -206,7 +206,7 @@ export function ProjectFileTreePanel(props: {
     [cwd, projectPathKey],
   );
 
-  const syncFileTreeState = useCallback((patch: ProjectToolsFileTreeStatePatch) => {
+  const syncFileTreeState = useCallback((patch: RightDockFileTreeStatePatch) => {
     onSyncStateChangeRef.current(patch);
   }, []);
 

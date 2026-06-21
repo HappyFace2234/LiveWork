@@ -24,6 +24,33 @@ function withLastConversationAt(item, lastConversationAt) {
   };
 }
 
+test("workspace project path key normalizes windows-shaped paths and preserves POSIX semantics", () => {
+  assert.equal(
+    settings.workspaceProjectPathKey(" C:\\Users\\Me\\Repo\\ "),
+    "c:/users/me/repo",
+  );
+  assert.equal(settings.workspaceProjectPathKey("c:/USERS/me/REPO"), "c:/users/me/repo");
+  assert.equal(
+    settings.workspaceProjectPathKey("\\\\Server\\Share\\Repo\\"),
+    "//server/share/repo",
+  );
+  assert.equal(
+    settings.workspaceProjectPathKey("\\\\?\\C:\\Users\\Me\\Repo\\"),
+    "c:/users/me/repo",
+  );
+  assert.equal(
+    settings.workspaceProjectPathKey("\\\\?\\UNC\\Server\\Share\\Repo\\"),
+    "//server/share/repo",
+  );
+  assert.equal(settings.workspaceProjectPathKey(" /Users/A/App/ "), "/Users/A/App");
+  assert.equal(settings.workspaceProjectPathKey("/tmp/Foo"), "/tmp/Foo");
+  assert.equal(settings.workspaceProjectPathKey("/tmp/Foo\\"), "/tmp/Foo\\");
+  assert.notEqual(
+    settings.workspaceProjectPathKey("/tmp/Foo"),
+    settings.workspaceProjectPathKey("/tmp/foo"),
+  );
+});
+
 test("workspace project ordering follows latest activity instead of pinning default first", () => {
   const projects = [
     project(settings.DEFAULT_WORKSPACE_PROJECT_ID, "/tmp/default-project", 1),

@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocale } from "../../i18n";
+import type { SftpClient, SftpEntry, SftpSide, SftpTransfer } from "../../lib/sftp/types";
 import { cn } from "../../lib/shared/utils";
-import type {
-  SftpClient,
-  SftpEntry,
-  SftpSide,
-  SftpTransfer,
-} from "../../lib/sftp/types";
 import type { TerminalSession } from "../../lib/terminal/types";
 import {
   AlertTriangle,
@@ -93,12 +88,12 @@ import {
   FileTypeZip,
   Folder,
   FolderOpen,
+  type IconComponent,
   Loader2,
   Pencil,
   Plus,
   RefreshCw,
   Trash2,
-  type IconComponent,
   Upload,
 } from "../icons";
 import { useConfirmDialog } from "../ui/confirm-dialog";
@@ -192,7 +187,7 @@ const EXACT_FILE_ICONS: Record<string, IconComponent> = {
   ".yarnrc": FileTypeYarn,
   ".zprofile": FileTypeShell,
   ".zshrc": FileTypeShell,
-  "authorized_keys": FileTypeKey,
+  authorized_keys: FileTypeKey,
   "bun.lock": FileTypeBun,
   "bun.lockb": FileTypeBun,
   "cargo.lock": FileTypeCargo,
@@ -200,45 +195,45 @@ const EXACT_FILE_ICONS: Record<string, IconComponent> = {
   "cmakelists.txt": FileTypeCmake,
   "composer.json": FileTypePhp,
   "composer.lock": FileTypePhp,
-  "containerfile": FileTypeDocker,
-  "copying": FileTypeLicense,
+  containerfile: FileTypeDocker,
+  copying: FileTypeLicense,
   "copying.md": FileTypeLicense,
   "copying.txt": FileTypeLicense,
-  "dockerfile": FileTypeDocker,
+  dockerfile: FileTypeDocker,
   "d.ts": FileTypeTsDef,
   "go.mod": FileTypeGo,
   "go.sum": FileTypeGo,
   "go.work": FileTypeGoWork,
   "go.work.sum": FileTypeGoWork,
   "gradle.properties": FileTypeGradle,
-  "gnumakefile": FileTypeConfig,
+  gnumakefile: FileTypeConfig,
   "httpd.conf": FileTypeApache,
-  "id_dsa": FileTypeKey,
-  "id_ecdsa": FileTypeKey,
-  "id_ed25519": FileTypeKey,
-  "id_rsa": FileTypeKey,
-  "jenkinsfile": FileTypeConfig,
+  id_dsa: FileTypeKey,
+  id_ecdsa: FileTypeKey,
+  id_ed25519: FileTypeKey,
+  id_rsa: FileTypeKey,
+  jenkinsfile: FileTypeConfig,
   "jsconfig.json": FileTypeJsConfig,
-  "known_hosts": FileTypeKey,
-  "license": FileTypeLicense,
+  known_hosts: FileTypeKey,
+  license: FileTypeLicense,
   "license.md": FileTypeLicense,
   "license.txt": FileTypeLicense,
-  "makefile": FileTypeConfig,
+  makefile: FileTypeConfig,
   "nginx.conf": FileTypeNginx,
   "package-lock.json": FileTypeNpm,
   "package.json": FileTypePackage,
   "pnpm-lock.yaml": FileTypePnpm,
   "pnpm-workspace.yaml": FileTypePnpm,
   "pom.xml": FileTypeMaven,
-  "procfile": FileTypeConfig,
+  procfile: FileTypeConfig,
   "requirements.txt": FileTypePython,
   "resolv.conf": FileTypeConfig,
   "robots.txt": FileTypeText,
   "settings.gradle": FileTypeGradle,
   "settings.gradle.kts": FileTypeGradle,
-  "ssh_config": FileTypeKey,
-  "sshd_config": FileTypeKey,
-  "sudoers": FileTypeConfig,
+  ssh_config: FileTypeKey,
+  sshd_config: FileTypeKey,
+  sudoers: FileTypeConfig,
   "tsconfig.json": FileTypeTsConfig,
   "yarn.lock": FileTypeYarn,
 };
@@ -490,11 +485,16 @@ function remoteAbsolutePathForCopy(path: string) {
 }
 
 function absolutePathForCopy(side: SftpSide, path: string, workdir: string) {
-  return side === "local" ? localAbsolutePathForCopy(workdir, path) : remoteAbsolutePathForCopy(path);
+  return side === "local"
+    ? localAbsolutePathForCopy(workdir, path)
+    : remoteAbsolutePathForCopy(path);
 }
 
 function joinPath(parent: string, child: string, side: SftpSide) {
-  const name = child.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  const name = child
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
   if (!name) return normalizePath(parent, side);
   const base = normalizePath(parent, side);
   if (side === "remote") {
@@ -508,7 +508,8 @@ function joinPath(parent: string, child: string, side: SftpSide) {
 function pathCrumbs(path: string, side: SftpSide, projectLabel: string) {
   const normalized = normalizePath(path, side);
   const root = side === "remote" ? (normalized.startsWith("/") ? "/" : ".") : "";
-  const parts = normalized === "." || normalized === "/" ? [] : normalized.split("/").filter(Boolean);
+  const parts =
+    normalized === "." || normalized === "/" ? [] : normalized.split("/").filter(Boolean);
   const crumbs = [{ label: side === "remote" ? root : projectLabel, path: root }];
   let current = root;
   for (const part of parts) {
@@ -600,7 +601,8 @@ function isDragPayload(value: unknown): value is DragPayload {
     isSftpSide(payload.side) &&
     typeof payload.path === "string" &&
     typeof payload.kind === "string" &&
-    (payload.items === undefined || (Array.isArray(payload.items) && payload.items.every(isDragPayloadItem)))
+    (payload.items === undefined ||
+      (Array.isArray(payload.items) && payload.items.every(isDragPayloadItem)))
   );
 }
 
@@ -622,7 +624,9 @@ function writeDragPayload(dataTransfer: DataTransfer, payload: DragPayload) {
 function readDragPayload(dataTransfer: DataTransfer): DragPayload | null {
   const custom = dataTransfer.getData(SFTP_DRAG_MIME);
   const text = dataTransfer.getData("text/plain");
-  const raw = custom || (text.startsWith(SFTP_DRAG_TEXT_PREFIX) ? text.slice(SFTP_DRAG_TEXT_PREFIX.length) : "");
+  const raw =
+    custom ||
+    (text.startsWith(SFTP_DRAG_TEXT_PREFIX) ? text.slice(SFTP_DRAG_TEXT_PREFIX.length) : "");
   if (!raw) return null;
   try {
     const payload = JSON.parse(raw) as unknown;
@@ -662,7 +666,9 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
   const [transfer, setTransfer] = useState<SftpTransfer | null>(null);
   const [queueCount, setQueueCount] = useState(0);
   const [busyMessage, setBusyMessage] = useState("");
-  const [createFolderDialog, setCreateFolderDialog] = useState<CreateFolderDialogState | null>(null);
+  const [createFolderDialog, setCreateFolderDialog] = useState<CreateFolderDialogState | null>(
+    null,
+  );
   const [createFolderName, setCreateFolderName] = useState("");
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [renameEntryDialog, setRenameEntryDialog] = useState<RenameEntryDialogState | null>(null);
@@ -838,7 +844,9 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
 
   const clearSelection = useCallback((side: SftpSide) => {
     const setPane = side === "local" ? setLocalPane : setRemotePane;
-    setPane((current) => (current.selectedPaths.length ? { ...current, selectedPaths: [] } : current));
+    setPane((current) =>
+      current.selectedPaths.length ? { ...current, selectedPaths: [] } : current,
+    );
   }, []);
 
   const createDragPayload = useCallback(
@@ -873,46 +881,43 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
     setCreateFolderName("");
   }, [creatingFolder]);
 
-  const submitCreateFolder = useCallback(
-    async () => {
-      if (!createFolderDialog) return;
-      const name = createFolderName.trim();
-      if (!name || creatingFolder) return;
-      setBusyMessage(t("workspaceSftp.creatingFolder"));
-      setCreatingFolder(true);
-      try {
-        await client.mkdir({
-          sessionId: session.id,
-          projectPathKey,
-          workdir,
-          side: createFolderDialog.side,
-          path: joinPath(createFolderDialog.basePath, name, createFolderDialog.side),
-        });
-        await loadPane(createFolderDialog.side, paneForSide(createFolderDialog.side).path);
-        setCreateFolderDialog(null);
-        setCreateFolderName("");
-      } catch (error) {
-        onError?.(error instanceof Error ? error.message : String(error));
-      } finally {
-        setCreatingFolder(false);
-        setBusyMessage("");
-      }
-    },
-    [
-      client,
-      createFolderDialog,
-      createFolderName,
-      creatingFolder,
-      loadPane,
-      onError,
-      projectPathKey,
-      session.id,
-      t,
-      workdir,
-      localPane,
-      remotePane,
-    ],
-  );
+  const submitCreateFolder = useCallback(async () => {
+    if (!createFolderDialog) return;
+    const name = createFolderName.trim();
+    if (!name || creatingFolder) return;
+    setBusyMessage(t("workspaceSftp.creatingFolder"));
+    setCreatingFolder(true);
+    try {
+      await client.mkdir({
+        sessionId: session.id,
+        projectPathKey,
+        workdir,
+        side: createFolderDialog.side,
+        path: joinPath(createFolderDialog.basePath, name, createFolderDialog.side),
+      });
+      await loadPane(createFolderDialog.side, paneForSide(createFolderDialog.side).path);
+      setCreateFolderDialog(null);
+      setCreateFolderName("");
+    } catch (error) {
+      onError?.(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingFolder(false);
+      setBusyMessage("");
+    }
+  }, [
+    client,
+    createFolderDialog,
+    createFolderName,
+    creatingFolder,
+    loadPane,
+    onError,
+    projectPathKey,
+    session.id,
+    t,
+    workdir,
+    localPane,
+    remotePane,
+  ]);
 
   const openRenameEntryDialog = useCallback((side: SftpSide, path: string) => {
     const currentName = basename(path);
@@ -927,52 +932,49 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
     setRenameEntryName("");
   }, [renamingEntry]);
 
-  const submitRenameEntry = useCallback(
-    async () => {
-      if (!renameEntryDialog) return;
-      const nextName = renameEntryName.trim();
-      if (!nextName || nextName === renameEntryDialog.currentName || renamingEntry) return;
-      const toPath = joinPath(
-        parentPath(renameEntryDialog.path, renameEntryDialog.side),
-        nextName,
-        renameEntryDialog.side,
-      );
-      setBusyMessage(t("workspaceSftp.renaming"));
-      setRenamingEntry(true);
-      try {
-        await client.rename({
-          sessionId: session.id,
-          projectPathKey,
-          workdir,
-          side: renameEntryDialog.side,
-          fromPath: renameEntryDialog.path,
-          toPath,
-        });
-        await loadPane(renameEntryDialog.side, paneForSide(renameEntryDialog.side).path);
-        setRenameEntryDialog(null);
-        setRenameEntryName("");
-      } catch (error) {
-        onError?.(error instanceof Error ? error.message : String(error));
-      } finally {
-        setRenamingEntry(false);
-        setBusyMessage("");
-      }
-    },
-    [
-      client,
-      loadPane,
-      onError,
-      projectPathKey,
-      renameEntryDialog,
-      renameEntryName,
-      renamingEntry,
-      session.id,
-      t,
-      workdir,
-      localPane,
-      remotePane,
-    ],
-  );
+  const submitRenameEntry = useCallback(async () => {
+    if (!renameEntryDialog) return;
+    const nextName = renameEntryName.trim();
+    if (!nextName || nextName === renameEntryDialog.currentName || renamingEntry) return;
+    const toPath = joinPath(
+      parentPath(renameEntryDialog.path, renameEntryDialog.side),
+      nextName,
+      renameEntryDialog.side,
+    );
+    setBusyMessage(t("workspaceSftp.renaming"));
+    setRenamingEntry(true);
+    try {
+      await client.rename({
+        sessionId: session.id,
+        projectPathKey,
+        workdir,
+        side: renameEntryDialog.side,
+        fromPath: renameEntryDialog.path,
+        toPath,
+      });
+      await loadPane(renameEntryDialog.side, paneForSide(renameEntryDialog.side).path);
+      setRenameEntryDialog(null);
+      setRenameEntryName("");
+    } catch (error) {
+      onError?.(error instanceof Error ? error.message : String(error));
+    } finally {
+      setRenamingEntry(false);
+      setBusyMessage("");
+    }
+  }, [
+    client,
+    loadPane,
+    onError,
+    projectPathKey,
+    renameEntryDialog,
+    renameEntryName,
+    renamingEntry,
+    session.id,
+    t,
+    workdir,
+    localPane,
+    remotePane,
+  ]);
 
   const deleteEntries = useCallback(
     async (side: SftpSide, items: DragPayloadItem[]) => {
@@ -980,11 +982,14 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
       if (!targets.length) return;
       const hasDirectory = targets.some((item) => item.kind === "directory");
       const confirmed = await confirm({
-        title: hasDirectory ? t("workspaceSftp.confirmDeleteDirectory") : t("workspaceSftp.confirmDeleteFile"),
+        title: hasDirectory
+          ? t("workspaceSftp.confirmDeleteDirectory")
+          : t("workspaceSftp.confirmDeleteFile"),
         subtitle: hasDirectory
           ? t("workspaceSftp.confirmDeleteDirectorySubtitle")
           : t("workspaceSftp.confirmDeleteFileSubtitle"),
-        detail: targets.length === 1 ? targets[0].path : targets.map((target) => target.path).join(", "),
+        detail:
+          targets.length === 1 ? targets[0].path : targets.map((target) => target.path).join(", "),
         confirmLabel: t("workspaceSftp.deleteConfirm"),
         cancelLabel: t("workspaceSftp.cancel"),
         closeLabel: t("workspaceSftp.cancel"),
@@ -1010,7 +1015,18 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
         setBusyMessage("");
       }
     },
-    [client, confirm, loadPane, onError, projectPathKey, session.id, t, workdir, localPane, remotePane],
+    [
+      client,
+      confirm,
+      loadPane,
+      onError,
+      projectPathKey,
+      session.id,
+      t,
+      workdir,
+      localPane,
+      remotePane,
+    ],
   );
 
   const showCopyToast = useCallback(() => {
@@ -1070,13 +1086,15 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
       const runTransfer = async () => {
         try {
           const targetEntryPath = joinPath(targetPath, basename(source.path), targetSide);
-          const targetStat = await client.stat({
-            sessionId: session.id,
-            projectPathKey,
-            workdir,
-            side: targetSide,
-            path: targetEntryPath,
-          }).catch(() => ({ exists: false }));
+          const targetStat = await client
+            .stat({
+              sessionId: session.id,
+              projectPathKey,
+              workdir,
+              side: targetSide,
+              path: targetEntryPath,
+            })
+            .catch(() => ({ exists: false }));
           let overwrite = false;
           if (targetStat.exists) {
             const confirmed = await confirm({
@@ -1137,7 +1155,17 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
       transferChainRef.current = nextTransfer.catch(() => undefined);
       await nextTransfer;
     },
-    [client, confirm, onError, projectPathKey, session.id, syncQueueCount, t, waitForTransferDone, workdir],
+    [
+      client,
+      confirm,
+      onError,
+      projectPathKey,
+      session.id,
+      syncQueueCount,
+      t,
+      waitForTransferDone,
+      workdir,
+    ],
   );
 
   const transferItem = useCallback(
@@ -1145,7 +1173,11 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
       if (source.side === targetSide) return;
       const items = dragItems(source);
       for (const item of items) {
-        await transferSingleItem({ side: source.side, path: item.path, kind: item.kind }, targetSide, targetPath);
+        await transferSingleItem(
+          { side: source.side, path: item.path, kind: item.kind },
+          targetSide,
+          targetPath,
+        );
       }
     },
     [transferSingleItem],
@@ -1337,226 +1369,282 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
             const dropPath = dropActive ? dropTarget?.path || pane.path : pane.path;
 
             return (
-            <div
-              key={side}
-              data-sftp-drop-side={side}
-              data-sftp-drop-path={pane.path}
-              className={cn(
-                "relative flex min-h-0 min-w-0 flex-col overflow-hidden transition-colors",
-                dropMode && "bg-muted/20",
-                dropActive && "bg-emerald-500/5",
-              )}
-              onDragOver={(event) => handleDragOver(event, side, pane.path)}
-              onDragLeave={handleDragLeave}
-              onDrop={(event) => handleDrop(event, side, pane.path)}
-              onContextMenu={(event) => openContextMenu(event, side, pane.path, "directory", false)}
-            >
-              <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3">
-                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-background text-muted-foreground">
-                  {side === "local" ? <FolderOpen className="h-4 w-4" /> : <Folder className="h-4 w-4" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold text-foreground">{label}</div>
-                  <div className="truncate font-mono text-[11px] text-muted-foreground">{root}</div>
-                </div>
-                {pane.selectedPaths.length ? (
-                  <button
-                    type="button"
-                    className="inline-flex h-7 max-w-[112px] shrink-0 items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
-                    title={t("workspaceSftp.clearSelection")}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      clearSelection(side);
-                    }}
-                  >
-                    <span className="truncate">
-                      {t("workspaceSftp.selectedCount").replace("{count}", String(pane.selectedPaths.length))}
-                    </span>
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-background hover:text-foreground"
-                  title={t("workspaceSftp.refresh")}
-                  onClick={() => refreshPane(side)}
-                >
-                  <RefreshCw className={cn("h-4 w-4", pane.loading && "animate-spin")} />
-                </button>
-              </div>
-
-              <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 text-xs">
-                {pathCrumbs(pane.path, side, t("workspaceSftp.projectRoot")).map((crumb, index) => (
-                  <button
-                    key={`${crumb.path}-${index}`}
-                    type="button"
-                    className="shrink-0 rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-                    onClick={() => void loadPane(side, crumb.path)}
-                  >
-                    {crumb.label || t("workspaceSftp.projectRoot")}
-                  </button>
-                ))}
-              </div>
-
-              {pane.error ? (
-                <div className="m-3 flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span className="min-w-0 break-words">{pane.error}</span>
-                </div>
-              ) : null}
-
               <div
-                className="relative min-h-0 flex-1 overscroll-contain overflow-auto p-2"
-                onClick={(event) => {
-                  const target = event.target;
-                  if (target instanceof HTMLElement && target.closest("[data-sftp-entry]")) return;
-                  clearSelection(side);
-                }}
+                key={side}
+                data-sftp-drop-side={side}
+                data-sftp-drop-path={pane.path}
+                className={cn(
+                  "relative flex min-h-0 min-w-0 flex-col overflow-hidden transition-colors",
+                  dropMode && "bg-muted/20",
+                  dropActive && "bg-emerald-500/5",
+                )}
+                onDragOver={(event) => handleDragOver(event, side, pane.path)}
+                onDragLeave={handleDragLeave}
+                onDrop={(event) => handleDrop(event, side, pane.path)}
+                onContextMenu={(event) =>
+                  openContextMenu(event, side, pane.path, "directory", false)
+                }
               >
-                {dropMode ? (
-                  <div
-                    className={cn(
-                      "pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg bg-background/80 text-center opacity-75 shadow-inner backdrop-blur-[1px] transition-all",
-                      dropActive && "bg-emerald-500/10 opacity-100",
+                <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border bg-muted/30 px-3">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-background text-muted-foreground">
+                    {side === "local" ? (
+                      <FolderOpen className="h-4 w-4" />
+                    ) : (
+                      <Folder className="h-4 w-4" />
                     )}
-                  >
-                    <span className={cn("absolute left-0 top-0 h-14 w-14 rounded-tl-lg border-l-2 border-t-2", dropActive ? "border-emerald-600" : "border-foreground/65")} />
-                    <span className={cn("absolute right-0 top-0 h-14 w-14 rounded-tr-lg border-r-2 border-t-2", dropActive ? "border-emerald-600" : "border-foreground/65")} />
-                    <span className={cn("absolute bottom-0 left-0 h-14 w-14 rounded-bl-lg border-b-2 border-l-2", dropActive ? "border-emerald-600" : "border-foreground/65")} />
-                    <span className={cn("absolute bottom-0 right-0 h-14 w-14 rounded-br-lg border-b-2 border-r-2", dropActive ? "border-emerald-600" : "border-foreground/65")} />
-                    <div className="flex max-w-[75%] flex-col items-center gap-3">
-                      <div className={cn("flex h-14 w-14 items-center justify-center rounded-xl border-2 bg-background/90 shadow-sm", dropActive ? "border-emerald-600 text-emerald-700 dark:text-emerald-300" : "border-foreground/70 text-foreground")}>
-                        <DropIcon className="h-7 w-7" />
-                      </div>
-                      <div>
-                        <div className="text-sm font-semibold text-foreground">{t("workspaceSftp.dropHere")}</div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {t(dropMode === "upload" ? "workspaceSftp.drop.upload" : "workspaceSftp.drop.download")}
-                        </div>
-                        {dropPath ? (
-                          <div className="mx-auto mt-2 max-w-full truncate rounded bg-background/70 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                            {normalizePath(dropPath, side)}
-                          </div>
-                        ) : null}
-                      </div>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-foreground">{label}</div>
+                    <div className="truncate font-mono text-[11px] text-muted-foreground">
+                      {root}
                     </div>
                   </div>
-                ) : null}
-                {pane.loading && pane.entries.length === 0 ? (
-                  <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {t("workspaceSftp.loading")}
-                  </div>
-                ) : pane.entries.length === 0 ? (
-                  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                    {t("workspaceSftp.empty")}
-                  </div>
-                ) : (
-                  <div className="space-y-1">
-                    {pane.entries.map((entry) => {
-                      const isSelected = pane.selectedPaths.includes(entry.path);
-                      return (
-                      <button
-                        key={entry.path}
-                        type="button"
-                        draggable={false}
-                        data-sftp-entry="true"
-                        data-sftp-drop-side={entry.kind === "directory" ? side : undefined}
-                        data-sftp-drop-path={entry.kind === "directory" ? entry.path : undefined}
-                        aria-selected={isSelected}
-                        className={cn(
-                          "grid w-full touch-none cursor-default grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
-                          isSelected && "bg-emerald-500/10 text-foreground ring-1 ring-emerald-500/20",
-                          activeDragSource?.side === side &&
-                            dragItems(activeDragSource).some((item) => item.path === entry.path) &&
-                            "bg-muted text-muted-foreground opacity-70 ring-1 ring-border",
-                          dropTarget?.side === side &&
-                            dropTarget.path === entry.path &&
-                            entry.kind === "directory" &&
-                            "bg-emerald-500/10 text-foreground",
+                  {pane.selectedPaths.length ? (
+                    <button
+                      type="button"
+                      className="inline-flex h-7 max-w-[112px] shrink-0 items-center rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2 text-[11px] font-medium text-emerald-700 transition-colors hover:bg-emerald-500/15 dark:text-emerald-300"
+                      title={t("workspaceSftp.clearSelection")}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        clearSelection(side);
+                      }}
+                    >
+                      <span className="truncate">
+                        {t("workspaceSftp.selectedCount").replace(
+                          "{count}",
+                          String(pane.selectedPaths.length),
                         )}
-                        onClick={(event) => {
-                          if (suppressNextClickRef.current) {
-                            suppressNextClickRef.current = false;
-                            event.preventDefault();
-                            event.stopPropagation();
-                            return;
-                          }
-                          selectEntry(side, entry.path, event.ctrlKey || event.metaKey);
-                        }}
-                        onDoubleClick={() => {
-                          if (entry.kind === "directory") void loadPane(side, entry.path);
-                        }}
-                        onDragOver={(event) => {
-                          if (entry.kind === "directory") {
-                            handleDragOver(event, side, entry.path);
-                          }
-                        }}
-                        onDragLeave={(event) => {
-                          if (entry.kind === "directory") {
-                            handleDragLeave(event);
-                          }
-                        }}
-                        onDrop={(event) => {
-                          if (entry.kind === "directory") {
-                            handleDrop(event, side, entry.path);
-                          }
-                        }}
-                        onDragStart={(event) => {
-                          const payload = createDragPayload(side, entry);
-                          nativeDragPayloadRef.current = payload;
-                          setActiveDragSource(payload);
-                          writeDragPayload(event.dataTransfer, payload);
-                        }}
-                        onPointerDown={(event) => {
-                          if (event.button === 0 && event.isPrimary && (event.ctrlKey || event.metaKey)) {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            selectEntry(side, entry.path, true);
-                            suppressNextClickRef.current = true;
-                            suppressNextContextMenuRef.current = event.ctrlKey;
-                            window.setTimeout(() => {
-                              suppressNextContextMenuRef.current = false;
-                            }, 250);
-                            return;
-                          }
-                          try {
-                            event.currentTarget.setPointerCapture(event.pointerId);
-                          } catch {
-                            // Some WebViews reject capture during synthetic pointer streams.
-                          }
-                          beginPointerDrag(event, createDragPayload(side, entry));
-                        }}
-                        onDragEnd={() => {
-                          nativeDragPayloadRef.current = null;
-                          setDropTarget(null);
-                          setActiveDragSource(null);
-                          setDragPreview(null);
-                        }}
-                        onContextMenu={(event) => {
-                          if (suppressNextContextMenuRef.current) {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            suppressNextContextMenuRef.current = false;
-                            return;
-                          }
-                          openContextMenu(event, side, entry.path, entry.kind, true);
-                        }}
+                      </span>
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-background hover:text-foreground"
+                    title={t("workspaceSftp.refresh")}
+                    onClick={() => refreshPane(side)}
+                  >
+                    <RefreshCw className={cn("h-4 w-4", pane.loading && "animate-spin")} />
+                  </button>
+                </div>
+
+                <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-3 text-xs">
+                  {pathCrumbs(pane.path, side, t("workspaceSftp.projectRoot")).map(
+                    (crumb, index) => (
+                      <button
+                        key={`${crumb.path}-${index}`}
+                        type="button"
+                        className="shrink-0 rounded px-1.5 py-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        onClick={() => void loadPane(side, crumb.path)}
                       >
-                        <span className="flex min-w-0 items-center gap-2">
-                          {entryIcon(entry)}
-                          <span className="truncate">{entry.name}</span>
-                        </span>
-                        <span className="text-right font-mono text-[11px] text-muted-foreground">
-                          {entry.kind === "directory" ? "--" : formatBytes(entry.sizeBytes)}
-                        </span>
+                        {crumb.label || t("workspaceSftp.projectRoot")}
                       </button>
-                    );
-                    })}
+                    ),
+                  )}
+                </div>
+
+                {pane.error ? (
+                  <div className="m-3 flex items-start gap-2 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span className="min-w-0 break-words">{pane.error}</span>
                   </div>
-                )}
+                ) : null}
+
+                <div
+                  className="relative min-h-0 flex-1 overscroll-contain overflow-auto p-2"
+                  onClick={(event) => {
+                    const target = event.target;
+                    if (target instanceof HTMLElement && target.closest("[data-sftp-entry]"))
+                      return;
+                    clearSelection(side);
+                  }}
+                >
+                  {dropMode ? (
+                    <div
+                      className={cn(
+                        "pointer-events-none absolute inset-2 z-20 flex items-center justify-center rounded-lg bg-background/80 text-center opacity-75 shadow-inner backdrop-blur-[1px] transition-all",
+                        dropActive && "bg-emerald-500/10 opacity-100",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "absolute left-0 top-0 h-14 w-14 rounded-tl-lg border-l-2 border-t-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "absolute right-0 top-0 h-14 w-14 rounded-tr-lg border-r-2 border-t-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "absolute bottom-0 left-0 h-14 w-14 rounded-bl-lg border-b-2 border-l-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <span
+                        className={cn(
+                          "absolute bottom-0 right-0 h-14 w-14 rounded-br-lg border-b-2 border-r-2",
+                          dropActive ? "border-emerald-600" : "border-foreground/65",
+                        )}
+                      />
+                      <div className="flex max-w-[75%] flex-col items-center gap-3">
+                        <div
+                          className={cn(
+                            "flex h-14 w-14 items-center justify-center rounded-xl border-2 bg-background/90 shadow-sm",
+                            dropActive
+                              ? "border-emerald-600 text-emerald-700 dark:text-emerald-300"
+                              : "border-foreground/70 text-foreground",
+                          )}
+                        >
+                          <DropIcon className="h-7 w-7" />
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold text-foreground">
+                            {t("workspaceSftp.dropHere")}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {t(
+                              dropMode === "upload"
+                                ? "workspaceSftp.drop.upload"
+                                : "workspaceSftp.drop.download",
+                            )}
+                          </div>
+                          {dropPath ? (
+                            <div className="mx-auto mt-2 max-w-full truncate rounded bg-background/70 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                              {normalizePath(dropPath, side)}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                  {pane.loading && pane.entries.length === 0 ? (
+                    <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {t("workspaceSftp.loading")}
+                    </div>
+                  ) : pane.entries.length === 0 ? (
+                    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                      {t("workspaceSftp.empty")}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {pane.entries.map((entry) => {
+                        const isSelected = pane.selectedPaths.includes(entry.path);
+                        return (
+                          <button
+                            key={entry.path}
+                            type="button"
+                            draggable={false}
+                            data-sftp-entry="true"
+                            data-sftp-drop-side={entry.kind === "directory" ? side : undefined}
+                            data-sftp-drop-path={
+                              entry.kind === "directory" ? entry.path : undefined
+                            }
+                            aria-pressed={isSelected}
+                            className={cn(
+                              "grid w-full touch-none cursor-default grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-3 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted",
+                              isSelected &&
+                                "bg-emerald-500/10 text-foreground ring-1 ring-emerald-500/20",
+                              activeDragSource?.side === side &&
+                                dragItems(activeDragSource).some(
+                                  (item) => item.path === entry.path,
+                                ) &&
+                                "bg-muted text-muted-foreground opacity-70 ring-1 ring-border",
+                              dropTarget?.side === side &&
+                                dropTarget.path === entry.path &&
+                                entry.kind === "directory" &&
+                                "bg-emerald-500/10 text-foreground",
+                            )}
+                            onClick={(event) => {
+                              if (suppressNextClickRef.current) {
+                                suppressNextClickRef.current = false;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                return;
+                              }
+                              selectEntry(side, entry.path, event.ctrlKey || event.metaKey);
+                            }}
+                            onDoubleClick={() => {
+                              if (entry.kind === "directory") void loadPane(side, entry.path);
+                            }}
+                            onDragOver={(event) => {
+                              if (entry.kind === "directory") {
+                                handleDragOver(event, side, entry.path);
+                              }
+                            }}
+                            onDragLeave={(event) => {
+                              if (entry.kind === "directory") {
+                                handleDragLeave(event);
+                              }
+                            }}
+                            onDrop={(event) => {
+                              if (entry.kind === "directory") {
+                                handleDrop(event, side, entry.path);
+                              }
+                            }}
+                            onDragStart={(event) => {
+                              const payload = createDragPayload(side, entry);
+                              nativeDragPayloadRef.current = payload;
+                              setActiveDragSource(payload);
+                              writeDragPayload(event.dataTransfer, payload);
+                            }}
+                            onPointerDown={(event) => {
+                              if (
+                                event.button === 0 &&
+                                event.isPrimary &&
+                                (event.ctrlKey || event.metaKey)
+                              ) {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                selectEntry(side, entry.path, true);
+                                suppressNextClickRef.current = true;
+                                suppressNextContextMenuRef.current = event.ctrlKey;
+                                window.setTimeout(() => {
+                                  suppressNextContextMenuRef.current = false;
+                                }, 250);
+                                return;
+                              }
+                              try {
+                                event.currentTarget.setPointerCapture(event.pointerId);
+                              } catch {
+                                // Some WebViews reject capture during synthetic pointer streams.
+                              }
+                              beginPointerDrag(event, createDragPayload(side, entry));
+                            }}
+                            onDragEnd={() => {
+                              nativeDragPayloadRef.current = null;
+                              setDropTarget(null);
+                              setActiveDragSource(null);
+                              setDragPreview(null);
+                            }}
+                            onContextMenu={(event) => {
+                              if (suppressNextContextMenuRef.current) {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                suppressNextContextMenuRef.current = false;
+                                return;
+                              }
+                              openContextMenu(event, side, entry.path, entry.kind, true);
+                            }}
+                          >
+                            <span className="flex min-w-0 items-center gap-2">
+                              {entryIcon(entry)}
+                              <span className="truncate">{entry.name}</span>
+                            </span>
+                            <span className="text-right font-mono text-[11px] text-muted-foreground">
+                              {entry.kind === "directory" ? "--" : formatBytes(entry.sizeBytes)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          );
+            );
           })}
         </div>
       </div>
@@ -1575,7 +1663,8 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
             statusLabel={t(`workspaceSftp.transfer.${transfer.status}`)}
             onCancel={
               transfer.id && transfer.status === "running"
-                ? () => void client.cancelTransfer({ sessionId: session.id, transferId: transfer.id })
+                ? () =>
+                    void client.cancelTransfer({ sessionId: session.id, transferId: transfer.id })
                 : undefined
             }
           />
@@ -1591,7 +1680,12 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
         >
           {contextMenu.items.length > 1 ? (
             <div className="mb-1 flex items-center justify-between rounded-lg bg-emerald-500/10 px-2 py-1 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
-              <span>{t("workspaceSftp.selectedCount").replace("{count}", String(contextMenu.items.length))}</span>
+              <span>
+                {t("workspaceSftp.selectedCount").replace(
+                  "{count}",
+                  String(contextMenu.items.length),
+                )}
+              </span>
               <button
                 type="button"
                 className="rounded px-1 text-emerald-700/80 hover:bg-emerald-500/10 hover:text-emerald-800 dark:text-emerald-300/80 dark:hover:text-emerald-200"
@@ -1605,17 +1699,104 @@ export function WorkspaceSftpPanel(props: WorkspaceSftpPanelProps) {
               </button>
             </div>
           ) : null}
-          <MenuItem icon={<RefreshCw className="h-3.5 w-3.5" />} label={t("workspaceSftp.refresh")} onClick={() => { setContextMenu(null); refreshPane(contextMenu.side); }} />
-          <MenuItem icon={<Plus className="h-3.5 w-3.5" />} label={t("workspaceSftp.newFolder")} onClick={() => { setContextMenu(null); openCreateFolderDialog(contextMenu.side, contextMenu.kind === "directory" ? contextMenu.path : parentPath(contextMenu.path, contextMenu.side)); }} />
-          <MenuItem icon={<Pencil className="h-3.5 w-3.5" />} label={t("workspaceSftp.rename")} disabled={!contextMenu.isEntry || contextMenu.items.length !== 1 || contextMenu.path === "" || contextMenu.path === "."} onClick={() => { setContextMenu(null); openRenameEntryDialog(contextMenu.side, contextMenu.path); }} />
-          <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={t("workspaceSftp.delete")} disabled={!contextMenu.isEntry || contextMenu.items.length === 0} destructive onClick={() => { setContextMenu(null); void deleteEntries(contextMenu.side, contextMenu.items); }} />
+          <MenuItem
+            icon={<RefreshCw className="h-3.5 w-3.5" />}
+            label={t("workspaceSftp.refresh")}
+            onClick={() => {
+              setContextMenu(null);
+              refreshPane(contextMenu.side);
+            }}
+          />
+          <MenuItem
+            icon={<Plus className="h-3.5 w-3.5" />}
+            label={t("workspaceSftp.newFolder")}
+            onClick={() => {
+              setContextMenu(null);
+              openCreateFolderDialog(
+                contextMenu.side,
+                contextMenu.kind === "directory"
+                  ? contextMenu.path
+                  : parentPath(contextMenu.path, contextMenu.side),
+              );
+            }}
+          />
+          <MenuItem
+            icon={<Pencil className="h-3.5 w-3.5" />}
+            label={t("workspaceSftp.rename")}
+            disabled={
+              !contextMenu.isEntry ||
+              contextMenu.items.length !== 1 ||
+              contextMenu.path === "" ||
+              contextMenu.path === "."
+            }
+            onClick={() => {
+              setContextMenu(null);
+              openRenameEntryDialog(contextMenu.side, contextMenu.path);
+            }}
+          />
+          <MenuItem
+            icon={<Trash2 className="h-3.5 w-3.5" />}
+            label={t("workspaceSftp.delete")}
+            disabled={!contextMenu.isEntry || contextMenu.items.length === 0}
+            destructive
+            onClick={() => {
+              setContextMenu(null);
+              void deleteEntries(contextMenu.side, contextMenu.items);
+            }}
+          />
           <div className="my-1 h-px bg-border/70" />
           {contextMenu.side === "local" ? (
-            <MenuItem icon={<Upload className="h-3.5 w-3.5" />} label={t("workspaceSftp.uploadToRemote")} disabled={!contextMenu.isEntry || contextMenu.items.length === 0} onClick={() => { setContextMenu(null); void transferItem({ side: "local", path: contextMenu.path, kind: contextMenu.kind, items: contextMenu.items }, "remote", remotePane.path); }} />
+            <MenuItem
+              icon={<Upload className="h-3.5 w-3.5" />}
+              label={t("workspaceSftp.uploadToRemote")}
+              disabled={!contextMenu.isEntry || contextMenu.items.length === 0}
+              onClick={() => {
+                setContextMenu(null);
+                void transferItem(
+                  {
+                    side: "local",
+                    path: contextMenu.path,
+                    kind: contextMenu.kind,
+                    items: contextMenu.items,
+                  },
+                  "remote",
+                  remotePane.path,
+                );
+              }}
+            />
           ) : (
-            <MenuItem icon={<Download className="h-3.5 w-3.5" />} label={t("workspaceSftp.downloadToLocal")} disabled={!contextMenu.isEntry || contextMenu.items.length === 0} onClick={() => { setContextMenu(null); void transferItem({ side: "remote", path: contextMenu.path, kind: contextMenu.kind, items: contextMenu.items }, "local", localPane.path); }} />
+            <MenuItem
+              icon={<Download className="h-3.5 w-3.5" />}
+              label={t("workspaceSftp.downloadToLocal")}
+              disabled={!contextMenu.isEntry || contextMenu.items.length === 0}
+              onClick={() => {
+                setContextMenu(null);
+                void transferItem(
+                  {
+                    side: "remote",
+                    path: contextMenu.path,
+                    kind: contextMenu.kind,
+                    items: contextMenu.items,
+                  },
+                  "local",
+                  localPane.path,
+                );
+              }}
+            />
           )}
-          <MenuItem icon={<Copy className="h-3.5 w-3.5" />} label={t("workspaceSftp.copyPath")} onClick={() => { setContextMenu(null); void copyPaths(contextMenu.side, contextMenu.items.length ? contextMenu.items : [{ path: contextMenu.path, kind: contextMenu.kind }]); }} />
+          <MenuItem
+            icon={<Copy className="h-3.5 w-3.5" />}
+            label={t("workspaceSftp.copyPath")}
+            onClick={() => {
+              setContextMenu(null);
+              void copyPaths(
+                contextMenu.side,
+                contextMenu.items.length
+                  ? contextMenu.items
+                  : [{ path: contextMenu.path, kind: contextMenu.kind }],
+              );
+            }}
+          />
         </div>
       ) : null}
       {dragPreview ? (
@@ -1738,13 +1919,15 @@ function CreateFolderDialog(props: {
           ) : null}
         </div>
         <div className="space-y-2 px-5 py-5">
-          <label className="block text-xs font-medium text-muted-foreground" htmlFor="workspace-sftp-new-folder-name">
+          <label
+            className="block text-xs font-medium text-muted-foreground"
+            htmlFor="workspace-sftp-new-folder-name"
+          >
             {prompt}
           </label>
           <input
             id="workspace-sftp-new-folder-name"
             value={value}
-            autoFocus
             disabled={submitting}
             className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60"
             onChange={(event) => onChange(event.currentTarget.value)}
@@ -1817,7 +2000,6 @@ function CopyPathDialog(props: {
           <textarea
             value={text}
             readOnly
-            autoFocus
             className="min-h-28 w-full resize-none rounded-lg border border-input bg-background px-3 py-2 font-mono text-xs text-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/20"
             onFocus={(event) => event.currentTarget.select()}
           />
@@ -1918,13 +2100,15 @@ function RenameEntryDialog(props: {
           ) : null}
         </div>
         <div className="space-y-2 px-5 py-5">
-          <label className="block text-xs font-medium text-muted-foreground" htmlFor="workspace-sftp-rename-entry-name">
+          <label
+            className="block text-xs font-medium text-muted-foreground"
+            htmlFor="workspace-sftp-rename-entry-name"
+          >
             {prompt}
           </label>
           <input
             id="workspace-sftp-rename-entry-name"
             value={value}
-            autoFocus
             disabled={submitting}
             className="h-10 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring focus:ring-2 focus:ring-ring/20 disabled:cursor-not-allowed disabled:opacity-60"
             onChange={(event) => onChange(event.currentTarget.value)}
@@ -1983,19 +2167,28 @@ function TransferToast(props: {
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <span className="shrink-0 text-[11px] font-medium leading-none text-foreground">{statusLabel}</span>
+          <span className="shrink-0 text-[11px] font-medium leading-none text-foreground">
+            {statusLabel}
+          </span>
           <span className="min-w-0 flex-1 truncate font-mono text-[11px] leading-none text-muted-foreground/90">
             {currentPath}
           </span>
-          <span className="shrink-0 font-mono text-[10px] leading-none text-muted-foreground">{progress}%</span>
+          <span className="shrink-0 font-mono text-[10px] leading-none text-muted-foreground">
+            {progress}%
+          </span>
         </div>
         {transfer.error ? (
-          <div className="mt-1.5 truncate text-[11px] leading-none text-destructive">{transfer.error}</div>
+          <div className="mt-1.5 truncate text-[11px] leading-none text-destructive">
+            {transfer.error}
+          </div>
         ) : (
           <div className="mt-1.5 flex items-center gap-1.5">
             <div className="h-1 min-w-16 flex-1 overflow-hidden rounded-full bg-border/60">
               <div
-                className={cn("h-full rounded-full transition-all duration-300", transferTone(transfer))}
+                className={cn(
+                  "h-full rounded-full transition-all duration-300",
+                  transferTone(transfer),
+                )}
                 style={{ width: `${progress}%` }}
               />
             </div>

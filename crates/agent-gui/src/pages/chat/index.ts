@@ -15,6 +15,7 @@ export { useEditResend } from "./hooks/useEditResend";
 export { useLiveTranscriptController } from "./hooks/useLiveTranscriptController";
 export { MAX_UPLOAD_FILES, usePendingUploads } from "./hooks/usePendingUploads";
 export { clearSilentMemoryExtractionState } from "./memory/silentMemoryExtraction";
+export { createChatRuntimeHost } from "./runtime/ChatRuntimeHost";
 export {
   appendSystemPrompt,
   buildErrorAssistantMessage,
@@ -35,6 +36,3 @@ export {
   resolveEffectiveChatModelSelection,
 } from "./runtime/modelSelection";
 export { ChatTranscript } from "./transcript/ChatTranscript";
-
-export { runAgentConversationTurn } from "./turns/runAgentConversationTurn";
-export { runTextConversationTurn } from "./turns/runTextConversationTurn";

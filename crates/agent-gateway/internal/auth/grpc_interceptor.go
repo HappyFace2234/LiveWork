@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -41,11 +40,6 @@ func GRPCStreamInterceptor(expectedToken string) grpc.StreamServerInterceptor {
 }
 
 func validateMetadataToken(ctx context.Context, expectedToken string) bool {
-	expectedToken = strings.TrimSpace(expectedToken)
-	if expectedToken == "" {
-		return false
-	}
-
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return false
@@ -59,7 +53,7 @@ func validateMetadataToken(ctx context.Context, expectedToken string) bool {
 	}
 	if values := md.Get("token"); len(values) > 0 {
 		for _, value := range values {
-			if strings.TrimSpace(value) == expectedToken {
+			if ValidateToken(value, expectedToken) {
 				return true
 			}
 		}

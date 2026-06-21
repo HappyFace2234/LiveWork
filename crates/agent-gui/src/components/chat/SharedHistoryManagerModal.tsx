@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocale } from "../../i18n";
 import type { ChatHistorySummary } from "../../lib/chat/history/chatHistory";
@@ -11,8 +11,8 @@ import {
   EyeOff,
   Link2,
   Loader2,
-  Search,
   RefreshCw,
+  Search,
   Share2,
   X,
 } from "../icons";
@@ -130,6 +130,7 @@ function RedactionPicker(props: {
 }) {
   const { value, disabled, onChange } = props;
   const { t } = useLocale();
+  const redactionGroupName = useId();
   return (
     <div
       role="radiogroup"
@@ -139,36 +140,46 @@ function RedactionPicker(props: {
         disabled && "pointer-events-none opacity-60",
       )}
     >
-      <button
-        type="button"
-        role="radio"
-        aria-checked={value}
-        disabled={disabled}
-        onClick={() => onChange(true)}
+      <label
         className={cn(
-          "relative rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/35 disabled:cursor-not-allowed",
+          "cursor-pointer",
+          disabled && "cursor-not-allowed",
+          "relative rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-emerald-500/35 disabled:cursor-not-allowed",
           value
             ? "bg-emerald-500 text-white shadow-sm"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
+        <input
+          type="radio"
+          name={redactionGroupName}
+          className="sr-only"
+          checked={value}
+          disabled={disabled}
+          onChange={() => onChange(true)}
+        />
         {t("settings.enable")}
-      </button>
-      <button
-        type="button"
-        role="radio"
-        aria-checked={!value}
-        disabled={disabled}
-        onClick={() => onChange(false)}
+      </label>
+      <label
         className={cn(
-          "relative rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/35 disabled:cursor-not-allowed",
+          "cursor-pointer",
+          disabled && "cursor-not-allowed",
+          "relative rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-sky-500/35 disabled:cursor-not-allowed",
           !value
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
+        <input
+          type="radio"
+          name={redactionGroupName}
+          className="sr-only"
+          checked={!value}
+          disabled={disabled}
+          onChange={() => onChange(false)}
+        />
         {t("settings.disable")}
-      </button>
+      </label>
     </div>
   );
 }
@@ -365,13 +376,13 @@ export function SharedHistoryManagerModal({
                 const isLoading = loadingIds.has(conversation.id);
                 const isUpdating = updatingIds.has(conversation.id);
                 const error = errors[conversation.id];
-	                const messageCount =
-	                  typeof conversation.messageCount === "number"
-	                    ? t("sharedHistory.messageCount").replace(
-	                        "{count}",
-	                        String(conversation.messageCount),
-	                      )
-	                    : t("sharedHistory.messageCountUnknown");
+                const messageCount =
+                  typeof conversation.messageCount === "number"
+                    ? t("sharedHistory.messageCount").replace(
+                        "{count}",
+                        String(conversation.messageCount),
+                      )
+                    : t("sharedHistory.messageCountUnknown");
 
                 return (
                   <div

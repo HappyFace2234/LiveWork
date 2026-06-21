@@ -137,7 +137,9 @@ function normalizeSshMetadata(input: RawTerminalSshMetadata): TerminalSshMetadat
   };
 }
 
-function normalizeSshPrompt(input: RawTerminalSshPrompt | null | undefined): TerminalSshPrompt | undefined {
+function normalizeSshPrompt(
+  input: RawTerminalSshPrompt | null | undefined,
+): TerminalSshPrompt | undefined {
   if (!input) return undefined;
   const id = input.id?.trim() ?? "";
   if (!id) return undefined;

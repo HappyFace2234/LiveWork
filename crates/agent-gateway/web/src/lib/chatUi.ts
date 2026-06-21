@@ -183,12 +183,22 @@ function hashValue(value: unknown) {
   return hashText(safeStringify(value));
 }
 
-function stripSeedToolCallMarkup(value: string) {
-  if (!value.includes("<seed:tool_call>")) {
+const DSML_TAG_PREFIX = String.raw`(?:\uFF5C{2}|\|{2})\s*DSML\s*(?:\uFF5C{2}|\|{2})`;
+const DSML_TOOL_CALL_DISPLAY_PATTERN = new RegExp(
+  String.raw`<\s*${DSML_TAG_PREFIX}\s*tool_calls\s*>[\s\S]*?(?:<\/\s*${DSML_TAG_PREFIX}\s*tool_calls\s*>|$)`,
+  "gi",
+);
+
+function stripRecoveredToolCallMarkup(value: string) {
+  if (
+    !value.includes("<seed:tool_call>") &&
+    !(value.includes("DSML") && value.includes("tool_calls"))
+  ) {
     return value;
   }
   return value
     .replace(/<seed:tool_call>[\s\S]*?(?:<\/seed:tool_call>|$)/gi, "")
+    .replace(DSML_TOOL_CALL_DISPLAY_PATTERN, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -543,7 +553,7 @@ function getToolResultText(content: unknown) {
 
 function normalizeAssistantBlocks(content: unknown): NormalizedAssistantBlock[] {
   if (typeof content === "string") {
-    const text = stripSeedToolCallMarkup(content);
+    const text = stripRecoveredToolCallMarkup(content);
     return text.trim() ? [{ type: "text", text }] : [];
   }
   if (!Array.isArray(content)) {
@@ -555,14 +565,14 @@ function normalizeAssistantBlocks(content: unknown): NormalizedAssistantBlock[] 
     const record = asRecord(block);
     const type = readString(record.type);
     if (type === "text") {
-      const text = stripSeedToolCallMarkup(readString(record.text));
+      const text = stripRecoveredToolCallMarkup(readString(record.text));
       if (text !== "") {
         blocks.push({ type: "text", text });
       }
       continue;
     }
     if (type === "thinking") {
-      const text = stripSeedToolCallMarkup(readString(record.thinking));
+      const text = stripRecoveredToolCallMarkup(readString(record.thinking));
       if (text !== "") {
         blocks.push({ type: "thinking", text });
       }
@@ -1130,7 +1140,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
       return [...entries, checkpoint];
     }
 
-    const text = stripSeedToolCallMarkup(event.text ?? "");
+    const text = stripRecoveredToolCallMarkup(event.text ?? "");
     const round = readRound(event.round);
     const meta = buildAssistantMeta({
       provider: event.provider,
@@ -1184,7 +1194,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
   }
 
   if (event.type === "thinking") {
-    const text = stripSeedToolCallMarkup(event.text ?? "");
+    const text = stripRecoveredToolCallMarkup(event.text ?? "");
     if (text === "") {
       return entries;
     }
@@ -1696,7 +1706,7 @@ export function buildTranscriptItems(entries: ChatEntry[]): GatewayTranscriptIte
     }
 
     if (entry.kind === "thinking") {
-      const sanitizedThinking = stripSeedToolCallMarkup(entry.text);
+      const sanitizedThinking = stripRecoveredToolCallMarkup(entry.text);
       if (sanitizedThinking === "") {
         continue;
       }
@@ -1720,8 +1730,14 @@ export function buildTranscriptItems(entries: ChatEntry[]): GatewayTranscriptIte
           collapseThinking(round),
           entry.toolCall,
         ) as GatewayTranscriptRound;
+        const visibleToolCallIds = new Set(
+          getRoundToolTrace(withToolCall)
+            .map((item) => item.toolCall.id)
+            .filter((id): id is string => Boolean(id)),
+        );
         const runningToolCallIds = runningCandidateIds.reduce(
-          (ids, id) => ids.includes(id) ? ids : [...ids, id],
+          (ids, id) =>
+            visibleToolCallIds.has(id) && !ids.includes(id) ? [...ids, id] : ids,
           withToolCall.runningToolCallIds,
         );
         return {
@@ -1733,12 +1749,23 @@ export function buildTranscriptItems(entries: ChatEntry[]): GatewayTranscriptIte
     }
 
     if (entry.kind === "hosted_search") {
-      updateTranscriptRound(assistantGroup, roundNumber, (round) =>
-        upsertHostedSearchToRound(
+      updateTranscriptRound(assistantGroup, roundNumber, (round) => {
+        const nextRound = upsertHostedSearchToRound(
           collapseThinking(round),
           entry.hostedSearch,
-        ) as GatewayTranscriptRound,
-      );
+        ) as GatewayTranscriptRound;
+        const visibleToolCallIds = new Set(
+          getRoundToolTrace(nextRound)
+            .map((item) => item.toolCall.id)
+            .filter((id): id is string => Boolean(id)),
+        );
+        return {
+          ...nextRound,
+          runningToolCallIds: nextRound.runningToolCallIds.filter((id) =>
+            visibleToolCallIds.has(id),
+          ),
+        };
+      });
       continue;
     }
 

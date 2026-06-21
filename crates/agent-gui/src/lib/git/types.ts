@@ -185,12 +185,13 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(asString).filter(Boolean) : [];
 }
 
-export function normalizeGitRepositoryState(input: unknown, fallbackWorkdir = ""): GitRepositoryState {
+export function normalizeGitRepositoryState(
+  input: unknown,
+  fallbackWorkdir = "",
+): GitRepositoryState {
   const source = asObject(input);
   const dirtyCounts = asObject(source.dirtyCounts ?? source.dirty_counts);
-  const entries = Array.isArray(source.entries)
-    ? source.entries.map(normalizeGitStatusEntry)
-    : [];
+  const entries = Array.isArray(source.entries) ? source.entries.map(normalizeGitStatusEntry) : [];
   return {
     repoRoot: asString(source.repoRoot ?? source.repo_root),
     workdir: asString(source.workdir) || fallbackWorkdir,
@@ -293,8 +294,7 @@ export function normalizeGitLogResponse(input: unknown, workdir = ""): GitLogRes
   const source = asObject(input);
   const rawHistoryBaseRef = asString(source.historyBaseRef ?? source.history_base_ref);
   const hasHistoryRemoteRef =
-    Object.prototype.hasOwnProperty.call(source, "historyRemoteRef") ||
-    Object.prototype.hasOwnProperty.call(source, "history_remote_ref");
+    Object.hasOwn(source, "historyRemoteRef") || Object.hasOwn(source, "history_remote_ref");
   const rawHistoryRemoteRef = asString(source.historyRemoteRef ?? source.history_remote_ref);
   return {
     state: normalizeGitRepositoryState(source.state, workdir),

@@ -42,7 +42,6 @@ import { Input } from "../ui/input";
 type ChatHistorySidebarProps = {
   items: ChatHistorySummary[];
   currentConversationId: string;
-  isBusy: boolean;
   runningConversationIds: ReadonlySet<string>;
   isLoading: boolean;
   totalItems: number;
@@ -134,7 +133,6 @@ function useStableEvent<Args extends unknown[], Return>(
 const HistoryRow = memo(function HistoryRow(props: {
   item: ChatHistorySummary;
   isActive: boolean;
-  isBusy: boolean;
   isRunning: boolean;
   isDeleteDisabled: boolean;
   canShareConversation: boolean;
@@ -154,7 +152,6 @@ const HistoryRow = memo(function HistoryRow(props: {
   const {
     item,
     isActive,
-    isBusy,
     isRunning,
     isDeleteDisabled,
     canShareConversation,
@@ -234,7 +231,7 @@ const HistoryRow = memo(function HistoryRow(props: {
             type="button"
             size="sm"
             onClick={handleConfirmDelete}
-            disabled={isBusy || isDeleteDisabled}
+            disabled={isDeleteDisabled}
             className="h-7 rounded-xl bg-destructive text-xs font-medium text-destructive-foreground hover:bg-destructive/90"
           >
             {t("chat.delete")}
@@ -274,7 +271,7 @@ const HistoryRow = memo(function HistoryRow(props: {
             }}
             onClick={(e) => e.stopPropagation()}
             className="h-9 rounded-xl border-border/70 bg-background text-sm shadow-none"
-            disabled={isBusy}
+            disabled={isRunning}
           />
         </div>
       ) : (
@@ -375,7 +372,11 @@ const HistoryRow = memo(function HistoryRow(props: {
                     {t("chat.conversationShare")}
                   </DropdownMenuItem>
                 ) : null}
-                <DropdownMenuItem onSelect={handleStartRenaming} className="gap-2">
+                <DropdownMenuItem
+                  disabled={isRunning}
+                  onSelect={handleStartRenaming}
+                  className="gap-2"
+                >
                   <Edit3 className="h-3.5 w-3.5" />
                   {t("chat.conversationRename")}
                 </DropdownMenuItem>
@@ -798,7 +799,6 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
   const {
     items,
     currentConversationId,
-    isBusy,
     runningConversationIds,
     isLoading,
     totalItems,
@@ -1218,7 +1218,6 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
         key={item.id}
         item={item}
         isActive={currentConversationId === item.id}
-        isBusy={isBusy}
         isRunning={runningConversationIds.has(item.id)}
         isDeleteDisabled={runningConversationIds.has(item.id)}
         canShareConversation={canShareConversations}
@@ -1246,7 +1245,6 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
       handleSetPinned,
       handleShareConversation,
       handleStartRenaming,
-      isBusy,
       canShareConversations,
       pendingDeleteId,
       renameDraft,
@@ -1406,15 +1404,15 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
-            <div
-              aria-hidden={projectsCollapsed}
-              inert={projectsCollapsed}
-              className={cn(
-                "min-h-0 overflow-y-auto overflow-x-hidden transition-opacity duration-300 ease-out motion-reduce:transition-none",
-                projectsCollapsed ? "opacity-0" : "opacity-100",
-              )}
-            >
-              <div ref={projectsBodyRef} className="space-y-1 px-2 pb-0.5 pr-1">
+              <div
+                aria-hidden={projectsCollapsed}
+                inert={projectsCollapsed}
+                className={cn(
+                  "min-h-0 overflow-y-auto overflow-x-hidden transition-opacity duration-300 ease-out motion-reduce:transition-none",
+                  projectsCollapsed ? "opacity-0" : "opacity-100",
+                )}
+              >
+                <div ref={projectsBodyRef} className="space-y-1 px-2 pb-0.5 pr-1">
                   {renderedProjects.map((project) => {
                     const pathKey = workspaceProjectPathKey(project.path);
                     return (

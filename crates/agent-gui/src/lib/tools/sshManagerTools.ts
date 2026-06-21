@@ -73,7 +73,7 @@ type RawTerminalSnapshotResponse = {
   ssh_prompt?: unknown;
 };
 
-type SshSessionSummary = {
+export type SshManagerSessionSummary = {
   session_id: string;
   host_id: string;
   status: string;
@@ -84,10 +84,16 @@ type SshSessionSummary = {
   updated_at: number;
 };
 
+export type SshManagerSessionChange = {
+  action: "create";
+  projectPathKey: string;
+  session?: SshManagerSessionSummary;
+};
+
 type SshSessionStrategy = "reuse_or_create" | "new" | "require_existing";
 
 type ResolvedSshSession = {
-  session: SshSessionSummary;
+  session: SshManagerSessionSummary;
   reused: boolean;
   created: boolean;
   strategy: SshSessionStrategy | "session_id";
@@ -254,7 +260,7 @@ function normalizeSessionStrategy(value: unknown): SshSessionStrategy {
   throw new Error("SSHManager.session_strategy is invalid.");
 }
 
-function normalizeSession(input: RawTerminalSession): SshSessionSummary | null {
+function normalizeSession(input: RawTerminalSession): SshManagerSessionSummary | null {
   if (input.kind !== "ssh" || !input.ssh) return null;
   const sessionId = input.id?.trim() ?? "";
   const hostId = (input.ssh.hostId ?? input.ssh.host_id ?? "").trim();
@@ -272,6 +278,7 @@ function normalizeSession(input: RawTerminalSession): SshSessionSummary | null {
 }
 
 function hostCredentialConfigured(host: SshHostConfig) {
+  if (host.authType === "agent") return true;
   if (host.authType === "privateKey") {
     return (
       host.privateKey.trim().length > 0 ||
@@ -301,7 +308,7 @@ function formatHostLine(host: ReturnType<typeof hostSummary>) {
   return `- ${host.host_id} · ${host.name || host.endpoint} · ${host.endpoint} · auth=${host.authType} · credential=${host.credentialStatus}`;
 }
 
-function formatSessionLine(session: SshSessionSummary) {
+function formatSessionLine(session: SshManagerSessionSummary) {
   return `- ${session.session_id} · host=${session.host_id} · ${session.status} · sftp=${session.sftpEnabled ? "true" : "false"} · running=${session.running ? "true" : "false"} · created_at=${session.created_at} · updated_at=${session.updated_at} · ${session.title}`;
 }
 
@@ -356,7 +363,7 @@ async function listProjectSessions(projectPathKey: string) {
   });
   return (response.sessions ?? [])
     .map(normalizeSession)
-    .filter((session): session is SshSessionSummary => Boolean(session));
+    .filter((session): session is SshManagerSessionSummary => Boolean(session));
 }
 
 function createAllowedHostMap(hosts: SshHostConfig[], associatedHostIds: readonly string[]) {
@@ -390,7 +397,7 @@ async function validateSession(params: {
 }
 
 function findReusableSession(params: {
-  sessions: SshSessionSummary[];
+  sessions: SshManagerSessionSummary[];
   hostId: string;
   needsSftp: boolean;
 }) {
@@ -449,6 +456,7 @@ async function resolveSession(params: {
   allowedHosts: Map<string, SshHostConfig>;
   allowedHostIds: Set<string>;
   needsSftp?: boolean;
+  onNewConnectionStarted?: () => void | Promise<void>;
 }): Promise<ResolvedSshSession> {
   const sessionId = normalizeOptionalString(params.args.session_id);
   const strategy = normalizeSessionStrategy(params.args.session_strategy);
@@ -482,6 +490,7 @@ async function resolveSession(params: {
       throw new Error("No reusable SSH session exists for this host in the current project.");
     }
   }
+  await params.onNewConnectionStarted?.();
   const session = await createSession({
     host,
     workdir: params.workdir,
@@ -501,6 +510,7 @@ async function executeSSHManager(
     projectPathKey: string;
     hosts: SshHostConfig[];
     associatedHostIds: string[];
+    onSshSessionsChanged?: (change: SshManagerSessionChange) => void | Promise<void>;
   },
   signal?: AbortSignal,
 ): Promise<ToolResultMessage> {
@@ -560,14 +570,22 @@ async function executeSSHManager(
       if (!host) {
         throw new Error("SSH host is not associated with the current project.");
       }
+      const title = normalizeOptionalString(args.title) || undefined;
+      const cols = normalizeOptionalPositiveInt(args.cols, 20, 400);
+      const rows = normalizeOptionalPositiveInt(args.rows, 6, 200);
+      const sftpEnabled = normalizeBool(args.sftp_enabled, true);
+      await params.onSshSessionsChanged?.({
+        action: "create",
+        projectPathKey: params.projectPathKey,
+      });
       const session = await createSession({
         host,
         workdir: params.workdir,
         projectPathKey: params.projectPathKey,
-        title: normalizeOptionalString(args.title) || undefined,
-        cols: normalizeOptionalPositiveInt(args.cols, 20, 400),
-        rows: normalizeOptionalPositiveInt(args.rows, 6, 200),
-        sftpEnabled: normalizeBool(args.sftp_enabled, true),
+        title,
+        cols,
+        rows,
+        sftpEnabled,
       });
       return okResult({
         toolCall,
@@ -668,6 +686,11 @@ async function executeSSHManager(
         projectPathKey: params.projectPathKey,
         allowedHosts,
         allowedHostIds,
+        onNewConnectionStarted: () =>
+          params.onSshSessionsChanged?.({
+            action: "create",
+            projectPathKey: params.projectPathKey,
+          }),
       });
       const { session } = resolvedSession;
       const command = requireString(args, "command");
@@ -749,6 +772,11 @@ async function executeSSHManager(
       allowedHosts,
       allowedHostIds,
       needsSftp: true,
+      onNewConnectionStarted: () =>
+        params.onSshSessionsChanged?.({
+          action: "create",
+          projectPathKey: params.projectPathKey,
+        }),
     });
     const { session } = resolvedSession;
 
@@ -916,6 +944,7 @@ export function createSSHManagerTools(params: {
   projectPathKey?: string;
   hosts?: SshHostConfig[];
   associatedHostIds?: string[];
+  onSshSessionsChanged?: (change: SshManagerSessionChange) => void | Promise<void>;
 }): BuiltinToolBundle {
   const projectPathKey = params.projectPathKey?.trim() || params.workdir.trim();
   const hosts = params.hosts ?? [];
@@ -939,6 +968,7 @@ export function createSSHManagerTools(params: {
           projectPathKey,
           hosts,
           associatedHostIds,
+          onSshSessionsChanged: params.onSshSessionsChanged,
         },
         signal,
       ),

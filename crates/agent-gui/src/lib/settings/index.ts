@@ -127,21 +127,32 @@ export type ChatSidebarSettings = {
   recentCollapsed: boolean;
 };
 
-export type ProjectToolsPanelTab =
-  | "terminal"
-  | "fileTree"
-  | "gitReview"
-  | "tunnel"
-  | "sshTunnel";
+export type RightDockTabKind = "terminal" | "fileTree" | "gitReview" | "tunnel" | "sshTunnel";
 
-export type ProjectToolsPanelSettings = {
-  width: number;
-  activeTab: ProjectToolsPanelTab;
-  activeTabs: Record<string, ProjectToolsPanelTab>;
-  tabOrders: Record<string, string[]>;
+export type RightDockTabInstance = {
+  id: string;
+  kind: RightDockTabKind;
+  projectPathKey: string;
+  title?: string;
+  createdAt: number;
+  params?: Record<string, unknown>;
+  uiState?: Record<string, unknown>;
 };
 
-export type ProjectToolsFileTreeProjectState = {
+export type RightDockProjectState = {
+  activeTabId?: string;
+  tabOrder: string[];
+  tabs: Record<string, RightDockTabInstance>;
+  openVersion: number;
+  stateVersion: number;
+};
+
+export type RightDockSettings = {
+  width: number;
+  projects: Record<string, RightDockProjectState>;
+};
+
+export type RightDockFileTreeState = {
   query: string;
   selectedPath: string;
   expandedPaths: string[];
@@ -149,28 +160,7 @@ export type ProjectToolsFileTreeProjectState = {
   stateVersion: number;
 };
 
-export type ProjectToolsFileTreeSettings = {
-  openProjectPathKeys: string[];
-  openVersion: number;
-  projects: Record<string, ProjectToolsFileTreeProjectState>;
-};
-
-export type ProjectToolsGitReviewSettings = {
-  openProjectPathKeys: string[];
-  openVersion: number;
-};
-
-export type ProjectToolsTunnelSettings = {
-  openProjectPathKeys: string[];
-  openVersion: number;
-};
-
-export type ProjectToolsSshTunnelSettings = {
-  openProjectPathKeys: string[];
-  openVersion: number;
-};
-
-export type ProjectToolsFileTreeStatePatch = Partial<ProjectToolsFileTreeProjectState> & {
+export type RightDockFileTreeStatePatch = Partial<RightDockFileTreeState> & {
   bumpRevision?: boolean;
   bumpStateVersion?: boolean;
 };
@@ -178,11 +168,7 @@ export type ProjectToolsFileTreeStatePatch = Partial<ProjectToolsFileTreeProject
 export type CustomSettings = {
   conversationTitleModel?: SelectedModel;
   chatSidebar: ChatSidebarSettings;
-  projectToolsPanel: ProjectToolsPanelSettings;
-  projectToolsFileTree: ProjectToolsFileTreeSettings;
-  projectToolsGitReview: ProjectToolsGitReviewSettings;
-  projectToolsTunnel: ProjectToolsTunnelSettings;
-  projectToolsSshTunnel: ProjectToolsSshTunnelSettings;
+  rightDock: RightDockSettings;
 };
 
 export type UpdateSettings = {
@@ -246,7 +232,7 @@ export type AgentPromptTemplate = {
   enabled: boolean;
 };
 
-export type SshAuthType = "password" | "privateKey";
+export type SshAuthType = "password" | "privateKey" | "agent";
 export type SshProxyType = "socks5" | "http";
 
 export type SshProxyConfig = {
@@ -518,11 +504,67 @@ export function normalizeWorkspaceProjectPath(path: unknown): string {
   return typeof path === "string" ? path.trim() : "";
 }
 
-export function workspaceProjectPathKey(path: unknown): string {
-  return normalizeWorkspaceProjectPath(path);
+function isWindowsProjectPathLike(path: string): boolean {
+  if (/^[\\/]{2}\?[\\/]/.test(path)) return true;
+  if (/^[A-Za-z]:(?:[\\/]|$)/.test(path)) return true;
+  return /^[\\/]{2}[^\\/]+[\\/]+[^\\/]+/.test(path);
 }
 
-export function normalizeProjectToolsFileTreePath(path: unknown): string {
+function trimTrailingWindowsProjectSlashes(path: string): string {
+  let minLength = 1;
+  if (/^[A-Za-z]:\//.test(path)) {
+    minLength = 3;
+  } else if (path.startsWith("//")) {
+    const uncRoot = /^\/\/[^/]+\/[^/]+/.exec(path);
+    minLength = uncRoot?.[0].length ?? 2;
+  }
+  let next = path;
+  while (next.length > minLength && next.endsWith("/")) {
+    next = next.slice(0, -1);
+  }
+  return next;
+}
+
+function normalizeWindowsProjectPathKey(path: string): string {
+  const stripped = path.replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, "//").replace(/^[\\/]{2}\?[\\/]/, "");
+  return trimTrailingWindowsProjectSlashes(stripped.replace(/\\/g, "/")).toLowerCase();
+}
+
+function normalizePosixProjectPathKey(path: string): string {
+  let next = path;
+  while (next.length > 1 && next.endsWith("/")) {
+    next = next.slice(0, -1);
+  }
+  return next;
+}
+
+export function workspaceProjectPathKey(path: unknown): string {
+  const normalizedPath = normalizeWorkspaceProjectPath(path);
+  if (!normalizedPath) return "";
+  return isWindowsProjectPathLike(normalizedPath)
+    ? normalizeWindowsProjectPathKey(normalizedPath)
+    : normalizePosixProjectPathKey(normalizedPath);
+}
+
+function assignNormalizedProjectKeyValue<T>(
+  target: Record<string, T>,
+  canonicalKeys: Set<string>,
+  rawPathKey: string,
+  value: T,
+): void {
+  const normalizedPathKey = workspaceProjectPathKey(rawPathKey);
+  if (!normalizedPathKey) return;
+  const isCanonicalKey = rawPathKey.trim() === normalizedPathKey;
+  const existingIsCanonical = canonicalKeys.has(normalizedPathKey);
+  if (isCanonicalKey || !existingIsCanonical) {
+    target[normalizedPathKey] = value;
+  }
+  if (isCanonicalKey) {
+    canonicalKeys.add(normalizedPathKey);
+  }
+}
+
+export function normalizeRightDockFileTreePath(path: unknown): string {
   if (typeof path !== "string") return "";
   return path
     .trim()
@@ -1262,7 +1304,13 @@ export function normalizeAgentPromptTemplate(input: unknown): AgentPromptTemplat
 }
 
 function normalizeSshAuthType(input: unknown): SshAuthType {
-  return input === "privateKey" ? "privateKey" : "password";
+  switch (input) {
+    case "privateKey":
+    case "agent":
+      return input;
+    default:
+      return "password";
+  }
 }
 
 function normalizeSshPort(input: unknown): number {
@@ -1301,10 +1349,20 @@ export function normalizeSshHostConfig(input: unknown): SshHostConfig {
   const host = typeof obj.host === "string" ? obj.host.trim() : "";
   const name =
     typeof obj.name === "string" && obj.name.trim() ? obj.name.trim() : host || "未命名 SSH";
-  const password = normalizeOptionalText(obj.password);
-  const privateKey = normalizeOptionalText(obj.privateKey);
-  const privateKeyPath = normalizeOptionalText(obj.privateKeyPath);
-  const privateKeyPassphrase = normalizeOptionalText(obj.privateKeyPassphrase);
+  const authType = normalizeSshAuthType(obj.authType);
+  const password = authType === "agent" ? "" : normalizeOptionalText(obj.password);
+  const privateKey = authType === "agent" ? "" : normalizeOptionalText(obj.privateKey);
+  const privateKeyPath = authType === "agent" ? "" : normalizeOptionalText(obj.privateKeyPath);
+  const privateKeyPassphrase =
+    authType === "agent" ? "" : normalizeOptionalText(obj.privateKeyPassphrase);
+  const passwordConfigured =
+    authType !== "agent" && (password.length > 0 || obj.passwordConfigured === true);
+  const privateKeyConfigured =
+    authType !== "agent" &&
+    (privateKey.length > 0 || privateKeyPath.length > 0 || obj.privateKeyConfigured === true);
+  const privateKeyPassphraseConfigured =
+    authType !== "agent" &&
+    (privateKeyPassphrase.length > 0 || obj.privateKeyPassphraseConfigured === true);
 
   return {
     id: typeof obj.id === "string" && obj.id.trim() ? obj.id.trim() : crypto.randomUUID(),
@@ -1313,16 +1371,14 @@ export function normalizeSshHostConfig(input: unknown): SshHostConfig {
     host,
     port: normalizeSshPort(obj.port),
     username: typeof obj.username === "string" ? obj.username.trim() : "",
-    authType: normalizeSshAuthType(obj.authType),
+    authType,
     password,
-    passwordConfigured: password.length > 0 || obj.passwordConfigured === true,
+    passwordConfigured,
     privateKey,
     privateKeyPath,
-    privateKeyConfigured:
-      privateKey.length > 0 || privateKeyPath.length > 0 || obj.privateKeyConfigured === true,
+    privateKeyConfigured,
     privateKeyPassphrase,
-    privateKeyPassphraseConfigured:
-      privateKeyPassphrase.length > 0 || obj.privateKeyPassphraseConfigured === true,
+    privateKeyPassphraseConfigured,
     proxy: normalizeSshProxyConfig(obj.proxy),
   };
 }
@@ -1360,9 +1416,9 @@ function normalizeSshProjectHostAssociations(
     input && typeof input === "object" && !Array.isArray(input) ? input : {}
   ) as Record<string, unknown>;
   const associations: Record<string, string[]> = {};
+  const canonicalKeys = new Set<string>();
   for (const [pathKey, rawHostIds] of Object.entries(rawAssociations)) {
-    const normalizedPathKey = workspaceProjectPathKey(pathKey);
-    if (!normalizedPathKey || !Array.isArray(rawHostIds)) continue;
+    if (!Array.isArray(rawHostIds)) continue;
     const ids: string[] = [];
     const seen = new Set<string>();
     for (const rawHostId of rawHostIds) {
@@ -1374,7 +1430,7 @@ function normalizeSshProjectHostAssociations(
       if (ids.length >= 64) break;
     }
     if (ids.length === 0) continue;
-    associations[normalizedPathKey] = ids;
+    assignNormalizedProjectKeyValue(associations, canonicalKeys, pathKey, ids);
     if (Object.keys(associations).length >= 100) break;
   }
   return associations;
@@ -1631,7 +1687,14 @@ export function normalizeMemorySettings(
   };
 }
 
-const DEFAULT_PROJECT_TOOLS_FILE_TREE_PROJECT_STATE: ProjectToolsFileTreeProjectState = {
+export const RIGHT_DOCK_SINGLETON_TAB_IDS = {
+  fileTree: "tool:fileTree",
+  gitReview: "tool:gitReview",
+  tunnel: "tool:tunnel",
+  sshTunnel: "tool:sshTunnel",
+} as const satisfies Record<Exclude<RightDockTabKind, "terminal">, string>;
+
+export const DEFAULT_RIGHT_DOCK_FILE_TREE_STATE: RightDockFileTreeState = {
   query: "",
   selectedPath: "",
   expandedPaths: [""],
@@ -1639,114 +1702,34 @@ const DEFAULT_PROJECT_TOOLS_FILE_TREE_PROJECT_STATE: ProjectToolsFileTreeProject
   stateVersion: 0,
 };
 
-function normalizeProjectToolsFileTreeSearchQuery(query: unknown): string {
+function normalizeRightDockFileTreeSearchQuery(query: unknown): string {
   return typeof query === "string" ? query.slice(0, 200) : "";
 }
 
-function normalizeProjectToolsFileTreeExpandedPaths(paths: unknown): string[] {
+function normalizeRightDockFileTreeExpandedPaths(paths: unknown): string[] {
   if (!Array.isArray(paths)) return [""];
   const normalized = Array.from(
     new Set(
       paths
-        .map((path) => normalizeProjectToolsFileTreePath(path))
+        .map((path) => normalizeRightDockFileTreePath(path))
         .filter((path) => path.length <= 1024),
     ),
   );
   return normalized.slice(0, 512);
 }
 
-function normalizeProjectToolsFileTreeProjectState(
-  input: unknown,
-): ProjectToolsFileTreeProjectState {
+export function normalizeRightDockFileTreeState(input: unknown): RightDockFileTreeState {
   const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   return {
-    query: normalizeProjectToolsFileTreeSearchQuery(obj.query),
-    selectedPath: normalizeProjectToolsFileTreePath(obj.selectedPath),
-    expandedPaths: normalizeProjectToolsFileTreeExpandedPaths(obj.expandedPaths),
+    query: normalizeRightDockFileTreeSearchQuery(obj.query),
+    selectedPath: normalizeRightDockFileTreePath(obj.selectedPath),
+    expandedPaths: normalizeRightDockFileTreeExpandedPaths(obj.expandedPaths),
     revision: normalizeIntegerInRange(obj.revision, 0, Number.MAX_SAFE_INTEGER, 0),
     stateVersion: normalizeIntegerInRange(obj.stateVersion, 0, Number.MAX_SAFE_INTEGER, 0),
   };
 }
 
-export function normalizeProjectToolsFileTreeSettings(
-  input: unknown,
-): ProjectToolsFileTreeSettings {
-  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const openProjectPathKeys = Array.from(
-    new Set(
-      (Array.isArray(obj.openProjectPathKeys) ? obj.openProjectPathKeys : [])
-        .map((pathKey) => workspaceProjectPathKey(pathKey))
-        .filter(Boolean),
-    ),
-  ).sort();
-  const rawProjects = (
-    obj.projects && typeof obj.projects === "object" && !Array.isArray(obj.projects)
-      ? obj.projects
-      : {}
-  ) as Record<string, unknown>;
-  const projects: Record<string, ProjectToolsFileTreeProjectState> = {};
-  for (const [pathKey, projectState] of Object.entries(rawProjects)) {
-    const normalizedPathKey = workspaceProjectPathKey(pathKey);
-    if (!normalizedPathKey) continue;
-    projects[normalizedPathKey] = normalizeProjectToolsFileTreeProjectState(projectState);
-  }
-  return {
-    openProjectPathKeys,
-    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
-    projects,
-  };
-}
-
-export function normalizeProjectToolsGitReviewSettings(
-  input: unknown,
-): ProjectToolsGitReviewSettings {
-  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const openProjectPathKeys = Array.from(
-    new Set(
-      (Array.isArray(obj.openProjectPathKeys) ? obj.openProjectPathKeys : [])
-        .map((pathKey) => workspaceProjectPathKey(pathKey))
-        .filter(Boolean),
-    ),
-  ).sort();
-  return {
-    openProjectPathKeys,
-    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
-  };
-}
-
-export function normalizeProjectToolsTunnelSettings(input: unknown): ProjectToolsTunnelSettings {
-  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const openProjectPathKeys = Array.from(
-    new Set(
-      (Array.isArray(obj.openProjectPathKeys) ? obj.openProjectPathKeys : [])
-        .map((pathKey) => workspaceProjectPathKey(pathKey))
-        .filter(Boolean),
-    ),
-  ).sort();
-  return {
-    openProjectPathKeys,
-    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
-  };
-}
-
-export function normalizeProjectToolsSshTunnelSettings(
-  input: unknown,
-): ProjectToolsSshTunnelSettings {
-  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const openProjectPathKeys = Array.from(
-    new Set(
-      (Array.isArray(obj.openProjectPathKeys) ? obj.openProjectPathKeys : [])
-        .map((pathKey) => workspaceProjectPathKey(pathKey))
-        .filter(Boolean),
-    ),
-  ).sort();
-  return {
-    openProjectPathKeys,
-    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
-  };
-}
-
-export function normalizeProjectToolsPanelTabOrder(input: unknown): string[] {
+export function normalizeRightDockTabOrder(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
   const order: string[] = [];
   const seen = new Set<string>();
@@ -1761,7 +1744,7 @@ export function normalizeProjectToolsPanelTabOrder(input: unknown): string[] {
   return order;
 }
 
-function isProjectToolsPanelTab(input: unknown): input is ProjectToolsPanelTab {
+function isRightDockTabKind(input: unknown): input is RightDockTabKind {
   return (
     input === "terminal" ||
     input === "fileTree" ||
@@ -1771,40 +1754,110 @@ function isProjectToolsPanelTab(input: unknown): input is ProjectToolsPanelTab {
   );
 }
 
-export function normalizeProjectToolsPanelActiveTab(input: unknown): ProjectToolsPanelTab {
-  return isProjectToolsPanelTab(input) ? input : "fileTree";
+function normalizeRightDockRecord(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!key.trim() || key.length > 80) continue;
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      Array.isArray(value) ||
+      (value && typeof value === "object")
+    ) {
+      output[key] = value;
+    }
+    if (Object.keys(output).length >= 64) break;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
-export function normalizeProjectToolsPanelActiveTabs(
+function normalizeRightDockTabInstance(input: unknown, projectPathKey: string) {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const id = typeof obj.id === "string" ? obj.id.trim() : "";
+  if (!id || id.length > 160) return null;
+  if (!isRightDockTabKind(obj.kind)) return null;
+  const normalizedProjectPathKey = workspaceProjectPathKey(obj.projectPathKey) || projectPathKey;
+  if (normalizedProjectPathKey !== projectPathKey) return null;
+  const params = normalizeRightDockRecord(obj.params);
+  const uiState =
+    obj.kind === "fileTree"
+      ? normalizeRightDockFileTreeState(obj.uiState)
+      : normalizeRightDockRecord(obj.uiState);
+  return {
+    id,
+    kind: obj.kind,
+    projectPathKey,
+    ...(typeof obj.title === "string" && obj.title.trim()
+      ? { title: obj.title.trim().slice(0, 120) }
+      : {}),
+    createdAt: normalizeIntegerInRange(obj.createdAt, 0, Number.MAX_SAFE_INTEGER, Date.now()),
+    ...(params ? { params } : {}),
+    ...(uiState ? { uiState } : {}),
+  } satisfies RightDockTabInstance;
+}
+
+export function normalizeRightDockProjectState(
   input: unknown,
-): Record<string, ProjectToolsPanelTab> {
+  projectPathKey: string,
+): RightDockProjectState {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const normalizedProjectPathKey = workspaceProjectPathKey(projectPathKey);
   const rawTabs = (
-    input && typeof input === "object" && !Array.isArray(input) ? input : {}
+    obj.tabs && typeof obj.tabs === "object" && !Array.isArray(obj.tabs) ? obj.tabs : {}
   ) as Record<string, unknown>;
-  const activeTabs: Record<string, ProjectToolsPanelTab> = {};
-  for (const [pathKey, value] of Object.entries(rawTabs)) {
-    const normalizedPathKey = workspaceProjectPathKey(pathKey);
-    if (!normalizedPathKey || !isProjectToolsPanelTab(value)) continue;
-    activeTabs[normalizedPathKey] = value;
-    if (Object.keys(activeTabs).length >= 100) break;
+  const tabs: Record<string, RightDockTabInstance> = {};
+  for (const [rawId, rawTab] of Object.entries(rawTabs)) {
+    const tab = normalizeRightDockTabInstance(rawTab, normalizedProjectPathKey);
+    if (!tab || tab.id !== rawId) continue;
+    tabs[tab.id] = tab;
+    if (Object.keys(tabs).length >= 128) break;
   }
-  return activeTabs;
+  const tabOrder = normalizeRightDockTabOrder(obj.tabOrder).filter((id) => tabs[id]);
+  for (const id of Object.keys(tabs)) {
+    if (!tabOrder.includes(id)) tabOrder.push(id);
+  }
+  const activeTabId =
+    typeof obj.activeTabId === "string" && tabs[obj.activeTabId] ? obj.activeTabId : tabOrder[0];
+  return {
+    ...(activeTabId ? { activeTabId } : {}),
+    tabOrder,
+    tabs,
+    openVersion: normalizeIntegerInRange(obj.openVersion, 0, Number.MAX_SAFE_INTEGER, 0),
+    stateVersion: normalizeIntegerInRange(obj.stateVersion, 0, Number.MAX_SAFE_INTEGER, 0),
+  };
 }
 
-export function normalizeProjectToolsPanelTabOrders(input: unknown): Record<string, string[]> {
-  const rawOrders = (
-    input && typeof input === "object" && !Array.isArray(input) ? input : {}
+export function normalizeRightDockSettings(input: unknown): RightDockSettings {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const rawProjects = (
+    obj.projects && typeof obj.projects === "object" && !Array.isArray(obj.projects)
+      ? obj.projects
+      : {}
   ) as Record<string, unknown>;
-  const orders: Record<string, string[]> = {};
-  for (const [pathKey, value] of Object.entries(rawOrders)) {
+  const projects: Record<string, RightDockProjectState> = {};
+  const canonicalKeys = new Set<string>();
+  for (const [pathKey, projectState] of Object.entries(rawProjects)) {
     const normalizedPathKey = workspaceProjectPathKey(pathKey);
-    if (!normalizedPathKey) continue;
-    const order = normalizeProjectToolsPanelTabOrder(value);
-    if (order.length === 0) continue;
-    orders[normalizedPathKey] = order;
-    if (Object.keys(orders).length >= 100) break;
+    if (!normalizedPathKey || canonicalKeys.has(normalizedPathKey)) continue;
+    const normalizedProject = normalizeRightDockProjectState(projectState, normalizedPathKey);
+    if (
+      Object.keys(normalizedProject.tabs).length === 0 &&
+      normalizedProject.openVersion === 0 &&
+      normalizedProject.stateVersion === 0
+    ) {
+      continue;
+    }
+    projects[normalizedPathKey] = normalizedProject;
+    canonicalKeys.add(normalizedPathKey);
+    if (Object.keys(projects).length >= 100) break;
   }
-  return orders;
+  return {
+    width: normalizeIntegerInRange(obj.width, 320, 1280, 420),
+    projects,
+  };
 }
 
 export function normalizeCustomSettings(
@@ -1815,32 +1868,6 @@ export function normalizeCustomSettings(
   const chatSidebar = (
     obj.chatSidebar && typeof obj.chatSidebar === "object" ? obj.chatSidebar : {}
   ) as Record<string, unknown>;
-  const projectToolsPanel = (
-    obj.projectToolsPanel && typeof obj.projectToolsPanel === "object" ? obj.projectToolsPanel : {}
-  ) as Record<string, unknown>;
-  const projectToolsPanelActiveTab = normalizeProjectToolsPanelActiveTab(
-    projectToolsPanel.activeTab,
-  );
-  const projectToolsFileTree = (
-    obj.projectToolsFileTree && typeof obj.projectToolsFileTree === "object"
-      ? obj.projectToolsFileTree
-      : {}
-  ) as unknown;
-  const projectToolsGitReview = (
-    obj.projectToolsGitReview && typeof obj.projectToolsGitReview === "object"
-      ? obj.projectToolsGitReview
-      : {}
-  ) as unknown;
-  const projectToolsTunnel = (
-    obj.projectToolsTunnel && typeof obj.projectToolsTunnel === "object"
-      ? obj.projectToolsTunnel
-      : {}
-  ) as unknown;
-  const projectToolsSshTunnel = (
-    obj.projectToolsSshTunnel && typeof obj.projectToolsSshTunnel === "object"
-      ? obj.projectToolsSshTunnel
-      : {}
-  ) as unknown;
   return {
     conversationTitleModel: normalizeSelectedModelForProviders(
       normalizeSelectedModel(obj.conversationTitleModel),
@@ -1850,21 +1877,7 @@ export function normalizeCustomSettings(
       projectsCollapsed: chatSidebar.projectsCollapsed === true,
       recentCollapsed: chatSidebar.recentCollapsed === true,
     },
-    projectToolsPanel: {
-      width: normalizeIntegerInRange(
-        projectToolsPanel.width,
-        320,
-        1280,
-        420,
-      ),
-      activeTab: projectToolsPanelActiveTab,
-      activeTabs: normalizeProjectToolsPanelActiveTabs(projectToolsPanel.activeTabs),
-      tabOrders: normalizeProjectToolsPanelTabOrders(projectToolsPanel.tabOrders),
-    },
-    projectToolsFileTree: normalizeProjectToolsFileTreeSettings(projectToolsFileTree),
-    projectToolsGitReview: normalizeProjectToolsGitReviewSettings(projectToolsGitReview),
-    projectToolsTunnel: normalizeProjectToolsTunnelSettings(projectToolsTunnel),
-    projectToolsSshTunnel: normalizeProjectToolsSshTunnelSettings(projectToolsSshTunnel),
+    rightDock: normalizeRightDockSettings(obj.rightDock),
   };
 }
 
@@ -2000,10 +2013,7 @@ export function updateSsh(prev: AppSettings, patch: Partial<SshSettings>): AppSe
   });
 }
 
-function normalizeSshProjectHostIdList(
-  ssh: SshSettings,
-  hostIds: readonly string[],
-): string[] {
+function normalizeSshProjectHostIdList(ssh: SshSettings, hostIds: readonly string[]): string[] {
   const availableHostIds = new Set(ssh.hosts.map((host) => host.id));
   const seen = new Set<string>();
   const ids: string[] = [];
@@ -2020,10 +2030,7 @@ function normalizeSshProjectHostIdList(
 export function getSshProjectHostIds(ssh: SshSettings, projectPathKey: string): string[] {
   const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
   if (!normalizedPathKey) return [];
-  return normalizeSshProjectHostIdList(
-    ssh,
-    ssh.projectHostAssociations[normalizedPathKey] ?? [],
-  );
+  return normalizeSshProjectHostIdList(ssh, ssh.projectHostAssociations[normalizedPathKey] ?? []);
 }
 
 export function updateSshProjectHostIds(
@@ -2120,470 +2127,13 @@ export function updateCustomSettings(
   });
 }
 
-function hasProjectToolsFileTreeSessionState(state: ProjectToolsFileTreeSettings): boolean {
-  return (
-    state.openVersion > 0 ||
-    state.openProjectPathKeys.length > 0 ||
-    Object.keys(state.projects).length > 0
-  );
+function rightDockProjectStateEqual(left: RightDockProjectState, right: RightDockProjectState) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function hasProjectToolsGitReviewSessionState(state: ProjectToolsGitReviewSettings): boolean {
-  return state.openVersion > 0 || state.openProjectPathKeys.length > 0;
-}
-
-function hasProjectToolsTunnelSessionState(state: ProjectToolsTunnelSettings): boolean {
-  return state.openVersion > 0 || state.openProjectPathKeys.length > 0;
-}
-
-function hasProjectToolsSshTunnelSessionState(state: ProjectToolsSshTunnelSettings): boolean {
-  return state.openVersion > 0 || state.openProjectPathKeys.length > 0;
-}
-
-export function preserveProjectToolsSessionState(
-  next: AppSettings,
-  current: AppSettings,
-): AppSettings {
-  const currentFileTree = normalizeProjectToolsFileTreeSettings(
-    current.customSettings.projectToolsFileTree,
-  );
-  const currentGitReview = normalizeProjectToolsGitReviewSettings(
-    current.customSettings.projectToolsGitReview,
-  );
-  const currentTunnel = normalizeProjectToolsTunnelSettings(
-    current.customSettings.projectToolsTunnel,
-  );
-  const currentSshTunnel = normalizeProjectToolsSshTunnelSettings(
-    current.customSettings.projectToolsSshTunnel,
-  );
-
-  return normalizeSettings({
-    ...next,
-    customSettings: {
-      ...next.customSettings,
-      projectToolsFileTree: hasProjectToolsFileTreeSessionState(currentFileTree)
-        ? currentFileTree
-        : next.customSettings.projectToolsFileTree,
-      projectToolsGitReview: hasProjectToolsGitReviewSessionState(currentGitReview)
-        ? currentGitReview
-        : next.customSettings.projectToolsGitReview,
-      projectToolsTunnel: hasProjectToolsTunnelSessionState(currentTunnel)
-        ? currentTunnel
-        : next.customSettings.projectToolsTunnel,
-      projectToolsSshTunnel: hasProjectToolsSshTunnelSessionState(currentSshTunnel)
-        ? currentSshTunnel
-        : next.customSettings.projectToolsSshTunnel,
-    },
-  });
-}
-
-export function getProjectToolsPanelTabOrder(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): string[] {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return [];
-  return customSettings.projectToolsPanel.tabOrders[normalizedPathKey] ?? [];
-}
-
-export function getProjectToolsPanelActiveTab(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): ProjectToolsPanelTab {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return customSettings.projectToolsPanel.activeTab;
-  return (
-    customSettings.projectToolsPanel.activeTabs[normalizedPathKey] ??
-    customSettings.projectToolsPanel.activeTab
-  );
-}
-
-export function updateProjectToolsPanelActiveTab(
-  prev: AppSettings,
-  projectPathKey: string,
-  activeTab: ProjectToolsPanelTab,
-): AppSettings {
-  const nextActiveTab = normalizeProjectToolsPanelActiveTab(activeTab);
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) {
-    if (prev.customSettings.projectToolsPanel.activeTab === nextActiveTab) return prev;
-    return updateCustomSettings(prev, {
-      projectToolsPanel: {
-        ...prev.customSettings.projectToolsPanel,
-        activeTab: nextActiveTab,
-      },
-    });
-  }
-
-  const currentProjectActiveTab =
-    prev.customSettings.projectToolsPanel.activeTabs[normalizedPathKey];
-  if (
-    prev.customSettings.projectToolsPanel.activeTab === nextActiveTab &&
-    currentProjectActiveTab === nextActiveTab
-  ) {
-    return prev;
-  }
-
-  return updateCustomSettings(prev, {
-    projectToolsPanel: {
-      ...prev.customSettings.projectToolsPanel,
-      activeTab: nextActiveTab,
-      activeTabs: {
-        ...prev.customSettings.projectToolsPanel.activeTabs,
-        [normalizedPathKey]: nextActiveTab,
-      },
-    },
-  });
-}
-
-function projectToolsPanelTabOrderEqual(left: readonly string[], right: readonly string[]) {
-  return left.length === right.length && left.every((item, index) => item === right[index]);
-}
-
-export function updateProjectToolsPanelTabOrder(
-  prev: AppSettings,
-  projectPathKey: string,
-  tabOrder: readonly string[],
-): AppSettings {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return prev;
-  const nextOrder = normalizeProjectToolsPanelTabOrder(tabOrder);
-  const currentOrder = getProjectToolsPanelTabOrder(prev.customSettings, normalizedPathKey);
-  if (projectToolsPanelTabOrderEqual(currentOrder, nextOrder)) return prev;
-
-  const tabOrders = { ...prev.customSettings.projectToolsPanel.tabOrders };
-  if (nextOrder.length > 0) {
-    tabOrders[normalizedPathKey] = nextOrder;
-  } else {
-    delete tabOrders[normalizedPathKey];
-  }
-
-  return updateCustomSettings(prev, {
-    projectToolsPanel: {
-      ...prev.customSettings.projectToolsPanel,
-      tabOrders,
-    },
-  });
-}
-
-export function removeProjectToolsProjectState(
-  prev: AppSettings,
-  projectPathKey: string,
-): AppSettings {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return prev;
-
-  const hasTabOrder = Object.hasOwn(
-    prev.customSettings.projectToolsPanel.tabOrders,
-    normalizedPathKey,
-  );
-  const hasActiveTab = Object.hasOwn(
-    prev.customSettings.projectToolsPanel.activeTabs,
-    normalizedPathKey,
-  );
-  const openProjectPathKeys = prev.customSettings.projectToolsFileTree.openProjectPathKeys
-    .map((pathKey) => workspaceProjectPathKey(pathKey))
-    .filter(Boolean);
-  const nextOpenProjectPathKeys = openProjectPathKeys.filter(
-    (pathKey) => pathKey !== normalizedPathKey,
-  );
-  const removedOpenProjectPathKey = nextOpenProjectPathKeys.length !== openProjectPathKeys.length;
-  const gitReviewOpenProjectPathKeys = prev.customSettings.projectToolsGitReview.openProjectPathKeys
-    .map((pathKey) => workspaceProjectPathKey(pathKey))
-    .filter(Boolean);
-  const nextGitReviewOpenProjectPathKeys = gitReviewOpenProjectPathKeys.filter(
-    (pathKey) => pathKey !== normalizedPathKey,
-  );
-  const removedGitReviewOpenProjectPathKey =
-    nextGitReviewOpenProjectPathKeys.length !== gitReviewOpenProjectPathKeys.length;
-  const tunnelOpenProjectPathKeys = prev.customSettings.projectToolsTunnel.openProjectPathKeys
-    .map((pathKey) => workspaceProjectPathKey(pathKey))
-    .filter(Boolean);
-  const nextTunnelOpenProjectPathKeys = tunnelOpenProjectPathKeys.filter(
-    (pathKey) => pathKey !== normalizedPathKey,
-  );
-  const removedTunnelOpenProjectPathKey =
-    nextTunnelOpenProjectPathKeys.length !== tunnelOpenProjectPathKeys.length;
-  const sshTunnelOpenProjectPathKeys =
-    prev.customSettings.projectToolsSshTunnel.openProjectPathKeys
-      .map((pathKey) => workspaceProjectPathKey(pathKey))
-      .filter(Boolean);
-  const nextSshTunnelOpenProjectPathKeys = sshTunnelOpenProjectPathKeys.filter(
-    (pathKey) => pathKey !== normalizedPathKey,
-  );
-  const removedSshTunnelOpenProjectPathKey =
-    nextSshTunnelOpenProjectPathKeys.length !== sshTunnelOpenProjectPathKeys.length;
-  const hasSshProjectAssociation = Object.hasOwn(
-    prev.ssh.projectHostAssociations,
-    normalizedPathKey,
-  );
-  const hasFileTreeProjectState = Object.hasOwn(
-    prev.customSettings.projectToolsFileTree.projects,
-    normalizedPathKey,
-  );
-  const removedFileTreeState = removedOpenProjectPathKey || hasFileTreeProjectState;
-
-  if (
-    !hasTabOrder &&
-    !hasActiveTab &&
-    !removedOpenProjectPathKey &&
-    !removedGitReviewOpenProjectPathKey &&
-    !removedTunnelOpenProjectPathKey &&
-    !removedSshTunnelOpenProjectPathKey &&
-    !hasFileTreeProjectState &&
-    !hasSshProjectAssociation
-  ) {
-    return prev;
-  }
-
-  const tabOrders = hasTabOrder
-    ? { ...prev.customSettings.projectToolsPanel.tabOrders }
-    : prev.customSettings.projectToolsPanel.tabOrders;
-  if (hasTabOrder) {
-    delete tabOrders[normalizedPathKey];
-  }
-  const activeTabs = hasActiveTab
-    ? { ...prev.customSettings.projectToolsPanel.activeTabs }
-    : prev.customSettings.projectToolsPanel.activeTabs;
-  if (hasActiveTab) {
-    delete activeTabs[normalizedPathKey];
-  }
-
-  const projects = hasFileTreeProjectState
-    ? { ...prev.customSettings.projectToolsFileTree.projects }
-    : prev.customSettings.projectToolsFileTree.projects;
-  if (hasFileTreeProjectState) {
-    delete projects[normalizedPathKey];
-  }
-
-  const projectHostAssociations = hasSshProjectAssociation
-    ? { ...prev.ssh.projectHostAssociations }
-    : prev.ssh.projectHostAssociations;
-  if (hasSshProjectAssociation) {
-    delete projectHostAssociations[normalizedPathKey];
-  }
-
-  return normalizeSettings({
-    ...prev,
-    ssh: {
-      ...prev.ssh,
-      projectHostAssociations,
-    },
-    customSettings: {
-      ...prev.customSettings,
-      projectToolsPanel: {
-        ...prev.customSettings.projectToolsPanel,
-        activeTabs,
-        tabOrders,
-      },
-      projectToolsFileTree: {
-        ...prev.customSettings.projectToolsFileTree,
-        openProjectPathKeys: removedOpenProjectPathKey
-          ? nextOpenProjectPathKeys.sort()
-          : prev.customSettings.projectToolsFileTree.openProjectPathKeys,
-        openVersion: removedFileTreeState
-          ? prev.customSettings.projectToolsFileTree.openVersion + 1
-          : prev.customSettings.projectToolsFileTree.openVersion,
-        projects,
-      },
-      projectToolsGitReview: {
-        ...prev.customSettings.projectToolsGitReview,
-        openProjectPathKeys: removedGitReviewOpenProjectPathKey
-          ? nextGitReviewOpenProjectPathKeys.sort()
-          : prev.customSettings.projectToolsGitReview.openProjectPathKeys,
-        openVersion: removedGitReviewOpenProjectPathKey
-          ? prev.customSettings.projectToolsGitReview.openVersion + 1
-          : prev.customSettings.projectToolsGitReview.openVersion,
-      },
-      projectToolsTunnel: {
-        ...prev.customSettings.projectToolsTunnel,
-        openProjectPathKeys: removedTunnelOpenProjectPathKey
-          ? nextTunnelOpenProjectPathKeys.sort()
-          : prev.customSettings.projectToolsTunnel.openProjectPathKeys,
-        openVersion: removedTunnelOpenProjectPathKey
-          ? prev.customSettings.projectToolsTunnel.openVersion + 1
-          : prev.customSettings.projectToolsTunnel.openVersion,
-      },
-      projectToolsSshTunnel: {
-        ...prev.customSettings.projectToolsSshTunnel,
-        openProjectPathKeys: removedSshTunnelOpenProjectPathKey
-          ? nextSshTunnelOpenProjectPathKeys.sort()
-          : prev.customSettings.projectToolsSshTunnel.openProjectPathKeys,
-        openVersion: removedSshTunnelOpenProjectPathKey
-          ? prev.customSettings.projectToolsSshTunnel.openVersion + 1
-          : prev.customSettings.projectToolsSshTunnel.openVersion,
-      },
-    },
-  });
-}
-
-export function isProjectToolsFileTreeOpen(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): boolean {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  return (
-    normalizedPathKey !== "" &&
-    customSettings.projectToolsFileTree.openProjectPathKeys.includes(normalizedPathKey)
-  );
-}
-
-export function getProjectToolsFileTreeProjectState(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): ProjectToolsFileTreeProjectState {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return DEFAULT_PROJECT_TOOLS_FILE_TREE_PROJECT_STATE;
-  return (
-    customSettings.projectToolsFileTree.projects[normalizedPathKey] ??
-    DEFAULT_PROJECT_TOOLS_FILE_TREE_PROJECT_STATE
-  );
-}
-
-export function updateProjectToolsFileTreeOpen(
-  prev: AppSettings,
-  projectPathKey: string,
-  open: boolean,
-): AppSettings {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return prev;
-  const openProjectPathKeys = new Set(
-    prev.customSettings.projectToolsFileTree.openProjectPathKeys
-      .map((pathKey) => workspaceProjectPathKey(pathKey))
-      .filter(Boolean),
-  );
-  if (openProjectPathKeys.has(normalizedPathKey) === open) return prev;
-  if (open) {
-    openProjectPathKeys.add(normalizedPathKey);
-  } else {
-    openProjectPathKeys.delete(normalizedPathKey);
-  }
-  return updateCustomSettings(prev, {
-    projectToolsFileTree: {
-      ...prev.customSettings.projectToolsFileTree,
-      openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
-      openVersion: prev.customSettings.projectToolsFileTree.openVersion + 1,
-    },
-  });
-}
-
-export function isProjectToolsGitReviewOpen(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): boolean {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  return (
-    normalizedPathKey !== "" &&
-    customSettings.projectToolsGitReview.openProjectPathKeys.includes(normalizedPathKey)
-  );
-}
-
-export function updateProjectToolsGitReviewOpen(
-  prev: AppSettings,
-  projectPathKey: string,
-  open: boolean,
-): AppSettings {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return prev;
-  const openProjectPathKeys = new Set(
-    prev.customSettings.projectToolsGitReview.openProjectPathKeys
-      .map((pathKey) => workspaceProjectPathKey(pathKey))
-      .filter(Boolean),
-  );
-  if (openProjectPathKeys.has(normalizedPathKey) === open) return prev;
-  if (open) {
-    openProjectPathKeys.add(normalizedPathKey);
-  } else {
-    openProjectPathKeys.delete(normalizedPathKey);
-  }
-  return updateCustomSettings(prev, {
-    projectToolsGitReview: {
-      ...prev.customSettings.projectToolsGitReview,
-      openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
-      openVersion: prev.customSettings.projectToolsGitReview.openVersion + 1,
-    },
-  });
-}
-
-export function isProjectToolsTunnelOpen(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): boolean {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  return (
-    normalizedPathKey !== "" &&
-    customSettings.projectToolsTunnel.openProjectPathKeys.includes(normalizedPathKey)
-  );
-}
-
-export function updateProjectToolsTunnelOpen(
-  prev: AppSettings,
-  projectPathKey: string,
-  open: boolean,
-): AppSettings {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return prev;
-  const openProjectPathKeys = new Set(
-    prev.customSettings.projectToolsTunnel.openProjectPathKeys
-      .map((pathKey) => workspaceProjectPathKey(pathKey))
-      .filter(Boolean),
-  );
-  if (openProjectPathKeys.has(normalizedPathKey) === open) return prev;
-  if (open) {
-    openProjectPathKeys.add(normalizedPathKey);
-  } else {
-    openProjectPathKeys.delete(normalizedPathKey);
-  }
-  return updateCustomSettings(prev, {
-    projectToolsTunnel: {
-      ...prev.customSettings.projectToolsTunnel,
-      openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
-      openVersion: prev.customSettings.projectToolsTunnel.openVersion + 1,
-    },
-  });
-}
-
-export function isProjectToolsSshTunnelOpen(
-  customSettings: CustomSettings,
-  projectPathKey: string,
-): boolean {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  return (
-    normalizedPathKey !== "" &&
-    customSettings.projectToolsSshTunnel.openProjectPathKeys.includes(normalizedPathKey)
-  );
-}
-
-export function updateProjectToolsSshTunnelOpen(
-  prev: AppSettings,
-  projectPathKey: string,
-  open: boolean,
-): AppSettings {
-  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
-  if (!normalizedPathKey) return prev;
-  const openProjectPathKeys = new Set(
-    prev.customSettings.projectToolsSshTunnel.openProjectPathKeys
-      .map((pathKey) => workspaceProjectPathKey(pathKey))
-      .filter(Boolean),
-  );
-  if (openProjectPathKeys.has(normalizedPathKey) === open) return prev;
-  if (open) {
-    openProjectPathKeys.add(normalizedPathKey);
-  } else {
-    openProjectPathKeys.delete(normalizedPathKey);
-  }
-  return updateCustomSettings(prev, {
-    projectToolsSshTunnel: {
-      ...prev.customSettings.projectToolsSshTunnel,
-      openProjectPathKeys: Array.from(openProjectPathKeys).sort(),
-      openVersion: prev.customSettings.projectToolsSshTunnel.openVersion + 1,
-    },
-  });
-}
-
-function projectToolsFileTreeProjectStateEqual(
-  left: ProjectToolsFileTreeProjectState,
-  right: ProjectToolsFileTreeProjectState,
+function rightDockFileTreeStateEqual(
+  left: RightDockFileTreeState,
+  right: RightDockFileTreeState,
 ): boolean {
   return (
     left.query === right.query &&
@@ -2595,26 +2145,176 @@ function projectToolsFileTreeProjectStateEqual(
   );
 }
 
-export function updateProjectToolsFileTreeProjectState(
+export function getRightDockProjectState(
+  customSettings: CustomSettings,
+  projectPathKey: string,
+): RightDockProjectState {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  return normalizeRightDockProjectState(
+    normalizedPathKey ? customSettings.rightDock.projects[normalizedPathKey] : {},
+    normalizedPathKey,
+  );
+}
+
+export function updateRightDockWidth(prev: AppSettings, width: number): AppSettings {
+  const nextWidth = normalizeIntegerInRange(width, 320, 1280, 420);
+  if (prev.customSettings.rightDock.width === nextWidth) return prev;
+  return updateCustomSettings(prev, {
+    rightDock: {
+      ...prev.customSettings.rightDock,
+      width: nextWidth,
+    },
+  });
+}
+
+export function updateRightDockProjectState(
   prev: AppSettings,
   projectPathKey: string,
-  patch: ProjectToolsFileTreeStatePatch,
+  updater: (current: RightDockProjectState) => RightDockProjectState,
 ): AppSettings {
   const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
   if (!normalizedPathKey) return prev;
-  const current = getProjectToolsFileTreeProjectState(prev.customSettings, normalizedPathKey);
-  const next: ProjectToolsFileTreeProjectState = {
+  const current = getRightDockProjectState(prev.customSettings, normalizedPathKey);
+  const next = normalizeRightDockProjectState(updater(current), normalizedPathKey);
+  if (rightDockProjectStateEqual(current, next)) return prev;
+  return updateCustomSettings(prev, {
+    rightDock: {
+      ...prev.customSettings.rightDock,
+      projects: {
+        ...prev.customSettings.rightDock.projects,
+        [normalizedPathKey]: next,
+      },
+    },
+  });
+}
+
+function createRightDockSingletonTab(
+  projectPathKey: string,
+  kind: Exclude<RightDockTabKind, "terminal">,
+): RightDockTabInstance {
+  return {
+    id: RIGHT_DOCK_SINGLETON_TAB_IDS[kind],
+    kind,
+    projectPathKey,
+    createdAt: Date.now(),
+    ...(kind === "fileTree" ? { uiState: DEFAULT_RIGHT_DOCK_FILE_TREE_STATE } : {}),
+  };
+}
+
+export function openRightDockSingletonTab(
+  prev: AppSettings,
+  projectPathKey: string,
+  kind: Exclude<RightDockTabKind, "terminal">,
+): AppSettings {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return prev;
+  const tabId = RIGHT_DOCK_SINGLETON_TAB_IDS[kind];
+  return updateRightDockProjectState(prev, normalizedPathKey, (current) => {
+    const tab = current.tabs[tabId] ?? createRightDockSingletonTab(normalizedPathKey, kind);
+    const tabs = { ...current.tabs, [tabId]: tab };
+    const tabOrder = current.tabOrder.includes(tabId)
+      ? current.tabOrder
+      : [...current.tabOrder, tabId];
+    return {
+      ...current,
+      activeTabId: tabId,
+      tabOrder,
+      tabs,
+      openVersion: current.openVersion + (current.tabs[tabId] ? 0 : 1),
+      stateVersion: current.stateVersion + 1,
+    };
+  });
+}
+
+export function isRightDockSingletonTabOpen(
+  customSettings: CustomSettings,
+  projectPathKey: string,
+  kind: Exclude<RightDockTabKind, "terminal">,
+): boolean {
+  const state = getRightDockProjectState(customSettings, projectPathKey);
+  return Boolean(state.tabs[RIGHT_DOCK_SINGLETON_TAB_IDS[kind]]);
+}
+
+export function removeRightDockProjectState(
+  prev: AppSettings,
+  projectPathKey: string,
+): AppSettings {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return prev;
+  const hasRightDockProject = Object.hasOwn(
+    prev.customSettings.rightDock.projects,
+    normalizedPathKey,
+  );
+  const hasSshProjectAssociation = Object.hasOwn(
+    prev.ssh.projectHostAssociations,
+    normalizedPathKey,
+  );
+  if (!hasRightDockProject && !hasSshProjectAssociation) return prev;
+  const currentRightDockProject = getRightDockProjectState(prev.customSettings, normalizedPathKey);
+  const hasRightDockTabs = Object.keys(currentRightDockProject.tabs).length > 0;
+  if (hasRightDockProject && !hasRightDockTabs && !hasSshProjectAssociation) return prev;
+
+  const projects = hasRightDockProject
+    ? { ...prev.customSettings.rightDock.projects }
+    : prev.customSettings.rightDock.projects;
+  if (hasRightDockProject && hasRightDockTabs) {
+    projects[normalizedPathKey] = {
+      tabOrder: [],
+      tabs: {},
+      openVersion: currentRightDockProject.openVersion + 1,
+      stateVersion: currentRightDockProject.stateVersion + 1,
+    };
+  }
+  const projectHostAssociations = hasSshProjectAssociation
+    ? { ...prev.ssh.projectHostAssociations }
+    : prev.ssh.projectHostAssociations;
+  if (hasSshProjectAssociation) delete projectHostAssociations[normalizedPathKey];
+
+  return normalizeSettings({
+    ...prev,
+    ssh: {
+      ...prev.ssh,
+      projectHostAssociations,
+    },
+    customSettings: {
+      ...prev.customSettings,
+      rightDock: {
+        ...prev.customSettings.rightDock,
+        projects,
+      },
+    },
+  });
+}
+
+export function getRightDockFileTreeState(
+  customSettings: CustomSettings,
+  projectPathKey: string,
+): RightDockFileTreeState {
+  const projectState = getRightDockProjectState(customSettings, projectPathKey);
+  const state = projectState.tabs[RIGHT_DOCK_SINGLETON_TAB_IDS.fileTree]?.uiState;
+  return state ? normalizeRightDockFileTreeState(state) : DEFAULT_RIGHT_DOCK_FILE_TREE_STATE;
+}
+
+export function updateRightDockFileTreeState(
+  prev: AppSettings,
+  projectPathKey: string,
+  patch: RightDockFileTreeStatePatch,
+): AppSettings {
+  const normalizedPathKey = workspaceProjectPathKey(projectPathKey);
+  if (!normalizedPathKey) return prev;
+  const current = getRightDockFileTreeState(prev.customSettings, normalizedPathKey);
+  const next: RightDockFileTreeState = {
     query:
       patch.query !== undefined
-        ? normalizeProjectToolsFileTreeSearchQuery(patch.query)
+        ? normalizeRightDockFileTreeSearchQuery(patch.query)
         : current.query,
     selectedPath:
       patch.selectedPath !== undefined
-        ? normalizeProjectToolsFileTreePath(patch.selectedPath)
+        ? normalizeRightDockFileTreePath(patch.selectedPath)
         : current.selectedPath,
     expandedPaths:
       patch.expandedPaths !== undefined
-        ? normalizeProjectToolsFileTreeExpandedPaths(patch.expandedPaths)
+        ? normalizeRightDockFileTreeExpandedPaths(patch.expandedPaths)
         : current.expandedPaths,
     revision: patch.bumpRevision
       ? current.revision + 1
@@ -2627,15 +2327,22 @@ export function updateProjectToolsFileTreeProjectState(
         ? normalizeIntegerInRange(patch.stateVersion, 0, Number.MAX_SAFE_INTEGER, 0)
         : current.stateVersion,
   };
-  if (projectToolsFileTreeProjectStateEqual(current, next)) return prev;
-  return updateCustomSettings(prev, {
-    projectToolsFileTree: {
-      ...prev.customSettings.projectToolsFileTree,
-      projects: {
-        ...prev.customSettings.projectToolsFileTree.projects,
-        [normalizedPathKey]: next,
+  if (rightDockFileTreeStateEqual(current, next)) return prev;
+  return updateRightDockProjectState(prev, normalizedPathKey, (projectState) => {
+    const tabId = RIGHT_DOCK_SINGLETON_TAB_IDS.fileTree;
+    const tab =
+      projectState.tabs[tabId] ?? createRightDockSingletonTab(normalizedPathKey, "fileTree");
+    return {
+      ...projectState,
+      tabs: {
+        ...projectState.tabs,
+        [tabId]: {
+          ...tab,
+          uiState: next,
+        },
       },
-    },
+      stateVersion: projectState.stateVersion + 1,
+    };
   });
 }
 

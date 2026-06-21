@@ -78,3 +78,11 @@ func websocketErrorMessage(err error) string {
 	}
 	return err.Error()
 }
+
+func requireTrimmedWebSocketString(value string, field string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", errors.New(field + " is required")
+	}
+	return trimmed, nil
+}

@@ -32,7 +32,7 @@ import type {
   TunnelSummary,
   TunnelUpdateInput,
 } from "../components/project-tools/LocalTunnelPanel";
-import { ProjectToolsPanel } from "../components/project-tools/ProjectToolsPanel";
+import { RightDockPanel } from "../components/project-tools/RightDockPanel";
 import { Button } from "../components/ui/button";
 import { useConfirmDialog } from "../components/ui/confirm-dialog";
 import type { WorkspaceCodeEditorOpenRequest } from "../components/workspace-editor/WorkspaceCodeEditorOverlay";
@@ -40,6 +40,7 @@ import type { WorkspaceImagePreviewOpenRequest } from "../components/workspace-e
 import type { WorkspaceSshTerminalOpenRequest } from "../components/workspace-editor/WorkspaceSshTerminalOverlay";
 import { isWorkspaceImagePath } from "../components/workspace-editor/workspaceImagePreview";
 import { useLocale } from "../i18n";
+import type { AppUpdateController } from "../lib/appUpdates";
 import {
   type CompactionStatus,
   noteCompactionApplied,
@@ -54,7 +55,9 @@ import {
   buildRequestContext,
   type ConversationViewState,
   createConversationStateFromContext,
+  type HistoryMessageRef,
   type RenderTimelineItem,
+  truncateConversationFromMessage,
 } from "../lib/chat/conversation/conversationState";
 import {
   createConversationHookLifecycle,
@@ -96,6 +99,10 @@ import {
   PENDING_CONVERSATION_TITLE,
   sortHistoryItems,
 } from "../lib/chat/page/chatPageHelpers";
+import {
+  collectRetainedSubagentParentToolCallIds,
+  pruneSubagentRunsForConversation,
+} from "../lib/chat/subagent/subagentHistory";
 import { createSubagentRuntimeManager } from "../lib/chat/subagent/subagentRuntimeManager";
 import { createStreamDebugLogger } from "../lib/debug/agentDebug";
 import { tauriGitClient } from "../lib/git/tauriGitClient";
@@ -114,18 +121,15 @@ import {
   type ExecutionMode,
   findProviderModelConfig,
   getChatRuntimeReasoningLevelsForProvider,
-  getProjectToolsFileTreeProjectState,
-  getProjectToolsPanelActiveTab,
-  getProjectToolsPanelTabOrder,
+  getRightDockFileTreeState,
+  getRightDockProjectState,
   getSshProjectHostIds,
   isAgentDevMode,
   isAgentExecutionMode,
-  isProjectToolsFileTreeOpen,
-  isProjectToolsGitReviewOpen,
-  isProjectToolsSshTunnelOpen,
-  isProjectToolsTunnelOpen,
+  isRightDockSingletonTabOpen,
   normalizeChatRuntimeControlsForProvider,
-  removeProjectToolsProjectState,
+  openRightDockSingletonTab,
+  removeRightDockProjectState,
   resolveWorkspaceProjects,
   type SelectedModel,
   type SystemToolId,
@@ -133,13 +137,9 @@ import {
   updateCustomSettings,
   updateMcp,
   updateMemorySettings,
-  updateProjectToolsFileTreeOpen,
-  updateProjectToolsFileTreeProjectState,
-  updateProjectToolsGitReviewOpen,
-  updateProjectToolsPanelActiveTab,
-  updateProjectToolsPanelTabOrder,
-  updateProjectToolsSshTunnelOpen,
-  updateProjectToolsTunnelOpen,
+  updateRightDockFileTreeState,
+  updateRightDockProjectState,
+  updateRightDockWidth,
   updateSkills,
   updateSshProjectHostIds,
   type WorkspaceProject,
@@ -179,6 +179,7 @@ import {
   ChatHeader,
   ChatTranscript,
   clearSilentMemoryExtractionState,
+  createChatRuntimeHost,
   createConversationRuntimeEntry,
   type EffectiveChatModelSelection,
   type EnsureGatewayBridgeConversationReadyOptions,
@@ -186,8 +187,6 @@ import {
   MAX_UPLOAD_FILES,
   pruneIdleConversationRuntimeCaches,
   resolveEffectiveChatModelSelection,
-  runAgentConversationTurn,
-  runTextConversationTurn,
   type SendChatAction,
   setConversationRuntimeCacheEntry,
   startConversationTitleJob,
@@ -235,6 +234,7 @@ type ChatPageProps = {
   setContext: (next: Context) => void;
   onOpenSettings: (section?: SectionId) => void;
   onToggleTheme: () => void;
+  appUpdate?: AppUpdateController;
 };
 
 type GatewayRuntimeStatus = {
@@ -538,7 +538,8 @@ function createWorkspaceProjectFromPath(path: string, kind: WorkspaceProject["ki
 }
 
 export function ChatPage(props: ChatPageProps) {
-  const { settings, setSettings, context, setContext, onOpenSettings, onToggleTheme } = props;
+  const { settings, setSettings, context, setContext, onOpenSettings, onToggleTheme, appUpdate } =
+    props;
   // Monaco reads NLS globals while the lazy editor module imports monaco-editor.
   setPreferredMonacoNlsLocale(settings.locale);
   const { t } = useLocale();
@@ -656,9 +657,9 @@ export function ChatPage(props: ChatPageProps) {
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeView, setActiveView] = useState<"chat" | "skills-hub" | "mcp-hub">("chat");
-  const [projectToolsPanelOpen, setProjectToolsPanelOpen] = useState(false);
+  const [rightDockOpen, setRightDockOpen] = useState(false);
   const [tunnelRefreshToken, setTunnelRefreshToken] = useState(0);
-  const previousProjectToolsFileTreeOpenRef = useRef(false);
+  const previousRightDockFileTreeOpenRef = useRef(false);
   const [workspaceEditorMounted, setWorkspaceEditorMounted] = useState(false);
   const [workspaceEditorOpen, setWorkspaceEditorOpen] = useState(false);
   const [workspaceEditorCleanupPending, setWorkspaceEditorCleanupPending] = useState(false);
@@ -1044,34 +1045,31 @@ export function ChatPage(props: ChatPageProps) {
       }
 
       setActiveView("chat");
-      setProjectToolsPanelOpen(true);
+      setRightDockOpen(true);
       activateWorkspaceProject(project);
-      setSettings((prev) =>
-        updateProjectToolsFileTreeOpen(
-          updateProjectToolsPanelActiveTab(prev, pathKey, "fileTree"),
-          pathKey,
-          true,
-        ),
-      );
+      setSettings((prev) => openRightDockSingletonTab(prev, pathKey, "fileTree"));
     },
     [activateWorkspaceProject, checkWorkspaceProjectDirectory, setSettings],
   );
 
-  const openTunnelToolPanel = useCallback(
+  const ensureTunnelToolTab = useCallback(
     (projectPathKey?: string) => {
       const targetProjectPathKey =
         workspaceProjectPathKey(projectPathKey) ||
         workspaceProjectPathKey(activeWorkspaceProjectPath);
       if (!targetProjectPathKey) return;
-      setActiveView("chat");
-      setProjectToolsPanelOpen(true);
-      setSettings((prev) =>
-        updateProjectToolsTunnelOpen(
-          updateProjectToolsPanelActiveTab(prev, targetProjectPathKey, "tunnel"),
-          targetProjectPathKey,
-          true,
-        ),
-      );
+      setSettings((prev) => openRightDockSingletonTab(prev, targetProjectPathKey, "tunnel"));
+    },
+    [activeWorkspaceProjectPath, setSettings],
+  );
+
+  const ensureSshTunnelToolTab = useCallback(
+    (projectPathKey?: string) => {
+      const targetProjectPathKey =
+        workspaceProjectPathKey(projectPathKey) ||
+        workspaceProjectPathKey(activeWorkspaceProjectPath);
+      if (!targetProjectPathKey) return;
+      setSettings((prev) => openRightDockSingletonTab(prev, targetProjectPathKey, "sshTunnel"));
     },
     [activeWorkspaceProjectPath, setSettings],
   );
@@ -1342,6 +1340,7 @@ export function ChatPage(props: ChatPageProps) {
     () => buildRequestContext(conversationState),
     [conversationState],
   );
+  const chatRuntimeHost = useMemo(() => createChatRuntimeHost(), []);
 
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -1375,7 +1374,6 @@ export function ChatPage(props: ChatPageProps) {
   const ensureGatewayBridgeConversationReadyRef = useRef<
     (id: string, options?: EnsureGatewayBridgeConversationReadyOptions) => Promise<string>
   >(async (id) => id.trim());
-  const appliedGatewayHistoryTruncationsRef = useRef(new Map<string, string>());
   const stopSendingActionRef = useRef<() => void>(() => undefined);
   const hydratingConversationIdRef = useRef<string | null>(hydratingConversationId);
   const hydrationFailedConversationIdRef = useRef<string | null>(hydrationFailedConversationId);
@@ -1472,17 +1470,14 @@ export function ChatPage(props: ChatPageProps) {
         : [],
     [terminalProjectPathKey, terminalSessions],
   );
-  const projectToolsFileTreeOpen = isProjectToolsFileTreeOpen(
+  const rightDockProjectState = getRightDockProjectState(
     settings.customSettings,
     terminalProjectPathKey,
   );
-  const projectToolsTunnelOpen = isProjectToolsTunnelOpen(
+  const rightDockFileTreeOpen = isRightDockSingletonTabOpen(
     settings.customSettings,
     terminalProjectPathKey,
-  );
-  const projectToolsSshTunnelOpen = isProjectToolsSshTunnelOpen(
-    settings.customSettings,
-    terminalProjectPathKey,
+    "fileTree",
   );
   const associatedSshHostIds = getSshProjectHostIds(settings.ssh, terminalProjectPathKey);
   const terminalDisabledMessage = !isAgentMode
@@ -1564,21 +1559,21 @@ export function ChatPage(props: ChatPageProps) {
     setWorkspaceImagePreviewOpenRequest(null);
   }, []);
   useEffect(() => {
-    const previousOpen = previousProjectToolsFileTreeOpenRef.current;
-    previousProjectToolsFileTreeOpenRef.current = projectToolsFileTreeOpen;
-    if (projectToolsFileTreeOpen && workspaceEditorCleanupPending) {
+    const previousOpen = previousRightDockFileTreeOpenRef.current;
+    previousRightDockFileTreeOpenRef.current = rightDockFileTreeOpen;
+    if (rightDockFileTreeOpen && workspaceEditorCleanupPending) {
       setWorkspaceEditorCleanupPending(false);
     }
-    if (previousOpen && !projectToolsFileTreeOpen && workspaceEditorMounted) {
+    if (previousOpen && !rightDockFileTreeOpen && workspaceEditorMounted) {
       setWorkspaceEditorCleanupPending(true);
       setWorkspaceEditorOpen(true);
       requestWorkspaceEditorClose();
     }
-    if (previousOpen && !projectToolsFileTreeOpen && workspaceImagePreviewMounted) {
+    if (previousOpen && !rightDockFileTreeOpen && workspaceImagePreviewMounted) {
       requestWorkspaceImagePreviewClose();
     }
   }, [
-    projectToolsFileTreeOpen,
+    rightDockFileTreeOpen,
     requestWorkspaceEditorClose,
     requestWorkspaceImagePreviewClose,
     workspaceEditorCleanupPending,
@@ -1771,7 +1766,6 @@ export function ChatPage(props: ChatPageProps) {
       if (!key) return;
       composerDraftCacheRef.current.delete(key);
       locallySyncedHistoryUpdatedAtRef.current.delete(key);
-      appliedGatewayHistoryTruncationsRef.current.delete(key);
       gatewayBridgeHistorySummaryRef.current.delete(key);
       pendingUploadsByConversationRef.current.delete(key);
       clearMemoryExtractorState(key);
@@ -2070,7 +2064,7 @@ export function ChatPage(props: ChatPageProps) {
             getDefaultWorkspaceProjectPath(prev.system),
           ),
         };
-        return removeProjectToolsProjectState(nextSettings, pathKey);
+        return removeRightDockProjectState(nextSettings, pathKey);
       });
       setProjectRenamingId((current) => (current === project.id ? null : current));
       setProjectRenameDraft("");
@@ -2172,7 +2166,7 @@ export function ChatPage(props: ChatPageProps) {
             );
           }
           if (pathKey && terminalProjectPathKey === pathKey) {
-            setProjectToolsPanelOpen(false);
+            setRightDockOpen(false);
             setTerminalSessions((current) =>
               current.filter((session) => !terminalSessionBelongsToProject(session, pathKey)),
             );
@@ -2320,12 +2314,55 @@ export function ChatPage(props: ChatPageProps) {
     }
   }
 
+  function applyGatewayBridgeRebase(conversationId: string, baseMessageRef: HistoryMessageRef) {
+    const targetConversationId = conversationId.trim();
+    if (!targetConversationId) {
+      throw new Error("Remote edit_resend requires conversation_id.");
+    }
+    const sourceEntry =
+      conversationRuntimeCacheRef.current.get(targetConversationId) ??
+      (targetConversationId === currentConversationIdRef.current
+        ? buildRuntimeEntryFromVisibleState()
+        : null);
+    if (!sourceEntry) {
+      throw new Error(`Conversation is not available for edit_resend: ${targetConversationId}`);
+    }
+    if (!sourceEntry.state.segments[baseMessageRef.segmentIndex]) {
+      throw new Error("Remote edit_resend base_message_ref segment was not found.");
+    }
+
+    const nextState = truncateConversationFromMessage(sourceEntry.state, baseMessageRef);
+    const nextEntry = createConversationRuntimeEntry({
+      ...sourceEntry,
+      state: nextState,
+    });
+    setConversationRuntimeCacheEntry(
+      conversationRuntimeCacheRef.current,
+      targetConversationId,
+      nextEntry,
+    );
+    persistedConversationStateRef.current.delete(targetConversationId);
+    if (currentConversationIdRef.current === targetConversationId) {
+      syncVisibleConversationRuntime(targetConversationId, nextEntry);
+    }
+
+    const keepParentToolCallIds = collectRetainedSubagentParentToolCallIds(nextState);
+    subagentRuntimeManagerRef.current.invalidateConversation(targetConversationId);
+    void pruneSubagentRunsForConversation({
+      parentConversationId: targetConversationId,
+      keepParentToolCallIds,
+    }).catch((error) => {
+      console.warn("gateway edit_resend subagent prune failed", error);
+    });
+  }
+
   async function ensureGatewayBridgeConversationReady(
     targetConversationId: string,
     options?: EnsureGatewayBridgeConversationReadyOptions,
   ) {
     const requestedConversationId = targetConversationId.trim();
-    let forceHydrate = options?.forceHydrate === true;
+    const baseMessageRef = options?.baseMessageRef;
+    const rebased = options?.rebased === true || Boolean(baseMessageRef);
     if (!requestedConversationId) {
       const nextIdentity = createConversationIdentity();
       setConversationRuntimeCacheEntry(
@@ -2353,27 +2390,15 @@ export function ChatPage(props: ChatPageProps) {
     }
 
     const cached = conversationRuntimeCacheRef.current.get(requestedConversationId);
-    if (forceHydrate) {
-      const appliedTruncation =
-        appliedGatewayHistoryTruncationsRef.current.get(requestedConversationId);
-      if (
-        appliedTruncation &&
-        appliedTruncation === options?.historyTruncationKey &&
-        cached &&
-        persistedConversationStateRef.current.has(requestedConversationId)
-      ) {
-        forceHydrate = false;
-        appliedGatewayHistoryTruncationsRef.current.delete(requestedConversationId);
-      } else {
-        persistedConversationStateRef.current.delete(requestedConversationId);
-      }
+    if (rebased) {
+      persistedConversationStateRef.current.delete(requestedConversationId);
     }
     const isPendingHistoryItem = historyItemsRef.current.some(
       (item) => item.id === requestedConversationId && item.isPending,
     );
     const shouldHydrateFromHistory =
       !knownConversation ||
-      forceHydrate ||
+      rebased ||
       hydratingConversationIdRef.current === requestedConversationId ||
       hydrationFailedConversationIdRef.current === requestedConversationId ||
       !cached ||
@@ -2382,6 +2407,9 @@ export function ChatPage(props: ChatPageProps) {
         !isPendingHistoryItem);
 
     if (!shouldHydrateFromHistory) {
+      if (rebased && baseMessageRef) {
+        applyGatewayBridgeRebase(requestedConversationId, baseMessageRef);
+      }
       return requestedConversationId;
     }
 
@@ -2419,6 +2447,9 @@ export function ChatPage(props: ChatPageProps) {
     }
     if (hydrationFailedConversationIdRef.current === record.id) {
       setHydrationFailedConversationId(null);
+    }
+    if (rebased && baseMessageRef) {
+      applyGatewayBridgeRebase(record.id, baseMessageRef);
     }
     return record.id;
   }
@@ -2607,18 +2638,12 @@ export function ChatPage(props: ChatPageProps) {
   useGatewayBridgeListeners({
     currentConversationIdRef,
     conversationRuntimeCacheRef,
-    persistedConversationStateRef,
-    appliedHistoryTruncationsRef: appliedGatewayHistoryTruncationsRef,
     historyItemsRef,
     ensureGatewayBridgeConversationReadyRef,
     sendActionRef,
     queueGatewayBridgeEventForRequest,
     isConversationRunning,
     getConversationAbortController,
-    syncVisibleConversationRuntime,
-    invalidateSubagentsForConversation: (conversationId) => {
-      subagentRuntimeManagerRef.current.invalidateConversation(conversationId);
-    },
   });
 
   const enableManagedSkills = useCallback(
@@ -2643,6 +2668,7 @@ export function ChatPage(props: ChatPageProps) {
     selectedSystemToolIdsOverride?: SystemToolId[];
     runtimeControlsOverride?: ChatRuntimeControls;
     gatewayBridgeRequestOverride?: ActiveGatewayBridgeRequest | null;
+    beforeRuntimeStart?: () => Promise<void>;
     afterInitialHistoryPersist?: () => Promise<void>;
   }) {
     const overrideConversationId = overrides?.conversationIdOverride?.trim() ?? "";
@@ -2968,7 +2994,6 @@ export function ChatPage(props: ChatPageProps) {
         return;
       }
       gatewayRunStarted = true;
-      gatewayBridgeEvents.queueStarted();
       gatewayBridgeEvents.queueToken("", { round: 0 });
       queueGatewayConversationActivity(true);
     }
@@ -2996,8 +3021,6 @@ export function ChatPage(props: ChatPageProps) {
       }
     }
 
-    const shouldSynchronizeInitialPersistBeforeGatewayStream =
-      Boolean(gatewayBridgeRequest) || hasRemoteGatewayTarget;
     // Persist the user turn immediately so WebUI/GUI sidebars can surface the
     // latest conversation before the assistant round finishes.
     const initialPersist = persistConversationWithHistorySync({
@@ -3010,13 +3033,13 @@ export function ChatPage(props: ChatPageProps) {
       fallbackTitle,
       createdAt,
       titlePromise,
-      titleLookahead: !shouldSynchronizeInitialPersistBeforeGatewayStream,
+      titleLookahead: true,
     });
     markConversationRunStarted();
-    if (overrides?.afterInitialHistoryPersist) {
+    if (overrides?.afterInitialHistoryPersist && !overrides.beforeRuntimeStart) {
       const persisted = await initialPersist;
       if (!persisted) {
-        const message = "历史记录保存失败，已取消子 Agent 回滚与重发。";
+        const message = "历史记录保存失败，已取消回滚与重发。";
         setConversationErrorState(message);
         gatewayBridgeEvents.emitError(message, conversationId);
         gatewayBridgeEvents.close();
@@ -3026,31 +3049,46 @@ export function ChatPage(props: ChatPageProps) {
       try {
         await overrides.afterInitialHistoryPersist();
       } catch (error) {
-        const message = asErrorMessage(error, "回滚子 Agent 历史失败");
+        const message = asErrorMessage(error, "回滚历史失败");
         setConversationErrorState(message);
         gatewayBridgeEvents.emitError(message, conversationId);
         gatewayBridgeEvents.close();
         markConversationRunStopped();
         return;
       }
-      acknowledgeGatewayRunStarted();
     } else {
-      if (shouldSynchronizeInitialPersistBeforeGatewayStream) {
-        const persisted = await initialPersist;
-        if (!persisted) {
-          const message = "历史记录保存失败，已取消本次远程对话。";
+      const initialPersistConfirmation = initialPersist
+        .then(async (persisted) => {
+          if (!persisted) {
+            console.warn(
+              "initial conversation history persist did not complete before chat runtime",
+            );
+            return false;
+          }
+          if (overrides?.afterInitialHistoryPersist) {
+            await overrides.afterInitialHistoryPersist();
+          }
+          return true;
+        })
+        .catch((error) => {
+          console.warn("initial conversation history persist confirmation failed", error);
+          return false;
+        });
+      if (overrides?.beforeRuntimeStart) {
+        try {
+          await overrides.beforeRuntimeStart();
+        } catch (error) {
+          const message = asErrorMessage(error, "启动远程对话运行失败");
           setConversationErrorState(message);
           gatewayBridgeEvents.emitError(message, conversationId);
           gatewayBridgeEvents.close();
           markConversationRunStopped();
           return;
         }
-        acknowledgeGatewayRunStarted();
-      } else {
-        void initialPersist;
-        acknowledgeGatewayRunStarted();
       }
+      void initialPersistConfirmation;
     }
+    acknowledgeGatewayRunStarted();
     let activeCompactionRollback: {
       state: ConversationViewState;
       composerText?: string;
@@ -3613,127 +3651,138 @@ export function ChatPage(props: ChatPageProps) {
 
     try {
       if (effectiveIsAgentMode) {
-        await runAgentConversationTurn({
-          providerId,
-          model,
-          runtime: {
-            baseUrl: providerConfig.baseUrl,
-            apiKey: providerConfig.apiKey,
-            requestFormat: providerConfig.requestFormat,
-            reasoning: providerConfig.reasoning,
-            promptCachingEnabled: providerConfig.promptCachingEnabled,
-            nativeWebSearchEnabled: providerConfig.nativeWebSearchEnabled,
-            modelConfig: providerConfig.modelConfig,
+        await chatRuntimeHost.runTurn({
+          mode: "agent",
+          params: {
+            providerId,
+            model,
+            runtime: {
+              baseUrl: providerConfig.baseUrl,
+              apiKey: providerConfig.apiKey,
+              requestFormat: providerConfig.requestFormat,
+              reasoning: providerConfig.reasoning,
+              promptCachingEnabled: providerConfig.promptCachingEnabled,
+              nativeWebSearchEnabled: providerConfig.nativeWebSearchEnabled,
+              modelConfig: providerConfig.modelConfig,
+            },
+            runtimeModel,
+            selectedModel,
+            memoryExtractionModel,
+            onMemoryExtractionModelFailure: handleMemoryExtractionModelFailure,
+            effectiveWorkdir,
+            effectiveSkillsEnabled,
+            showSilentMemoryExtraction: effectiveIsAgentDevExecutionMode,
+            skillsRootDir: skillsRootDirForTools,
+            skillAccessPolicy: skillAccessPolicyForTools,
+            onManagedSkillsChanged: (change) => {
+              enableManagedSkills(change.names);
+            },
+            agentTemplates: settings.agents,
+            selectedSystemToolIds: effectiveSelectedSystemToolIds,
+            mcpSettings: settings.mcp,
+            updateMcpSettings: (nextMcp) => {
+              setSettings((prev) => updateMcp(prev, nextMcp));
+            },
+            enabledMcpServerIds,
+            selectableMcpServers,
+            remoteWebTunnelsEnabled: settings.remote.enableWebTunnels,
+            remoteGatewayOnline: canShareHistory,
+            sshHosts: settings.ssh.hosts,
+            associatedSshHostIds: effectiveAssociatedSshHostIds,
+            sshManagerRemoteAllowed:
+              !gatewayBridgeRequest || settings.remote.enableWebSshTerminal === true,
+            onSshSessionsChanged: (change) => {
+              if (change.action === "create") {
+                ensureSshTunnelToolTab(change.projectPathKey);
+              }
+            },
+            onTunnelsChanged: (change) => {
+              setTunnelRefreshToken((current) => current + 1);
+              if (change.action === "create") {
+                ensureTunnelToolTab(change.tunnel.projectPathKey);
+              }
+            },
+            sessionId,
+            conversationId,
+            conversationCwd,
+            fallbackTitle,
+            createdAt,
+            titlePromise,
+            transcriptStore,
+            gatewayBridgeEvents,
+            hookLifecycle,
+            conversationThrottleState,
+            conversationDebugLogger,
+            compactionDebugLogger,
+            subagentRuntimeManager: subagentRuntimeManagerRef.current,
+            getNextConversationState: () => nextConversationState,
+            applyConversationState,
+            buildCompactionContext,
+            buildPreparedContext,
+            maybeApplyPreCompaction,
+            compactDuringRun,
+            getRequestController: () => requestController,
+            renewRequestController,
+            resetLiveTranscript,
+            updateLiveRounds,
+            batchLiveRoundsUpdate,
+            updateToolStatus,
+            updateGatewayBridgeToolStatus,
+            isConversationVisible,
+            commitVisibleAbortedConversation,
+            updateConversationRuntimeEntry,
+            persistConversationWithHistorySync,
           },
-          runtimeModel,
-          selectedModel,
-          memoryExtractionModel,
-          onMemoryExtractionModelFailure: handleMemoryExtractionModelFailure,
-          effectiveWorkdir,
-          effectiveSkillsEnabled,
-          showSilentMemoryExtraction: effectiveIsAgentDevExecutionMode,
-          skillsRootDir: skillsRootDirForTools,
-          skillAccessPolicy: skillAccessPolicyForTools,
-          onManagedSkillsChanged: (change) => {
-            enableManagedSkills(change.names);
-          },
-          agentTemplates: settings.agents,
-          selectedSystemToolIds: effectiveSelectedSystemToolIds,
-          mcpSettings: settings.mcp,
-          updateMcpSettings: (nextMcp) => {
-            setSettings((prev) => updateMcp(prev, nextMcp));
-          },
-          enabledMcpServerIds,
-          selectableMcpServers,
-          remoteWebTunnelsEnabled: settings.remote.enableWebTunnels,
-          remoteGatewayOnline: canShareHistory,
-          sshHosts: settings.ssh.hosts,
-          associatedSshHostIds: effectiveAssociatedSshHostIds,
-          sshManagerRemoteAllowed:
-            !gatewayBridgeRequest || settings.remote.enableWebSshTerminal === true,
-          onTunnelsChanged: (change) => {
-            setTunnelRefreshToken((current) => current + 1);
-            if (change.action === "create") {
-              openTunnelToolPanel(change.tunnel.projectPathKey);
-            }
-          },
-          sessionId,
-          conversationId,
-          conversationCwd,
-          fallbackTitle,
-          createdAt,
-          titlePromise,
-          transcriptStore,
-          gatewayBridgeEvents,
-          hookLifecycle,
-          conversationThrottleState,
-          conversationDebugLogger,
-          compactionDebugLogger,
-          subagentRuntimeManager: subagentRuntimeManagerRef.current,
-          getNextConversationState: () => nextConversationState,
-          applyConversationState,
-          buildCompactionContext,
-          buildPreparedContext,
-          maybeApplyPreCompaction,
-          compactDuringRun,
-          getRequestController: () => requestController,
-          renewRequestController,
-          resetLiveTranscript,
-          updateLiveRounds,
-          batchLiveRoundsUpdate,
-          updateToolStatus,
-          updateGatewayBridgeToolStatus,
-          isConversationVisible,
-          commitVisibleAbortedConversation,
-          updateConversationRuntimeEntry,
-          persistConversationWithHistorySync,
         });
       } else {
-        await runTextConversationTurn({
-          providerId,
-          model,
-          runtime: {
-            baseUrl: providerConfig.baseUrl,
-            apiKey: providerConfig.apiKey,
-            requestFormat: providerConfig.requestFormat,
-            reasoning: providerConfig.reasoning,
-            promptCachingEnabled: providerConfig.promptCachingEnabled,
-            nativeWebSearchEnabled: providerConfig.nativeWebSearchEnabled,
-            modelConfig: providerConfig.modelConfig,
+        await chatRuntimeHost.runTurn({
+          mode: "text",
+          params: {
+            providerId,
+            model,
+            runtime: {
+              baseUrl: providerConfig.baseUrl,
+              apiKey: providerConfig.apiKey,
+              requestFormat: providerConfig.requestFormat,
+              reasoning: providerConfig.reasoning,
+              promptCachingEnabled: providerConfig.promptCachingEnabled,
+              nativeWebSearchEnabled: providerConfig.nativeWebSearchEnabled,
+              modelConfig: providerConfig.modelConfig,
+            },
+            runtimeModel,
+            selectedModel,
+            memoryExtractionModel,
+            onMemoryExtractionModelFailure: handleMemoryExtractionModelFailure,
+            sessionId,
+            conversationId,
+            conversationCwd,
+            fallbackTitle,
+            createdAt,
+            titlePromise,
+            transcriptStore,
+            gatewayBridgeEvents,
+            hookLifecycle,
+            conversationThrottleState,
+            conversationDebugLogger,
+            recoveryDebugLogger,
+            compactionDebugLogger,
+            getNextConversationState: () => nextConversationState,
+            applyConversationState,
+            buildCompactionContext,
+            buildPreparedContext,
+            maybeApplyPreCompaction,
+            compactDuringRun,
+            getRequestController: () => requestController,
+            renewRequestController,
+            resetLiveTranscript,
+            appendDraftAssistantText,
+            batchLiveRoundsUpdate,
+            updateGatewayBridgeToolStatus,
+            isConversationVisible,
+            commitVisibleAbortedConversation,
+            updateConversationRuntimeEntry,
+            persistConversationWithHistorySync,
           },
-          runtimeModel,
-          selectedModel,
-          memoryExtractionModel,
-          onMemoryExtractionModelFailure: handleMemoryExtractionModelFailure,
-          sessionId,
-          conversationId,
-          conversationCwd,
-          fallbackTitle,
-          createdAt,
-          titlePromise,
-          transcriptStore,
-          gatewayBridgeEvents,
-          hookLifecycle,
-          conversationThrottleState,
-          conversationDebugLogger,
-          recoveryDebugLogger,
-          compactionDebugLogger,
-          getNextConversationState: () => nextConversationState,
-          applyConversationState,
-          buildCompactionContext,
-          buildPreparedContext,
-          maybeApplyPreCompaction,
-          compactDuringRun,
-          getRequestController: () => requestController,
-          renewRequestController,
-          resetLiveTranscript,
-          appendDraftAssistantText,
-          batchLiveRoundsUpdate,
-          updateGatewayBridgeToolStatus,
-          isConversationVisible,
-          commitVisibleAbortedConversation,
-          updateConversationRuntimeEntry,
-          persistConversationWithHistorySync,
         });
       }
     } catch (err) {
@@ -4344,12 +4393,12 @@ export function ChatPage(props: ChatPageProps) {
           sidebarOpen={sidebarOpen}
           onToggle={handleToggleSidebar}
           onOpenSettings={() => onOpenSettings()}
+          appUpdate={appUpdate}
         />
         {/* ---- Sidebar ---- */}
         <ChatHistorySidebar
           items={historyItems}
           currentConversationId={currentConversationId}
-          isBusy={isSending}
           runningConversationIds={sidebarRunningConversationIds}
           isLoading={historyLoading}
           totalItems={historyTotal}
@@ -4408,12 +4457,12 @@ export function ChatPage(props: ChatPageProps) {
           onCloseSidebar={handleCloseSidebar}
           onOpenSkillsHub={() => {
             cacheActiveComposerDraft();
-            setProjectToolsPanelOpen(false);
+            setRightDockOpen(false);
             setActiveView("skills-hub");
           }}
           onOpenMcpHub={() => {
             cacheActiveComposerDraft();
-            setProjectToolsPanelOpen(false);
+            setRightDockOpen(false);
             setActiveView("mcp-hub");
           }}
         />
@@ -4491,19 +4540,19 @@ export function ChatPage(props: ChatPageProps) {
                     <Button
                       variant="ghost"
                       size="icon"
-                      onClick={() => setProjectToolsPanelOpen((open) => !open)}
-                      disabled={Boolean(terminalDisabledMessage) && !projectToolsPanelOpen}
-                      aria-expanded={projectToolsPanelOpen}
+                      onClick={() => setRightDockOpen((open) => !open)}
+                      disabled={Boolean(terminalDisabledMessage) && !rightDockOpen}
+                      aria-expanded={rightDockOpen}
                       title={
-                        projectToolsPanelOpen
+                        rightDockOpen
                           ? "Collapse project tools panel"
                           : (terminalDisabledMessage ?? "Expand project tools panel")
                       }
                       className={`relative h-8 w-8 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-95 ${
-                        projectToolsPanelOpen ? "bg-muted text-foreground" : ""
+                        rightDockOpen ? "bg-muted text-foreground" : ""
                       }`}
                     >
-                      {projectToolsPanelOpen ? (
+                      {rightDockOpen ? (
                         <PanelRightClose className="h-4.5 w-4.5" />
                       ) : (
                         <PanelRightOpen className="h-4.5 w-4.5" />
@@ -4706,25 +4755,17 @@ export function ChatPage(props: ChatPageProps) {
           </Suspense>
         ) : null}
       </div>
-      <ProjectToolsPanel
-        isOpen={activeView === "chat" && projectToolsPanelOpen}
+      <RightDockPanel
+        isOpen={activeView === "chat" && rightDockOpen}
         collapseImmediately={activeView !== "chat"}
         projectPathKey={terminalProjectPathKey}
         cwd={terminalProjectPath}
         sessions={terminalSessions}
-        width={settings.customSettings.projectToolsPanel.width}
+        width={settings.customSettings.rightDock.width}
         theme={settings.theme}
         disabledMessage={terminalDisabledMessage}
-        activeTab={getProjectToolsPanelActiveTab(settings.customSettings, terminalProjectPathKey)}
-        tabOrder={getProjectToolsPanelTabOrder(settings.customSettings, terminalProjectPathKey)}
-        fileTreeOpen={projectToolsFileTreeOpen}
-        fileTreeState={getProjectToolsFileTreeProjectState(
-          settings.customSettings,
-          terminalProjectPathKey,
-        )}
-        gitReviewOpen={isProjectToolsGitReviewOpen(settings.customSettings, terminalProjectPathKey)}
-        tunnelOpen={projectToolsTunnelOpen}
-        sshTunnelOpen={projectToolsSshTunnelOpen}
+        projectState={rightDockProjectState}
+        fileTreeState={getRightDockFileTreeState(settings.customSettings, terminalProjectPathKey)}
         sshHosts={settings.ssh.hosts}
         associatedSshHostIds={associatedSshHostIds}
         client={tauriTerminalClient}
@@ -4734,42 +4775,12 @@ export function ChatPage(props: ChatPageProps) {
         tunnelEnabled={tunnelEnabled}
         tunnelDisabledMessage={tunnelDisabledMessage}
         tunnelRefreshToken={tunnelRefreshToken}
-        onWidthChange={(nextWidth) =>
-          setSettings((prev) =>
-            updateCustomSettings(prev, {
-              projectToolsPanel: {
-                ...prev.customSettings.projectToolsPanel,
-                width: nextWidth,
-              },
-            }),
-          )
+        onWidthChange={(nextWidth) => setSettings((prev) => updateRightDockWidth(prev, nextWidth))}
+        onProjectStateChange={(updater) =>
+          setSettings((prev) => updateRightDockProjectState(prev, terminalProjectPathKey, updater))
         }
-        onActiveTabChange={(activeTab) =>
-          setSettings((prev) =>
-            updateProjectToolsPanelActiveTab(prev, terminalProjectPathKey, activeTab),
-          )
-        }
-        onTabOrderChange={(tabOrder) =>
-          setSettings((prev) =>
-            updateProjectToolsPanelTabOrder(prev, terminalProjectPathKey, tabOrder),
-          )
-        }
-        onFileTreeOpenChange={(open) => {
-          setSettings((prev) => updateProjectToolsFileTreeOpen(prev, terminalProjectPathKey, open));
-        }}
         onFileTreeStateChange={(patch) =>
-          setSettings((prev) =>
-            updateProjectToolsFileTreeProjectState(prev, terminalProjectPathKey, patch),
-          )
-        }
-        onGitReviewOpenChange={(open) =>
-          setSettings((prev) => updateProjectToolsGitReviewOpen(prev, terminalProjectPathKey, open))
-        }
-        onTunnelOpenChange={(open) =>
-          setSettings((prev) => updateProjectToolsTunnelOpen(prev, terminalProjectPathKey, open))
-        }
-        onSshTunnelOpenChange={(open) =>
-          setSettings((prev) => updateProjectToolsSshTunnelOpen(prev, terminalProjectPathKey, open))
+          setSettings((prev) => updateRightDockFileTreeState(prev, terminalProjectPathKey, patch))
         }
         onSshProjectHostIdsChange={(hostIds) =>
           setSettings((prev) => updateSshProjectHostIds(prev, terminalProjectPathKey, hostIds))

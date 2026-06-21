@@ -6,6 +6,7 @@ const loader = createTsModuleLoader();
 const settings = loader.loadModule("src/lib/settings/index.ts");
 const normalize = loader.loadModule("src/lib/settings/normalize.ts");
 const sync = loader.loadModule("src/lib/settings/sync.ts");
+const RIGHT_DOCK_TAB_IDS = settings.RIGHT_DOCK_SINGLETON_TAB_IDS;
 
 test("basic provider field normalizers trim values and remove duplicate models", () => {
   assert.equal(normalize.normalizeBaseUrl(" https://api.example.com/v1/// "), "https://api.example.com/v1//");
@@ -117,6 +118,95 @@ test("settings normalization drops stale selected models and preserves valid sel
     selectedModel: { customProviderId: "provider-1", model: "gpt-5" },
   });
   assert.deepEqual(valid.selectedModel, { customProviderId: "provider-1", model: "gpt-5" });
+});
+
+test("settings normalization canonicalizes project keyed maps with Windows path compatibility", () => {
+  const normalized = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        { id: "host-a", host: "example.com", username: "me" },
+        { id: "host-b", host: "example.org", username: "me" },
+      ],
+      projectHostAssociations: {
+        "c:/repo": ["host-b"],
+        "C:\\Repo\\": ["host-a"],
+      },
+    },
+    customSettings: {
+      rightDock: {
+        projects: {
+          "C:\\Repo\\": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: [
+              RIGHT_DOCK_TAB_IDS.gitReview,
+              "",
+              RIGHT_DOCK_TAB_IDS.fileTree,
+              RIGHT_DOCK_TAB_IDS.fileTree,
+              "x".repeat(200),
+            ],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "C:\\Repo\\",
+                createdAt: 1,
+                uiState: {
+                  query: "legacy",
+                  selectedPath: "src\\main.ts",
+                  expandedPaths: ["", "src", "src\\components", "src"],
+                  revision: 2,
+                },
+              },
+              [RIGHT_DOCK_TAB_IDS.gitReview]: {
+                id: RIGHT_DOCK_TAB_IDS.gitReview,
+                kind: "gitReview",
+                projectPathKey: "C:\\Repo\\",
+                createdAt: 2,
+              },
+              invalid: {
+                id: "invalid",
+                kind: "unknown",
+                projectPathKey: "C:\\Repo\\",
+                createdAt: 3,
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.deepEqual(normalized.ssh.projectHostAssociations, {
+    "c:/repo": ["host-b"],
+  });
+  assert.deepEqual(Object.keys(normalized.customSettings.rightDock.projects), ["c:/repo"]);
+  assert.deepEqual(normalized.customSettings.rightDock.projects["c:/repo"], {
+    activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+    tabOrder: [RIGHT_DOCK_TAB_IDS.gitReview, RIGHT_DOCK_TAB_IDS.fileTree],
+    tabs: {
+      [RIGHT_DOCK_TAB_IDS.fileTree]: {
+        id: RIGHT_DOCK_TAB_IDS.fileTree,
+        kind: "fileTree",
+        projectPathKey: "c:/repo",
+        createdAt: 1,
+        uiState: {
+          query: "legacy",
+          selectedPath: "src/main.ts",
+          expandedPaths: ["", "src", "src/components"],
+          revision: 2,
+          stateVersion: 0,
+        },
+      },
+      [RIGHT_DOCK_TAB_IDS.gitReview]: {
+        id: RIGHT_DOCK_TAB_IDS.gitReview,
+        kind: "gitReview",
+        projectPathKey: "c:/repo",
+        createdAt: 2,
+      },
+    },
+    openVersion: 0,
+    stateVersion: 0,
+  });
 });
 
 test("custom settings conversation title model only keeps enabled provider models", () => {
@@ -460,36 +550,50 @@ test("gateway settings sync payload redacts provider api keys", () => {
     },
     customSettings: {
       conversationTitleModel: { customProviderId: "provider-1", model: "gpt-5" },
-      projectToolsPanel: {
+      rightDock: {
         width: 612,
-        activeTab: "tunnel",
-        activeTabs: {
-          " /workspace/a ": "tunnel",
-          "/workspace/b": "gitReview",
-          " ": "terminal",
-        },
-        tabOrders: {
-          "/workspace/a": ["__tunnel__", "__file_tree__"],
-        },
-      },
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/workspace/b", "  ", "/workspace/a", "/workspace/a"],
         projects: {
           "/workspace/a": {
-            query: "src",
-            selectedPath: "src/main.ts",
-            expandedPaths: ["", "src", "src/../bad", "src"],
-            revision: 3,
+            activeTabId: RIGHT_DOCK_TAB_IDS.tunnel,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.tunnel, RIGHT_DOCK_TAB_IDS.fileTree],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/workspace/a",
+                createdAt: 1,
+                uiState: {
+                  query: "src",
+                  selectedPath: "src/main.ts",
+                  expandedPaths: ["", "src", "src/../bad", "src"],
+                  revision: 3,
+                },
+              },
+              [RIGHT_DOCK_TAB_IDS.tunnel]: {
+                id: RIGHT_DOCK_TAB_IDS.tunnel,
+                kind: "tunnel",
+                projectPathKey: "/workspace/a",
+                createdAt: 2,
+              },
+            },
+            openVersion: 3,
+            stateVersion: 4,
+          },
+          "/workspace/b": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.gitReview,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.gitReview],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.gitReview]: {
+                id: RIGHT_DOCK_TAB_IDS.gitReview,
+                kind: "gitReview",
+                projectPathKey: "/workspace/b",
+                createdAt: 3,
+              },
+            },
+            openVersion: 2,
+            stateVersion: 2,
           },
         },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/workspace/b", "/workspace/a", "/workspace/a"],
-        openVersion: 2,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/workspace/b", "/workspace/a", "/workspace/a"],
-        openVersion: 3,
       },
     },
   });
@@ -506,28 +610,52 @@ test("gateway settings sync payload redacts provider api keys", () => {
     projectsCollapsed: false,
     recentCollapsed: false,
   });
-  assert.deepEqual(payload.customSettings.projectToolsFileTree, {
-    openProjectPathKeys: ["/workspace/a", "/workspace/b"],
-    openVersion: 0,
+  assert.deepEqual(payload.customSettings.rightDock, {
+    width: 612,
     projects: {
       "/workspace/a": {
-        query: "src",
-        selectedPath: "src/main.ts",
-        expandedPaths: ["", "src", "src/bad"],
-        revision: 3,
-        stateVersion: 0,
+        activeTabId: RIGHT_DOCK_TAB_IDS.tunnel,
+        tabOrder: [RIGHT_DOCK_TAB_IDS.tunnel, RIGHT_DOCK_TAB_IDS.fileTree],
+        tabs: {
+          [RIGHT_DOCK_TAB_IDS.fileTree]: {
+            id: RIGHT_DOCK_TAB_IDS.fileTree,
+            kind: "fileTree",
+            projectPathKey: "/workspace/a",
+            createdAt: 1,
+            uiState: {
+              query: "src",
+              selectedPath: "src/main.ts",
+              expandedPaths: ["", "src", "src/bad"],
+              revision: 3,
+              stateVersion: 0,
+            },
+          },
+          [RIGHT_DOCK_TAB_IDS.tunnel]: {
+            id: RIGHT_DOCK_TAB_IDS.tunnel,
+            kind: "tunnel",
+            projectPathKey: "/workspace/a",
+            createdAt: 2,
+          },
+        },
+        openVersion: 3,
+        stateVersion: 4,
+      },
+      "/workspace/b": {
+        activeTabId: RIGHT_DOCK_TAB_IDS.gitReview,
+        tabOrder: [RIGHT_DOCK_TAB_IDS.gitReview],
+        tabs: {
+          [RIGHT_DOCK_TAB_IDS.gitReview]: {
+            id: RIGHT_DOCK_TAB_IDS.gitReview,
+            kind: "gitReview",
+            projectPathKey: "/workspace/b",
+            createdAt: 3,
+          },
+        },
+        openVersion: 2,
+        stateVersion: 2,
       },
     },
   });
-  assert.deepEqual(payload.customSettings.projectToolsGitReview, {
-    openProjectPathKeys: ["/workspace/a", "/workspace/b"],
-    openVersion: 2,
-  });
-  assert.deepEqual(payload.customSettings.projectToolsTunnel, {
-    openProjectPathKeys: ["/workspace/a", "/workspace/b"],
-    openVersion: 3,
-  });
-  assert.equal(Object.hasOwn(payload.customSettings, "projectToolsPanel"), false);
   assert.deepEqual(payload.chatRuntimeControls, appSettings.chatRuntimeControls);
   assert.equal(payload.providerApiKeyUpdates, undefined);
 
@@ -605,6 +733,56 @@ test("gateway settings sync redacts ssh secrets and preserves configured state",
       proxyPassword: "proxy-password",
     },
   });
+});
+
+test("ssh agent hosts normalize without credential secrets or secret updates", () => {
+  const appSettings = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "agent-prod",
+          name: "Agent Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "agent",
+          password: "old-password",
+          passwordConfigured: true,
+          privateKey: "old-key",
+          privateKeyPath: "~/.ssh/id_rsa",
+          privateKeyConfigured: true,
+          privateKeyPassphrase: "old-passphrase",
+          privateKeyPassphraseConfigured: true,
+          proxy: {
+            type: "http",
+            url: "http://127.0.0.1",
+            port: 8080,
+            username: "proxy-user",
+            password: "proxy-password",
+          },
+        },
+      ],
+    },
+  });
+
+  const host = appSettings.ssh.hosts[0];
+  assert.equal(host.authType, "agent");
+  assert.equal(host.password, "");
+  assert.equal(host.passwordConfigured, false);
+  assert.equal(host.privateKey, "");
+  assert.equal(host.privateKeyPath, "");
+  assert.equal(host.privateKeyConfigured, false);
+  assert.equal(host.privateKeyPassphrase, "");
+  assert.equal(host.privateKeyPassphraseConfigured, false);
+
+  const payload = sync.buildGatewaySettingsSyncPayload(appSettings, {
+    includeProviderApiKeyUpdates: true,
+  });
+  assert.equal(payload.sshSecretUpdates, undefined);
+  assert.equal(payload.ssh.hosts[0].passwordConfigured, false);
+  assert.equal(payload.ssh.hosts[0].privateKeyConfigured, false);
+  assert.equal(payload.ssh.hosts[0].privateKeyPassphraseConfigured, false);
+  assert.equal(payload.ssh.hosts[0].proxy.password, "");
+  assert.equal(payload.ssh.hosts[0].proxy.passwordConfigured, true);
 });
 
 test("workspace project selection does not rewrite global system workdir or sync active project", () => {
@@ -698,477 +876,354 @@ test("gateway settings sync preserves active workspace project by path when ids 
   assert.equal(synced.system.activeWorkspaceProjectId, "desktop-project-a");
 });
 
-test("normalizes project tools panel from current settings", () => {
+test("normalizes right dock from current settings", () => {
   const currentShape = settings.normalizeSettings({
     customSettings: {
-      projectToolsPanel: {
+      rightDock: {
         width: 544,
-        activeTab: "terminal",
-        activeTabs: {
-          " /workspace/app ": "gitReview",
-          "/workspace/other": "invalid",
-          " ": "terminal",
-        },
-        tabOrders: {
-          " /workspace/app ": [
-            "terminal-2",
-            "",
-            "terminal-1",
-            "terminal-2",
-            "x".repeat(200),
-            "__file_tree__",
-          ],
-          " ": ["ignored"],
+        projects: {
+          " /workspace/app ": {
+            activeTabId: "missing",
+            tabOrder: [
+              "terminal-2",
+              "",
+              "terminal-1",
+              "terminal-2",
+              "x".repeat(200),
+              RIGHT_DOCK_TAB_IDS.fileTree,
+            ],
+            tabs: {
+              "terminal-1": {
+                id: "terminal-1",
+                kind: "terminal",
+                projectPathKey: "/workspace/app",
+                title: " Terminal 1 ",
+                createdAt: 2,
+                params: {
+                  sessionId: "terminal-1",
+                },
+              },
+              "terminal-2": {
+                id: "terminal-2",
+                kind: "terminal",
+                projectPathKey: "/workspace/app",
+                createdAt: 1,
+              },
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/workspace/app",
+                createdAt: 3,
+                uiState: {
+                  query: "src",
+                  selectedPath: "src/../main.ts",
+                  expandedPaths: ["", "src", "src\\components", "src"],
+                  revision: 4,
+                  stateVersion: 5,
+                },
+              },
+              invalid: {
+                id: "invalid",
+                kind: "fileTree",
+                projectPathKey: "/workspace/other",
+                createdAt: 4,
+              },
+            },
+            openVersion: 6,
+            stateVersion: 7,
+          },
+          " ": {
+            tabOrder: ["ignored"],
+            tabs: {},
+          },
         },
       },
     },
   });
 
-  assert.equal(currentShape.customSettings.projectToolsPanel.width, 544);
-  assert.equal(currentShape.customSettings.projectToolsPanel.activeTab, "terminal");
-  assert.deepEqual(currentShape.customSettings.projectToolsPanel.activeTabs, {
-    "/workspace/app": "gitReview",
-  });
-  assert.deepEqual(currentShape.customSettings.projectToolsPanel.tabOrders, {
-    "/workspace/app": ["terminal-2", "terminal-1", "__file_tree__"],
-  });
-});
-
-test("updates project tools panel active tab per project", () => {
-  const base = settings.normalizeSettings({
-    customSettings: {
-      projectToolsPanel: {
-        activeTab: "terminal",
+  assert.equal(currentShape.customSettings.rightDock.width, 544);
+  assert.deepEqual(Object.keys(currentShape.customSettings.rightDock.projects), [
+    "/workspace/app",
+  ]);
+  assert.deepEqual(currentShape.customSettings.rightDock.projects["/workspace/app"], {
+    activeTabId: "terminal-2",
+    tabOrder: ["terminal-2", "terminal-1", RIGHT_DOCK_TAB_IDS.fileTree],
+    tabs: {
+      "terminal-1": {
+        id: "terminal-1",
+        kind: "terminal",
+        projectPathKey: "/workspace/app",
+        title: "Terminal 1",
+        createdAt: 2,
+        params: {
+          sessionId: "terminal-1",
+        },
+      },
+      "terminal-2": {
+        id: "terminal-2",
+        kind: "terminal",
+        projectPathKey: "/workspace/app",
+        createdAt: 1,
+      },
+      [RIGHT_DOCK_TAB_IDS.fileTree]: {
+        id: RIGHT_DOCK_TAB_IDS.fileTree,
+        kind: "fileTree",
+        projectPathKey: "/workspace/app",
+        createdAt: 3,
+        uiState: {
+          query: "src",
+          selectedPath: "src/main.ts",
+          expandedPaths: ["", "src", "src/components"],
+          revision: 4,
+          stateVersion: 5,
+        },
       },
     },
-  });
-  const updated = settings.updateProjectToolsPanelActiveTab(base, "/workspace/app", "gitReview");
-
-  assert.equal(updated.customSettings.projectToolsPanel.activeTab, "gitReview");
-  assert.equal(
-    settings.getProjectToolsPanelActiveTab(updated.customSettings, "/workspace/app"),
-    "gitReview",
-  );
-  assert.equal(
-    settings.getProjectToolsPanelActiveTab(updated.customSettings, "/workspace/other"),
-    "gitReview",
-  );
-  assert.deepEqual(updated.customSettings.projectToolsPanel.activeTabs, {
-    "/workspace/app": "gitReview",
+    openVersion: 6,
+    stateVersion: 7,
   });
 });
 
-test("updates project tools panel tab order per project", () => {
+test("opens right dock singleton tabs and updates file tree state per project", () => {
   const base = settings.normalizeSettings({});
-  const updated = settings.updateProjectToolsPanelTabOrder(base, "/workspace/app", [
-    "terminal-2",
-    "terminal-1",
-    "terminal-2",
-    "__file_tree__",
-  ]);
+  const opened = settings.openRightDockSingletonTab(base, "/workspace/app", "gitReview");
+  const openedState = settings.getRightDockProjectState(
+    opened.customSettings,
+    "/workspace/app",
+  );
 
-  assert.deepEqual(settings.getProjectToolsPanelTabOrder(updated.customSettings, "/workspace/app"), [
-    "terminal-2",
-    "terminal-1",
-    "__file_tree__",
-  ]);
+  assert.equal(openedState.activeTabId, RIGHT_DOCK_TAB_IDS.gitReview);
+  assert.deepEqual(openedState.tabOrder, [RIGHT_DOCK_TAB_IDS.gitReview]);
+  assert.equal(openedState.tabs[RIGHT_DOCK_TAB_IDS.gitReview].kind, "gitReview");
+  assert.equal(openedState.tabs[RIGHT_DOCK_TAB_IDS.gitReview].projectPathKey, "/workspace/app");
+  assert.equal(openedState.openVersion, 1);
+  assert.equal(openedState.stateVersion, 1);
 
-  const cleared = settings.updateProjectToolsPanelTabOrder(updated, "/workspace/app", []);
-  assert.deepEqual(settings.getProjectToolsPanelTabOrder(cleared.customSettings, "/workspace/app"), []);
-});
-
-test("updates project file tree synced state per project", () => {
-  const base = settings.normalizeSettings({});
-  const updated = settings.updateProjectToolsFileTreeProjectState(base, "/workspace/app", {
+  const updated = settings.updateRightDockFileTreeState(opened, "/workspace/app", {
     query: "x".repeat(250),
     selectedPath: "src/../main.ts",
     expandedPaths: ["", "src", "src/../bad", "src\\components", "src"],
     bumpRevision: true,
     bumpStateVersion: true,
   });
+  const updatedState = settings.getRightDockProjectState(
+    updated.customSettings,
+    "/workspace/app",
+  );
 
-  assert.deepEqual(updated.customSettings.projectToolsFileTree.projects["/workspace/app"], {
+  assert.equal(updatedState.activeTabId, RIGHT_DOCK_TAB_IDS.gitReview);
+  assert.deepEqual(updatedState.tabOrder, [
+    RIGHT_DOCK_TAB_IDS.gitReview,
+    RIGHT_DOCK_TAB_IDS.fileTree,
+  ]);
+  assert.deepEqual(settings.getRightDockFileTreeState(updated.customSettings, "/workspace/app"), {
     query: "x".repeat(200),
     selectedPath: "src/main.ts",
     expandedPaths: ["", "src", "src/bad", "src/components"],
     revision: 1,
     stateVersion: 1,
   });
+  assert.equal(updatedState.openVersion, 1);
+  assert.equal(updatedState.stateVersion, 2);
 
-  const reopened = settings.updateProjectToolsFileTreeOpen(updated, "/workspace/app", true);
-  assert.deepEqual(reopened.customSettings.projectToolsFileTree.openProjectPathKeys, [
+  const activated = settings.openRightDockSingletonTab(updated, "/workspace/app", "fileTree");
+  const activatedState = settings.getRightDockProjectState(
+    activated.customSettings,
     "/workspace/app",
-  ]);
-  assert.equal(reopened.customSettings.projectToolsFileTree.openVersion, 1);
+  );
+  assert.equal(activatedState.activeTabId, RIGHT_DOCK_TAB_IDS.fileTree);
+  assert.equal(activatedState.openVersion, 1);
+  assert.equal(activatedState.stateVersion, 3);
   assert.equal(
-    settings.getProjectToolsFileTreeProjectState(reopened.customSettings, "/workspace/app")
-      .revision,
-    1,
+    settings.isRightDockSingletonTabOpen(activated.customSettings, "/workspace/app", "fileTree"),
+    true,
   );
 });
 
-test("settings reload preserves session-only project tools state", () => {
-  const current = settings.normalizeSettings({
-    customSettings: {
-      projectToolsPanel: {
-        width: 544,
-        activeTab: "gitReview",
+test("removes right dock state when a workspace project is deleted", () => {
+  const base = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        { id: "host-a", host: "example.com", username: "me" },
+        { id: "host-b", host: "example.org", username: "me" },
+      ],
+      projectHostAssociations: {
+        "/workspace/app": ["host-a"],
+        "/workspace/other": ["host-b"],
       },
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 4,
+    },
+    customSettings: {
+      rightDock: {
         projects: {
           "/workspace/app": {
-            query: "src",
-            selectedPath: "src/main.ts",
-            expandedPaths: ["", "src"],
-            revision: 2,
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: ["terminal-a", RIGHT_DOCK_TAB_IDS.fileTree],
+            tabs: {
+              "terminal-a": {
+                id: "terminal-a",
+                kind: "terminal",
+                projectPathKey: "/workspace/app",
+                createdAt: 1,
+              },
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/workspace/app",
+                createdAt: 2,
+              },
+            },
+            openVersion: 3,
+            stateVersion: 4,
+          },
+          "/workspace/other": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.gitReview,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.gitReview],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.gitReview]: {
+                id: RIGHT_DOCK_TAB_IDS.gitReview,
+                kind: "gitReview",
+                projectPathKey: "/workspace/other",
+                createdAt: 3,
+              },
+            },
+            openVersion: 5,
             stateVersion: 6,
           },
         },
       },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 5,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 6,
-      },
     },
   });
+
+  const cleaned = settings.removeRightDockProjectState(base, "/workspace/app");
+
+  assert.deepEqual(cleaned.ssh.projectHostAssociations, {
+    "/workspace/other": ["host-b"],
+  });
+  assert.deepEqual(cleaned.customSettings.rightDock.projects["/workspace/app"], {
+    tabOrder: [],
+    tabs: {},
+    openVersion: 4,
+    stateVersion: 5,
+  });
+  assert.deepEqual(cleaned.customSettings.rightDock.projects["/workspace/other"].tabOrder, [
+    RIGHT_DOCK_TAB_IDS.gitReview,
+  ]);
+  assert.equal(settings.removeRightDockProjectState(cleaned, "/workspace/app"), cleaned);
+});
+
+test("settings reload uses persisted right dock state only", () => {
   const reloaded = settings.normalizeSettings({
     locale: "en-US",
     customSettings: {
-      projectToolsPanel: {
+      rightDock: {
         width: 720,
-        activeTab: "terminal",
-        tabOrders: {
-          "/workspace/app": ["terminal-1"],
+        projects: {
+          "/workspace/app": {
+            tabOrder: ["terminal-1"],
+            tabs: {
+              "terminal-1": {
+                id: "terminal-1",
+                kind: "terminal",
+                projectPathKey: "/workspace/app",
+                createdAt: 1,
+              },
+            },
+          },
         },
       },
-      projectToolsFileTree: {},
-      projectToolsGitReview: {},
-      projectToolsTunnel: {},
     },
   });
 
-  const merged = settings.preserveProjectToolsSessionState(reloaded, current);
-
-  assert.equal(merged.locale, "en-US");
-  assert.equal(merged.customSettings.projectToolsPanel.width, 720);
-  assert.equal(merged.customSettings.projectToolsPanel.activeTab, "terminal");
-  assert.deepEqual(merged.customSettings.projectToolsPanel.tabOrders, {
-    "/workspace/app": ["terminal-1"],
-  });
-  assert.deepEqual(merged.customSettings.projectToolsFileTree.openProjectPathKeys, [
-    "/workspace/app",
-  ]);
-  assert.deepEqual(merged.customSettings.projectToolsFileTree.projects["/workspace/app"], {
-    query: "src",
-    selectedPath: "src/main.ts",
-    expandedPaths: ["", "src"],
-    revision: 2,
-    stateVersion: 6,
-  });
-  assert.deepEqual(merged.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/workspace/app",
-  ]);
-  assert.equal(merged.customSettings.projectToolsGitReview.openVersion, 5);
-  assert.deepEqual(merged.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/workspace/app",
-  ]);
-  assert.equal(merged.customSettings.projectToolsTunnel.openVersion, 6);
-
-  const loadedWithProjectTools = settings.normalizeSettings({
-    customSettings: {
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/loaded/project"],
-        openVersion: 1,
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/loaded/project"],
-        openVersion: 1,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/loaded/project"],
-        openVersion: 1,
-      },
-    },
-  });
-  const emptyCurrent = settings.normalizeSettings({});
-  const loadedOnly = settings.preserveProjectToolsSessionState(
-    loadedWithProjectTools,
-    emptyCurrent,
-  );
-
-  assert.deepEqual(loadedOnly.customSettings.projectToolsFileTree.openProjectPathKeys, [
-    "/loaded/project",
-  ]);
-  assert.deepEqual(loadedOnly.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/loaded/project",
-  ]);
-  assert.deepEqual(loadedOnly.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/loaded/project",
+  assert.equal(reloaded.locale, "en-US");
+  assert.equal(reloaded.customSettings.rightDock.width, 720);
+  assert.deepEqual(reloaded.customSettings.rightDock.projects["/workspace/app"].tabOrder, [
+    "terminal-1",
   ]);
 });
 
-test("removes project tools state when a workspace project is deleted", () => {
-  const base = settings.normalizeSettings({
-    customSettings: {
-      projectToolsPanel: {
-        activeTab: "fileTree",
-        activeTabs: {
-          "/workspace/app": "fileTree",
-          "/workspace/other": "gitReview",
-        },
-        tabOrders: {
-          "/workspace/app": ["terminal-a", "__file_tree__"],
-          "/workspace/other": ["terminal-b"],
-        },
-      },
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/workspace/app", "/workspace/other"],
-        openVersion: 3,
-        projects: {
-          "/workspace/app": {
-            query: "src",
-            selectedPath: "src/main.ts",
-            expandedPaths: ["", "src"],
-            revision: 2,
-            stateVersion: 4,
-          },
-          "/workspace/other": {
-            query: "lib",
-            selectedPath: "lib/index.ts",
-            expandedPaths: ["", "lib"],
-            revision: 1,
-            stateVersion: 1,
-          },
-        },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/workspace/app", "/workspace/other"],
-        openVersion: 5,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/workspace/app", "/workspace/other"],
-        openVersion: 6,
-      },
-    },
-  });
-
-  const cleaned = settings.removeProjectToolsProjectState(base, "/workspace/app");
-
-  assert.deepEqual(cleaned.customSettings.projectToolsPanel.activeTabs, {
-    "/workspace/other": "gitReview",
-  });
-  assert.deepEqual(cleaned.customSettings.projectToolsPanel.tabOrders, {
-    "/workspace/other": ["terminal-b"],
-  });
-  assert.deepEqual(cleaned.customSettings.projectToolsFileTree.openProjectPathKeys, [
-    "/workspace/other",
-  ]);
-  assert.equal(cleaned.customSettings.projectToolsFileTree.openVersion, 4);
-  assert.deepEqual(Object.keys(cleaned.customSettings.projectToolsFileTree.projects), [
-    "/workspace/other",
-  ]);
-  assert.deepEqual(cleaned.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/workspace/other",
-  ]);
-  assert.equal(cleaned.customSettings.projectToolsGitReview.openVersion, 6);
-  assert.deepEqual(cleaned.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/workspace/other",
-  ]);
-  assert.equal(cleaned.customSettings.projectToolsTunnel.openVersion, 7);
-  assert.equal(settings.removeProjectToolsProjectState(cleaned, "/workspace/app"), cleaned);
-
-  const projectOnlyState = settings.normalizeSettings({
-    customSettings: {
-      projectToolsFileTree: {
-        openVersion: 7,
-        projects: {
-          "/workspace/app": {
-            query: "src",
-            selectedPath: "src/main.ts",
-            expandedPaths: ["", "src"],
-            stateVersion: 2,
-          },
-        },
-      },
-    },
-  });
-  const projectOnlyCleaned = settings.removeProjectToolsProjectState(
-    projectOnlyState,
-    "/workspace/app",
-  );
-  assert.equal(projectOnlyCleaned.customSettings.projectToolsFileTree.openVersion, 8);
-  assert.deepEqual(projectOnlyCleaned.customSettings.projectToolsFileTree.projects, {});
-
-  const gitReviewOnlyState = settings.normalizeSettings({
-    customSettings: {
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 9,
-      },
-    },
-  });
-  const gitReviewOnlyCleaned = settings.removeProjectToolsProjectState(
-    gitReviewOnlyState,
-    "/workspace/app",
-  );
-  assert.equal(gitReviewOnlyCleaned.customSettings.projectToolsGitReview.openVersion, 10);
-  assert.deepEqual(gitReviewOnlyCleaned.customSettings.projectToolsGitReview.openProjectPathKeys, []);
-
-  const tunnelOnlyState = settings.normalizeSettings({
-    customSettings: {
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 11,
-      },
-    },
-  });
-  const tunnelOnlyCleaned = settings.removeProjectToolsProjectState(
-    tunnelOnlyState,
-    "/workspace/app",
-  );
-  assert.equal(tunnelOnlyCleaned.customSettings.projectToolsTunnel.openVersion, 12);
-  assert.deepEqual(tunnelOnlyCleaned.customSettings.projectToolsTunnel.openProjectPathKeys, []);
-});
-
-test("gateway settings sync keeps project tools panel local and syncs project tool state", () => {
+test("gateway settings sync keeps right dock width local and syncs project state", () => {
   const current = settings.normalizeSettings({
     customSettings: {
-      projectToolsPanel: {
+      rightDock: {
         width: 612,
-        activeTab: "terminal",
-        activeTabs: {
-          "/desktop/project": "terminal",
-        },
-        tabOrders: {
-          "/desktop/project": ["desktop-terminal", "__file_tree__"],
-        },
-      },
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/desktop/project"],
-        openVersion: 1,
         projects: {
           "/desktop/project": {
-            query: "desktop",
-            selectedPath: "desktop.ts",
-            expandedPaths: ["", "src"],
-            revision: 1,
+            activeTabId: "desktop-terminal",
+            tabOrder: ["desktop-terminal"],
+            tabs: {
+              "desktop-terminal": {
+                id: "desktop-terminal",
+                kind: "terminal",
+                projectPathKey: "/desktop/project",
+                createdAt: 1,
+              },
+            },
+            openVersion: 1,
+            stateVersion: 1,
           },
-        },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/desktop/project"],
-        openVersion: 1,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/desktop/project"],
-        openVersion: 1,
-      },
-    },
-  });
-  const incoming = settings.normalizeSettings({
-    customSettings: {
-      projectToolsPanel: {
-        width: 360,
-        activeTab: "fileTree",
-        activeTabs: {
-          "/web/project": "fileTree",
-        },
-        tabOrders: {
-          "/web/project": ["web-terminal", "__file_tree__"],
-        },
-      },
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/web/project"],
-        openVersion: 2,
-        projects: {
-          "/web/project": {
-            query: "web",
-            selectedPath: "web.ts",
-            expandedPaths: ["", "packages"],
-            revision: 2,
-          },
-        },
-      },
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/web/project"],
-        openVersion: 2,
-      },
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/web/project"],
-        openVersion: 2,
-      },
-    },
-  });
-
-  const payload = sync.buildGatewaySettingsSyncPayload(incoming);
-  assert.equal(Object.hasOwn(payload.customSettings, "projectToolsPanel"), false);
-
-  const synced = sync.applyGatewaySettingsSyncPayload(current, payload);
-
-  assert.equal(synced.customSettings.projectToolsPanel.width, 612);
-  assert.equal(synced.customSettings.projectToolsPanel.activeTab, "terminal");
-  assert.deepEqual(synced.customSettings.projectToolsPanel.activeTabs, {
-    "/desktop/project": "terminal",
-  });
-  assert.deepEqual(synced.customSettings.projectToolsPanel.tabOrders, {
-    "/desktop/project": ["desktop-terminal", "__file_tree__"],
-  });
-  assert.deepEqual(synced.customSettings.projectToolsFileTree.openProjectPathKeys, [
-    "/web/project",
-  ]);
-  assert.deepEqual(synced.customSettings.projectToolsFileTree.projects["/web/project"], {
-    query: "web",
-    selectedPath: "web.ts",
-    expandedPaths: ["", "packages"],
-    revision: 2,
-    stateVersion: 0,
-  });
-  assert.deepEqual(synced.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/web/project",
-  ]);
-  assert.equal(synced.customSettings.projectToolsGitReview.openVersion, 2);
-  assert.deepEqual(synced.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/web/project",
-  ]);
-  assert.equal(synced.customSettings.projectToolsTunnel.openVersion, 2);
-});
-
-test("gateway settings sync ignores stale project file tree UI snapshots", () => {
-  const current = settings.normalizeSettings({
-    customSettings: {
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 2,
-        projects: {
-          "/workspace/app": {
-            query: "",
-            selectedPath: "default-project/test",
-            expandedPaths: ["", "default-project", "default-project/test"],
-            revision: 1,
+          "/shared/project": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.fileTree],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/shared/project",
+                createdAt: 2,
+                uiState: {
+                  query: "desktop",
+                  selectedPath: "desktop.ts",
+                  expandedPaths: ["", "src"],
+                  revision: 1,
+                  stateVersion: 3,
+                },
+              },
+            },
+            openVersion: 2,
             stateVersion: 3,
           },
         },
       },
     },
   });
-
-  const staleSynced = sync.applyGatewaySettingsSyncPayload(current, {
+  const incoming = settings.normalizeSettings({
     customSettings: {
-      projectToolsFileTree: {
-        openProjectPathKeys: [],
-        openVersion: 1,
+      rightDock: {
+        width: 360,
         projects: {
-          "/workspace/app": {
-            query: "",
-            selectedPath: "default-project/test",
-            expandedPaths: ["", "default-project"],
-            revision: 5,
+          "/web/project": {
+            activeTabId: "web-terminal",
+            tabOrder: ["web-terminal"],
+            tabs: {
+              "web-terminal": {
+                id: "web-terminal",
+                kind: "terminal",
+                projectPathKey: "/web/project",
+                createdAt: 3,
+              },
+            },
+            openVersion: 2,
+            stateVersion: 2,
+          },
+          "/shared/project": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.fileTree],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.fileTree]: {
+                id: RIGHT_DOCK_TAB_IDS.fileTree,
+                kind: "fileTree",
+                projectPathKey: "/shared/project",
+                createdAt: 4,
+                uiState: {
+                  query: "web",
+                  selectedPath: "web.ts",
+                  expandedPaths: ["", "packages"],
+                  revision: 2,
+                  stateVersion: 2,
+                },
+              },
+            },
+            openVersion: 5,
             stateVersion: 2,
           },
         },
@@ -1176,57 +1231,48 @@ test("gateway settings sync ignores stale project file tree UI snapshots", () =>
     },
   });
 
-  assert.deepEqual(staleSynced.customSettings.projectToolsFileTree.openProjectPathKeys, [
-    "/workspace/app",
+  const payload = sync.buildGatewaySettingsSyncPayload(incoming);
+  const synced = sync.applyGatewaySettingsSyncPayload(current, payload);
+
+  assert.equal(synced.customSettings.rightDock.width, 612);
+  assert.deepEqual(Object.keys(synced.customSettings.rightDock.projects).sort(), [
+    "/desktop/project",
+    "/shared/project",
+    "/web/project",
   ]);
-  assert.deepEqual(staleSynced.customSettings.projectToolsFileTree.projects["/workspace/app"], {
-    query: "",
-    selectedPath: "default-project/test",
-    expandedPaths: ["", "default-project", "default-project/test"],
-    revision: 5,
-    stateVersion: 3,
-  });
-
-  const newerSynced = sync.applyGatewaySettingsSyncPayload(staleSynced, {
-    customSettings: {
-      projectToolsFileTree: {
-        openProjectPathKeys: [],
-        openVersion: 3,
-        projects: {
-          "/workspace/app": {
-            query: "",
-            selectedPath: "default-project/test",
-            expandedPaths: ["", "default-project"],
-            revision: 5,
-            stateVersion: 4,
-          },
-        },
-      },
+  assert.deepEqual(
+    settings.getRightDockFileTreeState(synced.customSettings, "/shared/project"),
+    {
+      query: "desktop",
+      selectedPath: "desktop.ts",
+      expandedPaths: ["", "src"],
+      revision: 1,
+      stateVersion: 3,
     },
-  });
+  );
+  assert.equal(synced.customSettings.rightDock.projects["/shared/project"].openVersion, 5);
+  assert.equal(synced.customSettings.rightDock.projects["/shared/project"].stateVersion, 3);
+});
 
-  assert.deepEqual(newerSynced.customSettings.projectToolsFileTree.openProjectPathKeys, []);
-  assert.deepEqual(newerSynced.customSettings.projectToolsFileTree.projects["/workspace/app"], {
-    query: "",
-    selectedPath: "default-project/test",
-    expandedPaths: ["", "default-project"],
-    revision: 5,
-    stateVersion: 4,
-  });
-
-  const deletedProjectLocal = settings.removeProjectToolsProjectState(
+test("gateway settings sync uses right dock tombstones for deleted projects", () => {
+  const deletedProjectLocal = settings.removeRightDockProjectState(
     settings.normalizeSettings({
       customSettings: {
-        projectToolsFileTree: {
-          openProjectPathKeys: ["/workspace/deleted"],
-          openVersion: 4,
+        rightDock: {
           projects: {
             "/workspace/deleted": {
-              query: "old",
-              selectedPath: "src/old.ts",
-              expandedPaths: ["", "src"],
-              revision: 1,
-              stateVersion: 1,
+              activeTabId: RIGHT_DOCK_TAB_IDS.tunnel,
+              tabOrder: [RIGHT_DOCK_TAB_IDS.tunnel],
+              tabs: {
+                [RIGHT_DOCK_TAB_IDS.tunnel]: {
+                  id: RIGHT_DOCK_TAB_IDS.tunnel,
+                  kind: "tunnel",
+                  projectPathKey: "/workspace/deleted",
+                  createdAt: 1,
+                },
+              },
+              openVersion: 4,
+              stateVersion: 4,
             },
           },
         },
@@ -1234,143 +1280,64 @@ test("gateway settings sync ignores stale project file tree UI snapshots", () =>
     }),
     "/workspace/deleted",
   );
-  const deletedProjectSynced = sync.applyGatewaySettingsSyncPayload(deletedProjectLocal, {
+
+  const staleSynced = sync.applyGatewaySettingsSyncPayload(deletedProjectLocal, {
     customSettings: {
-      projectToolsFileTree: {
-        openProjectPathKeys: ["/workspace/deleted"],
-        openVersion: 4,
+      rightDock: {
         projects: {
           "/workspace/deleted": {
-            query: "old",
-            selectedPath: "src/old.ts",
-            expandedPaths: ["", "src"],
-            revision: 1,
-            stateVersion: 1,
+            activeTabId: RIGHT_DOCK_TAB_IDS.tunnel,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.tunnel],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.tunnel]: {
+                id: RIGHT_DOCK_TAB_IDS.tunnel,
+                kind: "tunnel",
+                projectPathKey: "/workspace/deleted",
+                createdAt: 1,
+              },
+            },
+            openVersion: 4,
+            stateVersion: 4,
           },
         },
       },
     },
   });
-  assert.deepEqual(deletedProjectSynced.customSettings.projectToolsFileTree.openProjectPathKeys, []);
-  assert.deepEqual(deletedProjectSynced.customSettings.projectToolsFileTree.projects, {});
-});
 
-test("gateway settings sync ignores stale project git review open snapshots", () => {
-  const current = settings.normalizeSettings({
-    customSettings: {
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 2,
-      },
-    },
+  assert.deepEqual(staleSynced.customSettings.rightDock.projects["/workspace/deleted"], {
+    tabOrder: [],
+    tabs: {},
+    openVersion: 5,
+    stateVersion: 5,
   });
-
-  const staleSynced = sync.applyGatewaySettingsSyncPayload(current, {
-    customSettings: {
-      projectToolsGitReview: {
-        openProjectPathKeys: [],
-        openVersion: 1,
-      },
-    },
-  });
-
-  assert.deepEqual(staleSynced.customSettings.projectToolsGitReview.openProjectPathKeys, [
-    "/workspace/app",
-  ]);
-  assert.equal(staleSynced.customSettings.projectToolsGitReview.openVersion, 2);
 
   const newerSynced = sync.applyGatewaySettingsSyncPayload(staleSynced, {
     customSettings: {
-      projectToolsGitReview: {
-        openProjectPathKeys: [],
-        openVersion: 3,
-      },
-    },
-  });
-
-  assert.deepEqual(newerSynced.customSettings.projectToolsGitReview.openProjectPathKeys, []);
-  assert.equal(newerSynced.customSettings.projectToolsGitReview.openVersion, 3);
-
-  const deletedProjectLocal = settings.removeProjectToolsProjectState(
-    settings.normalizeSettings({
-      customSettings: {
-        projectToolsGitReview: {
-          openProjectPathKeys: ["/workspace/deleted"],
-          openVersion: 4,
+      rightDock: {
+        projects: {
+          "/workspace/deleted": {
+            activeTabId: RIGHT_DOCK_TAB_IDS.tunnel,
+            tabOrder: [RIGHT_DOCK_TAB_IDS.tunnel],
+            tabs: {
+              [RIGHT_DOCK_TAB_IDS.tunnel]: {
+                id: RIGHT_DOCK_TAB_IDS.tunnel,
+                kind: "tunnel",
+                projectPathKey: "/workspace/deleted",
+                createdAt: 2,
+              },
+            },
+            openVersion: 6,
+            stateVersion: 6,
+          },
         },
       },
-    }),
-    "/workspace/deleted",
+    },
+  });
+
+  assert.equal(
+    newerSynced.customSettings.rightDock.projects["/workspace/deleted"].activeTabId,
+    RIGHT_DOCK_TAB_IDS.tunnel,
   );
-  const deletedProjectSynced = sync.applyGatewaySettingsSyncPayload(deletedProjectLocal, {
-    customSettings: {
-      projectToolsGitReview: {
-        openProjectPathKeys: ["/workspace/deleted"],
-        openVersion: 4,
-      },
-    },
-  });
-  assert.deepEqual(deletedProjectSynced.customSettings.projectToolsGitReview.openProjectPathKeys, []);
-  assert.equal(deletedProjectSynced.customSettings.projectToolsGitReview.openVersion, 5);
-});
-
-test("gateway settings sync ignores stale project tunnel open snapshots", () => {
-  const current = settings.normalizeSettings({
-    customSettings: {
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/workspace/app"],
-        openVersion: 2,
-      },
-    },
-  });
-
-  const staleSynced = sync.applyGatewaySettingsSyncPayload(current, {
-    customSettings: {
-      projectToolsTunnel: {
-        openProjectPathKeys: [],
-        openVersion: 1,
-      },
-    },
-  });
-
-  assert.deepEqual(staleSynced.customSettings.projectToolsTunnel.openProjectPathKeys, [
-    "/workspace/app",
-  ]);
-  assert.equal(staleSynced.customSettings.projectToolsTunnel.openVersion, 2);
-
-  const newerSynced = sync.applyGatewaySettingsSyncPayload(staleSynced, {
-    customSettings: {
-      projectToolsTunnel: {
-        openProjectPathKeys: [],
-        openVersion: 3,
-      },
-    },
-  });
-
-  assert.deepEqual(newerSynced.customSettings.projectToolsTunnel.openProjectPathKeys, []);
-  assert.equal(newerSynced.customSettings.projectToolsTunnel.openVersion, 3);
-
-  const deletedProjectLocal = settings.removeProjectToolsProjectState(
-    settings.normalizeSettings({
-      customSettings: {
-        projectToolsTunnel: {
-          openProjectPathKeys: ["/workspace/deleted"],
-          openVersion: 4,
-        },
-      },
-    }),
-    "/workspace/deleted",
-  );
-  const deletedProjectSynced = sync.applyGatewaySettingsSyncPayload(deletedProjectLocal, {
-    customSettings: {
-      projectToolsTunnel: {
-        openProjectPathKeys: ["/workspace/deleted"],
-        openVersion: 4,
-      },
-    },
-  });
-  assert.deepEqual(deletedProjectSynced.customSettings.projectToolsTunnel.openProjectPathKeys, []);
-  assert.equal(deletedProjectSynced.customSettings.projectToolsTunnel.openVersion, 5);
 });
 
 test("gateway settings sync keeps newer project conversation activity", () => {
@@ -1602,18 +1569,16 @@ test("gateway settings update payload omits unchanged empty ssh hosts for non-ss
     },
   });
   const staleWeb = settings.normalizeSettings({
-    customSettings: {
-      projectToolsSshTunnel: {
-        openProjectPathKeys: [],
-        openVersion: 0,
-      },
-    },
     ssh: {
       hosts: [],
       projectHostAssociations: {},
     },
   });
-  const nextWeb = settings.updateProjectToolsSshTunnelOpen(staleWeb, "/workspace/project", true);
+  const nextWeb = settings.openRightDockSingletonTab(
+    staleWeb,
+    "/workspace/project",
+    "sshTunnel",
+  );
 
   const update = sync.buildGatewaySettingsSyncUpdatePayload(staleWeb, nextWeb, {
     includeProviderApiKeyUpdates: true,
@@ -1630,10 +1595,17 @@ test("gateway settings update payload omits unchanged empty ssh hosts for non-ss
   assert.deepEqual(merged.ssh.projectHostAssociations, {
     "/workspace/project": ["prod"],
   });
-  assert.equal(settings.isProjectToolsSshTunnelOpen(merged.customSettings, "/workspace/project"), true);
+  assert.equal(
+    settings.isRightDockSingletonTabOpen(
+      merged.customSettings,
+      "/workspace/project",
+      "sshTunnel",
+    ),
+    true,
+  );
 });
 
-test("gateway settings update payload includes ssh when hosts are explicitly deleted", () => {
+test("gateway settings update payload uses sshPatch when hosts are explicitly deleted", () => {
   const current = settings.normalizeSettings({
     ssh: {
       hosts: [
@@ -1659,12 +1631,40 @@ test("gateway settings update payload includes ssh when hosts are explicitly del
     includeProviderApiKeyUpdates: true,
   });
 
-  assert.equal(Object.hasOwn(update, "ssh"), true);
-  assert.deepEqual(update.ssh.hosts, []);
-  assert.deepEqual(update.ssh.projectHostAssociations, {});
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshPatch.hostChanges, [
+    {
+      id: "prod",
+      before: {
+        ...current.ssh.hosts[0],
+        password: "",
+        passwordConfigured: false,
+        privateKey: "",
+        privateKeyConfigured: false,
+        privateKeyPassphrase: "",
+        privateKeyPassphraseConfigured: false,
+        proxy: {
+          type: "socks5",
+          url: "",
+          port: 0,
+          username: "",
+          password: "",
+          passwordConfigured: false,
+        },
+      },
+      after: null,
+    },
+  ]);
+  assert.deepEqual(update.sshPatch.projectAssociationChanges, [
+    {
+      pathKey: "/workspace/project",
+      before: ["prod"],
+      after: [],
+    },
+  ]);
 });
 
-test("gateway settings update payload includes ssh for secret-only ssh updates", () => {
+test("gateway settings update payload uses sshSecretUpdates for secret-only ssh updates", () => {
   const current = settings.normalizeSettings({
     ssh: {
       hosts: [
@@ -1696,7 +1696,8 @@ test("gateway settings update payload includes ssh for secret-only ssh updates",
     includeProviderApiKeyUpdates: true,
   });
 
-  assert.equal(Object.hasOwn(update, "ssh"), true);
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshPatch, {});
   assert.deepEqual(update.sshSecretUpdates, {
     prod: {
       password: "new-password",
@@ -1705,6 +1706,138 @@ test("gateway settings update payload includes ssh for secret-only ssh updates",
 
   const merged = sync.applyGatewaySettingsSyncPayload(current, update);
   assert.equal(merged.ssh.hosts[0].password, "new-password");
+});
+
+test("gateway settings update payload omits unchanged ssh secrets", () => {
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "prod",
+          name: "Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "prod-password",
+        },
+        {
+          id: "staging",
+          name: "Staging",
+          host: "staging.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "staging-password",
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          host: "prod.internal",
+        },
+        current.ssh.hosts[1],
+      ],
+    },
+  });
+
+  const update = sync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.equal(update.sshSecretUpdates, undefined);
+  assert.equal(update.sshPatch.hostChanges.length, 1);
+  assert.equal(update.sshPatch.hostChanges[0].id, "prod");
+});
+
+test("gateway settings update payload sends empty ssh secret updates when secrets are cleared", () => {
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "prod",
+          name: "Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "old-password",
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          password: "",
+          passwordConfigured: false,
+        },
+      ],
+    },
+  });
+
+  const update = sync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.equal(Object.hasOwn(update, "ssh"), false);
+  assert.deepEqual(update.sshSecretUpdates, {
+    prod: {
+      password: "",
+    },
+  });
+
+  const merged = sync.applyGatewaySettingsSyncPayload(current, update);
+  assert.equal(merged.ssh.hosts[0].password, "");
+  assert.equal(merged.ssh.hosts[0].passwordConfigured, false);
+});
+
+test("gateway settings update payload clears redacted configured ssh secrets", () => {
+  const current = settings.normalizeSettings({
+    ssh: {
+      hosts: [
+        {
+          id: "prod",
+          name: "Production",
+          host: "prod.example.com",
+          username: "deploy",
+          authType: "password",
+          password: "",
+          passwordConfigured: true,
+        },
+      ],
+    },
+  });
+  const next = settings.normalizeSettings({
+    ...current,
+    ssh: {
+      ...current.ssh,
+      hosts: [
+        {
+          ...current.ssh.hosts[0],
+          passwordConfigured: false,
+        },
+      ],
+    },
+  });
+
+  const update = sync.buildGatewaySettingsSyncUpdatePayload(current, next, {
+    includeProviderApiKeyUpdates: true,
+  });
+
+  assert.deepEqual(update.sshSecretUpdates, {
+    prod: {
+      password: "",
+    },
+  });
 });
 
 test("web storage redaction clears api keys but keeps configured state", () => {

@@ -9,11 +9,7 @@ import {
 } from "../../components/icons";
 
 import { SUPPORTED_LOCALES, useLocale } from "../../i18n";
-import {
-  type ExecutionMode,
-  type Theme,
-  updateSystem,
-} from "../../lib/settings";
+import { type ExecutionMode, type Theme, updateSystem } from "../../lib/settings";
 import { SYSTEM_TOOL_OPTIONS } from "../../lib/tools/systemToolOptions";
 import type { SettingsSectionProps } from "./types";
 

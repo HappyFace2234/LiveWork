@@ -1,12 +1,16 @@
 package server
 
 import (
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/tdewolff/parse/v2"
+	"github.com/tdewolff/parse/v2/css"
+	"golang.org/x/net/html"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
@@ -19,14 +23,7 @@ const (
 	tunnelResponseRewriteNone tunnelResponseRewriteKind = iota
 	tunnelResponseRewriteHTML
 	tunnelResponseRewriteCSS
-	tunnelResponseRewriteJavaScript
-)
-
-var (
-	tunnelHTMLQuotedAttrURLPattern = regexp.MustCompile(`(?i)(\b(?:href|src|action|poster|data|formaction)\s*=\s*)(["'])([^"']+)(["'])`)
-	tunnelHTMLBareAttrURLPattern   = regexp.MustCompile(`(?i)(\b(?:href|src|action|poster|data|formaction)\s*=\s*)([^\s"'<>]+)`)
-	tunnelJSQuotedURLPattern       = regexp.MustCompile(`(["'])(/[^"'\\]*)(["'])`)
-	tunnelCSSURLPattern            = regexp.MustCompile(`(?i)(url\(\s*)(["']?)([^"')]+)(["']?\s*\))`)
+	tunnelResponseRewriteJavaScript // kept for legacy tests/helpers; JS bodies are not rewritten.
 )
 
 func tunnelResponseRewriteKindFor(
@@ -67,7 +64,7 @@ func tunnelResponseRewriteKindFor(
 		mediaType == "text/ecmascript",
 		mediaType == "application/ecmascript",
 		strings.HasSuffix(mediaType, "+javascript"):
-		return tunnelResponseRewriteJavaScript
+		return tunnelResponseRewriteNone
 	default:
 		return tunnelResponseRewriteNone
 	}
@@ -102,57 +99,142 @@ func rewriteTunnelResponseBody(
 }
 
 func rewriteTunnelHTMLBody(input string, tunnel *gatewayv1.TunnelSummary) string {
-	input = tunnelHTMLQuotedAttrURLPattern.ReplaceAllStringFunc(input, func(match string) string {
-		parts := tunnelHTMLQuotedAttrURLPattern.FindStringSubmatch(match)
-		if len(parts) != 5 {
-			return match
-		}
-		rewritten := rewriteTunnelBodyURL(parts[3], tunnel)
-		if rewritten == parts[3] {
-			return match
-		}
-		return parts[1] + parts[2] + rewritten + parts[4]
-	})
+	tokenizer := html.NewTokenizer(strings.NewReader(input))
+	var builder strings.Builder
+	changed := false
 
-	return tunnelHTMLBareAttrURLPattern.ReplaceAllStringFunc(input, func(match string) string {
-		parts := tunnelHTMLBareAttrURLPattern.FindStringSubmatch(match)
-		if len(parts) != 3 {
-			return match
+	for {
+		tokenType := tokenizer.Next()
+		if tokenType == html.ErrorToken {
+			if errors := tokenizer.Err(); errors != nil && errors != io.EOF {
+				return input
+			}
+			break
 		}
-		rewritten := rewriteTunnelBodyURL(parts[2], tunnel)
-		if rewritten == parts[2] {
-			return match
+
+		raw := string(tokenizer.Raw())
+		if tokenType != html.StartTagToken && tokenType != html.SelfClosingTagToken {
+			builder.WriteString(raw)
+			continue
 		}
-		return parts[1] + rewritten
-	})
+
+		token := tokenizer.Token()
+		tokenChanged := false
+		for index := range token.Attr {
+			attr := &token.Attr[index]
+			key := strings.ToLower(strings.TrimSpace(attr.Key))
+			switch {
+			case isTunnelHTMLURLAttribute(key):
+				rewritten := rewriteTunnelBodyURL(attr.Val, tunnel)
+				if rewritten != attr.Val {
+					attr.Val = rewritten
+					tokenChanged = true
+				}
+			case key == "style":
+				rewritten := rewriteTunnelCSSBody(attr.Val, tunnel)
+				if rewritten != attr.Val {
+					attr.Val = rewritten
+					tokenChanged = true
+				}
+			}
+		}
+		if tokenChanged {
+			builder.WriteString(token.String())
+			changed = true
+		} else {
+			builder.WriteString(raw)
+		}
+	}
+
+	if !changed {
+		return input
+	}
+	return builder.String()
 }
 
 func rewriteTunnelCSSBody(input string, tunnel *gatewayv1.TunnelSummary) string {
-	return tunnelCSSURLPattern.ReplaceAllStringFunc(input, func(match string) string {
-		parts := tunnelCSSURLPattern.FindStringSubmatch(match)
-		if len(parts) != 5 {
-			return match
+	lexer := css.NewLexer(parse.NewInputString(input))
+	var builder strings.Builder
+	changed := false
+
+	for {
+		tokenType, data := lexer.Next()
+		if tokenType == css.ErrorToken {
+			if err := lexer.Err(); err != nil && err != io.EOF {
+				return input
+			}
+			break
 		}
-		rewritten := rewriteTunnelBodyURL(strings.TrimSpace(parts[3]), tunnel)
-		if rewritten == strings.TrimSpace(parts[3]) {
-			return match
+
+		token := string(data)
+		if tokenType == css.URLToken {
+			if rewritten, ok := rewriteTunnelCSSURLToken(token, tunnel); ok {
+				builder.WriteString(rewritten)
+				changed = true
+				continue
+			}
 		}
-		return parts[1] + parts[2] + rewritten + parts[4]
-	})
+		builder.WriteString(token)
+	}
+
+	if !changed {
+		return input
+	}
+	return builder.String()
 }
 
 func rewriteTunnelJavaScriptBody(input string, tunnel *gatewayv1.TunnelSummary) string {
-	return tunnelJSQuotedURLPattern.ReplaceAllStringFunc(input, func(match string) string {
-		parts := tunnelJSQuotedURLPattern.FindStringSubmatch(match)
-		if len(parts) != 4 || parts[1] != parts[3] {
-			return match
-		}
-		rewritten := rewriteTunnelBodyURL(parts[2], tunnel)
-		if rewritten == parts[2] {
-			return match
-		}
-		return parts[1] + rewritten + parts[1]
-	})
+	return input
+}
+
+func isTunnelHTMLURLAttribute(key string) bool {
+	switch key {
+	case "href", "src", "action", "poster", "data", "formaction", "xlink:href":
+		return true
+	default:
+		return false
+	}
+}
+
+func rewriteTunnelCSSURLToken(token string, tunnel *gatewayv1.TunnelSummary) (string, bool) {
+	openIndex := strings.Index(token, "(")
+	closeIndex := strings.LastIndex(token, ")")
+	if openIndex < 0 || closeIndex < openIndex {
+		return token, false
+	}
+
+	before := token[:openIndex+1]
+	inner := token[openIndex+1 : closeIndex]
+	after := token[closeIndex:]
+	leadingLen := len(inner) - len(strings.TrimLeft(inner, " \t\r\n\f"))
+	trailingLen := len(inner) - len(strings.TrimRight(inner, " \t\r\n\f"))
+	if leadingLen+trailingLen > len(inner) {
+		return token, false
+	}
+	leading := inner[:leadingLen]
+	trailing := inner[len(inner)-trailingLen:]
+	value := inner[leadingLen : len(inner)-trailingLen]
+	if value == "" {
+		return token, false
+	}
+
+	quote := byte(0)
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+		quote = value[0]
+		value = value[1 : len(value)-1]
+	}
+
+	rewritten := rewriteTunnelBodyURL(value, tunnel)
+	if rewritten == value {
+		return token, false
+	}
+	if quote == 0 && !css.IsURLUnquoted([]byte(rewritten)) {
+		quote = '"'
+	}
+	if quote != 0 {
+		rewritten = string(quote) + rewritten + string(quote)
+	}
+	return before + leading + rewritten + trailing + after, true
 }
 
 func rewriteTunnelBodyURL(value string, tunnel *gatewayv1.TunnelSummary) string {

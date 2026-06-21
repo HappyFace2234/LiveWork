@@ -28,7 +28,9 @@ export function createLiveTranscriptStore(
   const listeners = new Set<() => void>();
 
   const emitChange = () => {
-    listeners.forEach((listener) => listener());
+    listeners.forEach((listener) => {
+      listener();
+    });
   };
 
   return {

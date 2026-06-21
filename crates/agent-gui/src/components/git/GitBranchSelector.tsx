@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useLocale } from "../../i18n";
+import type {
+  GitBranch as GitBranchInfo,
+  GitClient,
+  GitRepositoryState,
+} from "../../lib/git/types";
+import { emptyGitRepositoryState } from "../../lib/git/types";
+import { cn } from "../../lib/shared/utils";
 import { Check, GitBranch, Loader2, Plus, RefreshCw, X } from "../icons";
+import { Button } from "../ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,17 +18,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
-import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { cn } from "../../lib/shared/utils";
-import type {
-  GitBranch as GitBranchInfo,
-  GitClient,
-  GitRepositoryState,
-} from "../../lib/git/types";
-import { emptyGitRepositoryState } from "../../lib/git/types";
-import { useLocale } from "../../i18n";
 
 function assertGitOperationResult(value: unknown, fallbackMessage: string) {
   if (!value || typeof value !== "object") return;
@@ -236,43 +236,46 @@ export function GitBranchSelector(props: {
   const refreshInFlightRef = useRef(false);
   const refreshRequestIdRef = useRef(0);
 
-  const refresh = useCallback(async (options: GitBranchRefreshOptions = {}) => {
-    if (!gitClient || !workdir.trim()) {
-      const next = emptyGitRepositoryState(workdir);
-      setState(next);
-      setBranches([]);
-      onStateChange?.(next);
-      return;
-    }
-    if (refreshInFlightRef.current && options.silent && !options.force) return;
-    const requestId = refreshRequestIdRef.current + 1;
-    refreshRequestIdRef.current = requestId;
-    refreshInFlightRef.current = true;
-    if (!options.silent) {
-      setLoading(true);
-    }
-    setError("");
-    try {
-      const response = await gitClient.branches(workdir);
-      if (refreshRequestIdRef.current !== requestId) return;
-      setState(response.state);
-      setBranches(response.branches);
-      onStateChange?.(response.state);
-    } catch (err) {
-      if (refreshRequestIdRef.current !== requestId) return;
-      setError(err instanceof Error ? err.message : String(err));
-      const next = emptyGitRepositoryState(workdir);
-      setState(next);
-      onStateChange?.(next);
-    } finally {
-      if (refreshRequestIdRef.current === requestId) {
-        refreshInFlightRef.current = false;
-        if (!options.silent) {
-          setLoading(false);
+  const refresh = useCallback(
+    async (options: GitBranchRefreshOptions = {}) => {
+      if (!gitClient || !workdir.trim()) {
+        const next = emptyGitRepositoryState(workdir);
+        setState(next);
+        setBranches([]);
+        onStateChange?.(next);
+        return;
+      }
+      if (refreshInFlightRef.current && options.silent && !options.force) return;
+      const requestId = refreshRequestIdRef.current + 1;
+      refreshRequestIdRef.current = requestId;
+      refreshInFlightRef.current = true;
+      if (!options.silent) {
+        setLoading(true);
+      }
+      setError("");
+      try {
+        const response = await gitClient.branches(workdir);
+        if (refreshRequestIdRef.current !== requestId) return;
+        setState(response.state);
+        setBranches(response.branches);
+        onStateChange?.(response.state);
+      } catch (err) {
+        if (refreshRequestIdRef.current !== requestId) return;
+        setError(err instanceof Error ? err.message : String(err));
+        const next = emptyGitRepositoryState(workdir);
+        setState(next);
+        onStateChange?.(next);
+      } finally {
+        if (refreshRequestIdRef.current === requestId) {
+          refreshInFlightRef.current = false;
+          if (!options.silent) {
+            setLoading(false);
+          }
         }
       }
-    }
-  }, [gitClient, onStateChange, workdir]);
+    },
+    [gitClient, onStateChange, workdir],
+  );
 
   useEffect(() => {
     void refresh();

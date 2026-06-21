@@ -1,9 +1,5 @@
 import {
   getDefaultSettings,
-  normalizeProjectToolsFileTreeSettings,
-  normalizeProjectToolsGitReviewSettings,
-  normalizeProjectToolsSshTunnelSettings,
-  normalizeProjectToolsTunnelSettings,
   normalizeSettings,
   type AppSettings,
 } from "@/lib/settings";
@@ -35,19 +31,6 @@ export function getWebDefaultSettings(token: string): AppSettings {
   });
 }
 
-function stripSessionOnlyProjectToolsState(settings: AppSettings): AppSettings {
-  return {
-    ...settings,
-    customSettings: {
-      ...settings.customSettings,
-      projectToolsFileTree: normalizeProjectToolsFileTreeSettings({}),
-      projectToolsGitReview: normalizeProjectToolsGitReviewSettings({}),
-      projectToolsTunnel: normalizeProjectToolsTunnelSettings({}),
-      projectToolsSshTunnel: normalizeProjectToolsSshTunnelSettings({}),
-    },
-  };
-}
-
 export function loadWebSettings(token: string): AppSettings {
   const fallback = getWebDefaultSettings(token);
   try {
@@ -56,20 +39,18 @@ export function loadWebSettings(token: string): AppSettings {
       return fallback;
     }
     const parsed = JSON.parse(raw) as Partial<AppSettings> | null;
-    const normalized = stripSessionOnlyProjectToolsState(
-      redactSettingsForWebStorage(
-        normalizeSettings({
-          ...fallback,
-          ...(parsed ?? {}),
-          remote: {
-            ...fallback.remote,
-            ...(parsed?.remote ?? {}),
-            gatewayUrl: fallback.remote.gatewayUrl,
-            token: token.trim(),
-            enabled: token.trim() !== "" || parsed?.remote?.enabled === true,
-          },
-        }),
-      ),
+    const normalized = redactSettingsForWebStorage(
+      normalizeSettings({
+        ...fallback,
+        ...(parsed ?? {}),
+        remote: {
+          ...fallback.remote,
+          ...(parsed?.remote ?? {}),
+          gatewayUrl: fallback.remote.gatewayUrl,
+          token: token.trim(),
+          enabled: token.trim() !== "" || parsed?.remote?.enabled === true,
+        },
+      }),
     );
     window.localStorage.setItem(WEB_SETTINGS_STORAGE_KEY, JSON.stringify(normalized));
     return normalized;
@@ -81,6 +62,6 @@ export function loadWebSettings(token: string): AppSettings {
 export function persistWebSettings(settings: AppSettings): void {
   window.localStorage.setItem(
     WEB_SETTINGS_STORAGE_KEY,
-    JSON.stringify(stripSessionOnlyProjectToolsState(redactSettingsForWebStorage(settings))),
+    JSON.stringify(redactSettingsForWebStorage(settings)),
   );
 }

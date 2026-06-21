@@ -2,7 +2,10 @@ import type { AssistantMessage, Context, Message } from "../agentTypes";
 
 import { assistantMessageToText } from "../providers/llm";
 import { normalizeConversationSystemPrompt } from "./systemPrompt";
-import { sanitizeMessagesForModelContext } from "./requestContextSanitizer";
+import {
+  sanitizeMessagesForContinuation,
+  sanitizeMessagesForModelContext,
+} from "./requestContextSanitizer";
 import { buildUiMessages, type UiRound } from "./uiMessages";
 import {
   stripUploadedFilesMessageMetadata,
@@ -504,12 +507,18 @@ export function createConversationStateFromContext(context: Context): Conversati
   return appendMessagesToConversation(seed, context.messages);
 }
 
-export function buildRequestContext(state: ConversationViewState): Context {
+export function buildRequestContext(
+  state: ConversationViewState,
+  options?: { includeAbortedMessages?: boolean; includeUploadedFilesMetadata?: boolean },
+): Context {
   const activeSegment = state.segments[state.activeSegmentIndex] ?? createEmptySegment(0);
+  const runtimeMessages = options?.includeUploadedFilesMetadata
+    ? activeSegment.messages
+    : activeSegment.messages.map(stripUploadedFilesMessageMetadata);
   const next: Context = {
-    messages: sanitizeMessagesForModelContext(
-      activeSegment.messages.map(stripUploadedFilesMessageMetadata),
-    ),
+    messages: options?.includeAbortedMessages
+      ? sanitizeMessagesForModelContext(runtimeMessages)
+      : sanitizeMessagesForContinuation(runtimeMessages),
   };
 
   const systemPrompt = appendSummaryToSystemPrompt(

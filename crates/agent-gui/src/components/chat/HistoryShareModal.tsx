@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import type {
   ChatHistoryShareStatus,
@@ -77,6 +77,7 @@ function RedactionPicker(props: {
   onChange: (next: boolean) => void;
 }) {
   const { value, disabled, onChange } = props;
+  const redactionGroupName = useId();
   return (
     <div
       role="radiogroup"
@@ -86,36 +87,46 @@ function RedactionPicker(props: {
         disabled && "pointer-events-none opacity-60",
       )}
     >
-      <button
-        type="button"
-        role="radio"
-        aria-checked={value}
-        disabled={disabled}
-        onClick={() => onChange(true)}
+      <label
         className={cn(
-          "relative rounded-full px-3 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/35 disabled:cursor-not-allowed",
+          "cursor-pointer",
+          disabled && "cursor-not-allowed",
+          "relative rounded-full px-3 py-1 text-[11px] font-medium transition-colors has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-emerald-500/35 disabled:cursor-not-allowed",
           value
             ? "bg-emerald-500 text-white shadow-sm"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
+        <input
+          type="radio"
+          name={redactionGroupName}
+          className="sr-only"
+          checked={value}
+          disabled={disabled}
+          onChange={() => onChange(true)}
+        />
         开启
-      </button>
-      <button
-        type="button"
-        role="radio"
-        aria-checked={!value}
-        disabled={disabled}
-        onClick={() => onChange(false)}
+      </label>
+      <label
         className={cn(
-          "relative rounded-full px-3 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500/35 disabled:cursor-not-allowed",
+          "cursor-pointer",
+          disabled && "cursor-not-allowed",
+          "relative rounded-full px-3 py-1 text-[11px] font-medium transition-colors has-[:focus-visible]:outline-none has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-sky-500/35 disabled:cursor-not-allowed",
           !value
             ? "bg-background text-foreground shadow-sm"
             : "text-muted-foreground hover:text-foreground",
         )}
       >
+        <input
+          type="radio"
+          name={redactionGroupName}
+          className="sr-only"
+          checked={!value}
+          disabled={disabled}
+          onChange={() => onChange(false)}
+        />
         关闭
-      </button>
+      </label>
     </div>
   );
 }

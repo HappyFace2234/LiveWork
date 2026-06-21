@@ -73,3 +73,22 @@ test("terminal project matching falls back to cwd when project key is missing", 
     true,
   );
 });
+
+test("terminal project matching normalizes Windows-shaped project keys", () => {
+  assert.equal(
+    terminalSessionBelongsToProject(terminal("terminal-1", "C:\\Repo", 1), "c:/repo/"),
+    true,
+  );
+  assert.deepEqual(
+    replaceTerminalSessionsForProject(
+      [terminal("old", "C:\\Repo", 1), terminal("other", "/tmp/Foo", 2)],
+      "c:/repo",
+      [terminal("new", "c:/repo", 3)],
+    ).map((session) => session.id),
+    ["other", "new"],
+  );
+  assert.equal(
+    terminalSessionBelongsToProject(terminal("terminal-2", "/tmp/Foo", 1), "/tmp/foo"),
+    false,
+  );
+});

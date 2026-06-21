@@ -72,6 +72,23 @@ func TestHTTPMiddlewareRequiresValidBearerToken(t *testing.T) {
 	}
 }
 
+func TestValidateTokenTrimsAndRejectsEmptyValues(t *testing.T) {
+	t.Parallel()
+
+	if !auth.ValidateToken(" secret-token ", "\nsecret-token\r\n") {
+		t.Fatal("ValidateToken should accept matching trimmed tokens")
+	}
+	if auth.ValidateToken("", "secret-token") {
+		t.Fatal("ValidateToken should reject empty input token")
+	}
+	if auth.ValidateToken("secret-token", "") {
+		t.Fatal("ValidateToken should reject empty expected token")
+	}
+	if auth.ValidateToken("wrong-token", "secret-token") {
+		t.Fatal("ValidateToken should reject mismatched tokens")
+	}
+}
+
 func TestGRPCUnaryInterceptorAuthBoundary(t *testing.T) {
 	t.Parallel()
 

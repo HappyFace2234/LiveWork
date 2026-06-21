@@ -239,10 +239,13 @@ function parseAgentSpecAttributes(value: string) {
   const attrs: Record<string, unknown> = {};
   const pattern = /([a-zA-Z_][\w-]*)=("[^"]*"|'[^']*'|[^\s]+)/g;
   let match: RegExpExecArray | null = null;
-  while ((match = pattern.exec(value)) !== null) {
+  match = pattern.exec(value);
+  while (match !== null) {
     const key = normalizeAgentSpecKey(match[1] ?? "");
-    if (!key) continue;
-    attrs[key] = parseAgentSpecScalar(match[2] ?? "");
+    if (key) {
+      attrs[key] = parseAgentSpecScalar(match[2] ?? "");
+    }
+    match = pattern.exec(value);
   }
   return attrs;
 }

@@ -1,6 +1,10 @@
 import type { Context, Message, TextContent, ToolResultMessage } from "../agentTypes";
 
 import type { DisplayImageItemDetails, DisplayImageResultDetails } from "../tools/builtinTypes";
+import {
+  hostedSearchBlockToContextText,
+  normalizeHostedSearchBlock,
+} from "./hostedSearch";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
@@ -78,18 +82,43 @@ function buildDisplayImageContextText(message: ToolResultMessage<DisplayImageRes
 }
 
 export function sanitizeMessageForModelContext(message: Message): Message {
-  if (!isDisplayImageToolResult(message)) return message;
-  const hasInlineImages = message.content.some((block) => block.type === "image");
-  const hasDisplayImageDetails = getDisplayImageItems(message.details).length > 0;
-  if (!hasInlineImages && !hasDisplayImageDetails) return message;
+  let nextMessage = message;
+
+  if (message.role === "assistant") {
+    const nextContent: unknown[] = [];
+    let changed = false;
+    for (const block of message.content as unknown[]) {
+      const hostedSearch = normalizeHostedSearchBlock(block);
+      if (hostedSearch) {
+        nextContent.push({
+          type: "text",
+          text: hostedSearchBlockToContextText(hostedSearch),
+        } satisfies TextContent);
+        changed = true;
+        continue;
+      }
+      nextContent.push(block);
+    }
+    if (changed) {
+      nextMessage = {
+        ...message,
+        content: nextContent as Message["content"],
+      } as Message;
+    }
+  }
+
+  if (!isDisplayImageToolResult(nextMessage)) return nextMessage;
+  const hasInlineImages = nextMessage.content.some((block) => block.type === "image");
+  const hasDisplayImageDetails = getDisplayImageItems(nextMessage.details).length > 0;
+  if (!hasInlineImages && !hasDisplayImageDetails) return nextMessage;
 
   const text: TextContent = {
     type: "text",
-    text: buildDisplayImageContextText(message),
+    text: buildDisplayImageContextText(nextMessage),
   };
 
   return {
-    ...message,
+    ...nextMessage,
     content: [text],
   };
 }
@@ -98,9 +127,30 @@ export function sanitizeMessagesForModelContext(messages: Message[]): Message[] 
   return messages.map(sanitizeMessageForModelContext);
 }
 
+export function stripAbortedMessagesForModelContext(messages: Message[]): Message[] {
+  const sanitized: Message[] = [];
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && message.stopReason === "aborted") {
+      while (index + 1 < messages.length && messages[index + 1]?.role === "toolResult") {
+        index += 1;
+      }
+      continue;
+    }
+    sanitized.push(message);
+  }
+
+  return sanitized;
+}
+
+export function sanitizeMessagesForContinuation(messages: Message[]): Message[] {
+  return sanitizeMessagesForModelContext(stripAbortedMessagesForModelContext(messages));
+}
+
 export function sanitizeContextForModelRequest(context: Context): Context {
   return {
     ...context,
-    messages: sanitizeMessagesForModelContext(context.messages),
+    messages: sanitizeMessagesForContinuation(context.messages),
   };
 }

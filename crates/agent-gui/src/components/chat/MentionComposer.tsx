@@ -1096,7 +1096,10 @@ function createCommitMentionChip(commitInput: MentionComposerCommitMention) {
   }
   chip.contentEditable = "false";
   chip.tabIndex = 0;
-  chip.setAttribute("aria-label", commit.subject ? `${commit.shortSha}: ${commit.subject}` : commit.shortSha);
+  chip.setAttribute(
+    "aria-label",
+    commit.subject ? `${commit.shortSha}: ${commit.subject}` : commit.shortSha,
+  );
   chip.className =
     "mention-chip inline-flex items-center gap-1 rounded bg-cyan-500/15 px-1.5 mx-0.5 text-cyan-800 dark:text-cyan-200 align-baseline whitespace-nowrap select-none";
 
@@ -1421,7 +1424,10 @@ function formatCommitTooltipDate(value: string, locale: string) {
     minute: "2-digit",
   });
   const deltaSeconds = Math.round((date.getTime() - Date.now()) / 1000);
-  const units: Array<{ unit: "year" | "month" | "day" | "hour" | "minute" | "second"; seconds: number }> = [
+  const units: Array<{
+    unit: "year" | "month" | "day" | "hour" | "minute" | "second";
+    seconds: number;
+  }> = [
     { unit: "year", seconds: 365 * 24 * 60 * 60 },
     { unit: "month", seconds: 30 * 24 * 60 * 60 },
     { unit: "day", seconds: 24 * 60 * 60 },
@@ -1534,9 +1540,7 @@ function CommitMentionTooltip({
           ) : null}
         </div>
       </div>
-      <div className="mt-2 whitespace-pre-wrap break-words font-medium leading-snug">
-        {subject}
-      </div>
+      <div className="mt-2 whitespace-pre-wrap break-words font-medium leading-snug">{subject}</div>
       {messageBody ? (
         <div className="mt-1.5 whitespace-pre-wrap break-words leading-snug text-muted-foreground">
           {messageBody}
@@ -1544,7 +1548,9 @@ function CommitMentionTooltip({
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-tight">
         <span className="text-muted-foreground">{filesChangedLabel}</span>
-        <span className="font-medium text-emerald-600 dark:text-emerald-400">{insertionsLabel}</span>
+        <span className="font-medium text-emerald-600 dark:text-emerald-400">
+          {insertionsLabel}
+        </span>
         <span className="font-medium text-rose-600 dark:text-rose-400">{deletionsLabel}</span>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/70 pt-1.5 text-[11px] leading-tight text-muted-foreground">
@@ -2635,11 +2641,13 @@ export const MentionComposer = memo(
               document.body,
             )
           : null}
+        {/* biome-ignore lint/a11y/useSemanticElements: The composer is contenteditable so it can host inline mention chips. */}
         <div
           ref={editorRef}
           contentEditable={!disabled}
           suppressContentEditableWarning
           role="textbox"
+          tabIndex={disabled ? undefined : 0}
           aria-multiline
           aria-placeholder={placeholder}
           aria-disabled={disabled}

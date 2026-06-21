@@ -891,10 +891,12 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                               }
 
                               return (
+                                // biome-ignore lint/a11y/useSemanticElements: The card contains nested controls and cannot be a native button.
                                 <div
                                   key={key}
                                   role="button"
                                   tabIndex={0}
+                                  aria-label={skill.name}
                                   onClick={() => toggleSkill(skill.name, !checked)}
                                   onKeyDown={(event) => {
                                     if (event.key !== "Enter" && event.key !== " ") return;
@@ -1151,10 +1153,12 @@ function SkillsStoreView(props: {
                 const link = buildClawHubSkillUrl(skill);
 
                 return (
+                  // biome-ignore lint/a11y/useSemanticElements: The card contains nested controls and cannot be a native button.
                   <div
                     key={skill.slug}
                     role="button"
                     tabIndex={0}
+                    aria-label={skill.displayName}
                     onClick={() => setPreviewSkill(skill)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
@@ -1499,7 +1503,10 @@ function SkillsStorePreviewDrawer(props: {
                     {t("settings.skillsStorePreviewMetadata")}
                   </div>
                   <div className="divide-y divide-border/30">
-                    <StorePreviewField label={t("settings.skillsStorePreviewSlug")} value={data.slug} />
+                    <StorePreviewField
+                      label={t("settings.skillsStorePreviewSlug")}
+                      value={data.slug}
+                    />
                     <StorePreviewField
                       label={t("settings.skillsStorePreviewOwner")}
                       value={owner}
@@ -1565,7 +1572,11 @@ function SkillsStorePreviewDrawer(props: {
               variant="outline"
               size="sm"
               className="h-9 flex-1 gap-1.5 rounded-xl border-border/50 bg-background/70"
-              render={<a href={link} target="_blank" rel="noreferrer" />}
+              render={
+                <a href={link} target="_blank" rel="noreferrer">
+                  <span className="sr-only">{t("settings.skillsStoreOpenInClawHub")}</span>
+                </a>
+              }
             >
               <ExternalLink className="h-3.5 w-3.5" />
               {t("settings.skillsStoreOpenInClawHub")}

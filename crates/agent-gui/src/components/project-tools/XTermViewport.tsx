@@ -2,7 +2,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal as XTerm } from "@xterm/xterm";
-import { useEffect, useRef, type CSSProperties } from "react";
+import { type CSSProperties, useEffect, useRef } from "react";
 import { cn } from "../../lib/shared/utils";
 import type {
   TerminalClient,
@@ -393,10 +393,7 @@ export function XTermViewport({
     <div
       ref={containerRef}
       style={viewportStyle}
-      className={cn(
-        "project-terminal-viewport h-full min-h-0 w-full overflow-hidden",
-        className,
-      )}
+      className={cn("project-terminal-viewport h-full min-h-0 w-full overflow-hidden", className)}
     />
   );
 }

@@ -11,6 +11,9 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::runtime::platform::expand_tilde_path;
+use crate::runtime::project_path::{
+    project_path_key as normalize_project_path_key, project_path_keys_equal,
+};
 use crate::runtime::terminal::{
     open_sftp_connection_for_host, TerminalSessionRegistry, TerminalSftpConnection,
     TerminalSshSessionInfo,
@@ -582,8 +585,8 @@ impl SftpSessionRegistry {
     ) -> Result<TerminalSshSessionInfo, String> {
         let info = self.terminal_registry.ssh_session_info(session_id)?;
         if let Some(project_path_key) = project_path_key {
-            let wanted = workspace_project_path_key(project_path_key);
-            if !wanted.is_empty() && info.project_path_key != wanted {
+            let wanted = normalize_project_path_key(project_path_key);
+            if !wanted.is_empty() && !project_path_keys_equal(&info.project_path_key, &wanted) {
                 return Err("SSH session does not belong to this project".to_string());
             }
         }
@@ -1274,10 +1277,6 @@ fn rel_to_workdir_str(workdir: &Path, abs: &Path) -> String {
         .unwrap_or(abs)
         .to_string_lossy()
         .replace('\\', "/")
-}
-
-fn workspace_project_path_key(value: &str) -> String {
-    value.trim().replace('\\', "/")
 }
 
 fn local_entry_from_abs(workdir: &Path, abs: &Path) -> Result<SftpEntry, String> {

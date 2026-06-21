@@ -64,8 +64,10 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
 
   useLayoutEffect(() => {
     const nextViewport = resolveScrollViewport(scrollAreaRef.current);
-    setScrollViewport((current) => (current === nextViewport ? current : nextViewport));
-  });
+    if (scrollViewport !== nextViewport) {
+      setScrollViewport(nextViewport);
+    }
+  }, [scrollAreaRef, scrollViewport]);
 
   useEffect(() => {
     closeTranscriptContextMenu();

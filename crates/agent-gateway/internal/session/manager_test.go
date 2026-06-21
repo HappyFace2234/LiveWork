@@ -2,6 +2,7 @@ package session
 
 import (
 	"testing"
+	"time"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
@@ -130,5 +131,64 @@ func TestTerminalSessionSnapshotPreservesSshMetadataAndSorts(t *testing.T) {
 	}
 	if fresh[0].GetSsh().GetHostId() != "prod" {
 		t.Fatalf("terminal snapshot should be immutable, got ssh host id %q", fresh[0].GetSsh().GetHostId())
+	}
+}
+
+func TestAppendCappedChatRunEventKeepsLatestEvents(t *testing.T) {
+	var events []*ChatBroadcastEvent
+	for seq := int64(1); seq <= 5; seq++ {
+		events = appendCappedChatRunEvent(events, &ChatBroadcastEvent{Seq: seq}, 3)
+	}
+
+	if len(events) != 3 {
+		t.Fatalf("events len = %d, want 3", len(events))
+	}
+	if got := []int64{events[0].Seq, events[1].Seq, events[2].Seq}; got[0] != 3 || got[1] != 4 || got[2] != 5 {
+		t.Fatalf("events seqs = %#v, want [3 4 5]", got)
+	}
+
+	events = appendCappedChatRunEvent(events, nil, 3)
+	if got := []int64{events[0].Seq, events[1].Seq, events[2].Seq}; got[0] != 3 || got[1] != 4 || got[2] != 5 {
+		t.Fatalf("nil event changed buffered seqs to %#v, want [3 4 5]", got)
+	}
+}
+
+func TestChatRunShouldPruneRetainsRunningUntilStale(t *testing.T) {
+	now := time.Now()
+	running := &chatRun{
+		state:     ChatRunStateRunning,
+		updatedAt: now.Add(-(chatRunStartRetention + time.Second)),
+	}
+	if running.shouldPrune(now) {
+		t.Fatal("running chat should survive the start retention window")
+	}
+
+	queued := &chatRun{
+		state:     ChatRunStateQueued,
+		updatedAt: now.Add(-(chatRunStartRetention + time.Second)),
+	}
+	if !queued.shouldPrune(now) {
+		t.Fatal("unstarted queued chat should prune after start retention")
+	}
+
+	done := &chatRun{
+		done:      true,
+		expiresAt: now.Add(-time.Second),
+	}
+	if !done.shouldPrune(now) {
+		t.Fatal("done chat should prune after expiresAt")
+	}
+}
+
+func TestPruneExpiredChatRunsDropsNilEntries(t *testing.T) {
+	manager := NewManager()
+	manager.chatStore.chatMu.Lock()
+	manager.chatStore.chatRuns["nil-run"] = nil
+	manager.pruneExpiredChatRunsLocked(time.Now())
+	_, exists := manager.chatStore.chatRuns["nil-run"]
+	manager.chatStore.chatMu.Unlock()
+
+	if exists {
+		t.Fatal("nil chat run should be deleted during pruning")
 	}
 }

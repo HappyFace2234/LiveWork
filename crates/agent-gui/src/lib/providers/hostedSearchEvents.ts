@@ -215,7 +215,9 @@ function emitJsonCandidate(text: string, probe: FetchProbe) {
   if (!trimmed || trimmed === "[DONE]") return;
   const parsed = maybeParseJson(trimmed);
   if (Array.isArray(parsed)) {
-    parsed.forEach((item) => probe.onRawEvent(item));
+    parsed.forEach((item) => {
+      probe.onRawEvent(item);
+    });
     return;
   }
   if (parsed !== undefined) {
@@ -388,7 +390,9 @@ function collectQueries(value: unknown, out: string[] = [], keyHint = ""): strin
   }
 
   if (Array.isArray(value)) {
-    value.forEach((item) => collectQueries(item, out, keyHint));
+    value.forEach((item) => {
+      collectQueries(item, out, keyHint);
+    });
     return out;
   }
 
@@ -396,7 +400,9 @@ function collectQueries(value: unknown, out: string[] = [], keyHint = ""): strin
   for (const [key, child] of Object.entries(value)) {
     const normalizedKey = key.replace(/[-_]/g, "").toLowerCase();
     if (Array.isArray(child) && normalizedKey === "websearchqueries") {
-      child.forEach((item) => collectQueries(item, out, "webSearchQueries"));
+      child.forEach((item) => {
+        collectQueries(item, out, "webSearchQueries");
+      });
       continue;
     }
     collectQueries(child, out, key);
@@ -415,7 +421,9 @@ function isHttpUrl(value: string) {
 
 function collectSources(value: unknown, out = new Map<string, HostedSearchSource>()) {
   if (Array.isArray(value)) {
-    value.forEach((item) => collectSources(item, out));
+    value.forEach((item) => {
+      collectSources(item, out);
+    });
     return out;
   }
   if (!isRecord(value)) return out;

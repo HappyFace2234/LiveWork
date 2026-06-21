@@ -61,6 +61,7 @@ import { buildBuiltinToolRegistry } from "../../../lib/tools/builtinRegistry";
 import type { BuiltinToolExecutionContext } from "../../../lib/tools/builtinTypes";
 import { createFileToolState } from "../../../lib/tools/fileToolState";
 import type { SkillAccessPolicy } from "../../../lib/tools/skillAccessPolicy";
+import type { SshManagerSessionChange } from "../../../lib/tools/sshManagerTools";
 import {
   TUNNEL_MANAGER_CHANGED_EVENT,
   type TunnelManagerChange,
@@ -78,13 +79,13 @@ import {
 } from "../runtime/chatPageRuntime";
 import { buildProtectionCompactionStatus } from "../runtime/compactionStatusText";
 
-type RuntimeModel = {
+export type RuntimeModel = {
   api: AssistantMessage["api"];
   provider: AssistantMessage["provider"];
   id: string;
 };
 
-type CompactDuringRun = (params: {
+export type CompactDuringRun = (params: {
   trigger: "mid-stream" | "post-tool";
   state: ConversationViewState;
   requestContext: Context;
@@ -95,7 +96,7 @@ type CompactDuringRun = (params: {
   includeUploadedFilesMetadata?: boolean;
 }) => Promise<Context | null>;
 
-type PersistConversationParams = {
+export type PersistConversationParams = {
   conversationId: string;
   sessionId: string;
   providerId: string;
@@ -261,7 +262,7 @@ async function loadStoredSubagentMessages(conversationId: string) {
   }
 }
 
-type RunAgentConversationTurnParams = {
+export type RunAgentConversationTurnParams = {
   providerId: ProviderId;
   model: string;
   runtime: ProviderRuntimeConfig;
@@ -292,6 +293,7 @@ type RunAgentConversationTurnParams = {
   sshHosts?: SshHostConfig[];
   associatedSshHostIds?: string[];
   sshManagerRemoteAllowed?: boolean;
+  onSshSessionsChanged?: (change: SshManagerSessionChange) => void;
   sessionId: string;
   conversationId: string;
   conversationCwd?: string;
@@ -379,6 +381,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     sshHosts,
     associatedSshHostIds,
     sshManagerRemoteAllowed,
+    onSshSessionsChanged,
     sessionId,
     conversationId,
     conversationCwd,
@@ -502,6 +505,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     sshHosts,
     associatedSshHostIds,
     sshManagerRemoteAllowed,
+    onSshSessionsChanged,
     onTunnelsChanged: (change) => {
       onTunnelsChanged?.(change);
       if (typeof window !== "undefined") {

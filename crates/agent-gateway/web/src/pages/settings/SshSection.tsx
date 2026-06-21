@@ -11,6 +11,7 @@ import {
   List,
   Lock,
   Pencil,
+  Plug,
   Plus,
   Server,
   Shield,
@@ -73,9 +74,9 @@ function endpointLabel(host: SshHostConfig) {
 }
 
 function authLabel(host: Pick<SshHostConfig, "authType">, t: (key: string) => string) {
-  return host.authType === "privateKey"
-    ? t("settings.sshAuthPrivateKey")
-    : t("settings.sshAuthPassword");
+  if (host.authType === "privateKey") return t("settings.sshAuthPrivateKey");
+  if (host.authType === "agent") return t("settings.sshAuthAgent");
+  return t("settings.sshAuthPassword");
 }
 
 function SshPasswordInput(props: {
@@ -145,6 +146,8 @@ function SshHostModal(props: {
   const { isClosing, modalState, requestClose } = useModalMotion(onClose);
   const isEditing = Boolean(initialData);
   const isPasswordAuth = authType === "password";
+  const isPrivateKeyAuth = authType === "privateKey";
+  const isAgentAuth = authType === "agent";
   const passwordAuthPanelStyle: CSSProperties = {
     maxHeight: isPasswordAuth ? "7rem" : "0rem",
     opacity: isPasswordAuth ? 1 : 0,
@@ -152,10 +155,10 @@ function SshHostModal(props: {
     transform: isPasswordAuth ? "translateY(0)" : "translateY(-4px)",
   };
   const privateKeyAuthPanelStyle: CSSProperties = {
-    maxHeight: isPasswordAuth ? "0rem" : "29rem",
-    opacity: isPasswordAuth ? 0 : 1,
-    pointerEvents: isPasswordAuth ? "none" : "auto",
-    transform: isPasswordAuth ? "translateY(4px)" : "translateY(0)",
+    maxHeight: isPrivateKeyAuth ? "29rem" : "0rem",
+    opacity: isPrivateKeyAuth ? 1 : 0,
+    pointerEvents: isPrivateKeyAuth ? "auto" : "none",
+    transform: isPrivateKeyAuth ? "translateY(0)" : "translateY(4px)",
   };
 
   function handleFileSelected(file: File | undefined) {
@@ -180,6 +183,10 @@ function SshHostModal(props: {
     const trimmedPrivateKeyPath = privateKeyPath.trim();
     const trimmedPrivateKeyPassphrase = privateKeyPassphrase.trim();
     const trimmedProxyPassword = proxyPassword.trim();
+    const nextPassword = isPasswordAuth ? trimmedPassword : "";
+    const nextPrivateKey = isPrivateKeyAuth ? trimmedPrivateKey : "";
+    const nextPrivateKeyPath = isPrivateKeyAuth ? trimmedPrivateKeyPath : "";
+    const nextPrivateKeyPassphrase = isPrivateKeyAuth ? trimmedPrivateKeyPassphrase : "";
     onSave({
       name: trimmedName,
       description: initialData?.description ?? "",
@@ -187,18 +194,24 @@ function SshHostModal(props: {
       port: normalizePortInput(port),
       username: username.trim(),
       authType,
-      password: trimmedPassword,
-      passwordConfigured: trimmedPassword.length > 0 || initialData?.passwordConfigured === true,
-      privateKey: trimmedPrivateKey,
-      privateKeyPath: trimmedPrivateKeyPath,
+      password: nextPassword,
+      passwordConfigured:
+        isPasswordAuth &&
+        (nextPassword.length > 0 ||
+          (initialData?.authType === "password" && initialData?.passwordConfigured === true)),
+      privateKey: nextPrivateKey,
+      privateKeyPath: nextPrivateKeyPath,
       privateKeyConfigured:
-        trimmedPrivateKey.length > 0 ||
-        trimmedPrivateKeyPath.length > 0 ||
-        initialData?.privateKeyConfigured === true,
-      privateKeyPassphrase: trimmedPrivateKeyPassphrase,
+        isPrivateKeyAuth &&
+        (nextPrivateKey.length > 0 ||
+          nextPrivateKeyPath.length > 0 ||
+          (initialData?.authType === "privateKey" && initialData?.privateKeyConfigured === true)),
+      privateKeyPassphrase: nextPrivateKeyPassphrase,
       privateKeyPassphraseConfigured:
-        trimmedPrivateKeyPassphrase.length > 0 ||
-        initialData?.privateKeyPassphraseConfigured === true,
+        isPrivateKeyAuth &&
+        (nextPrivateKeyPassphrase.length > 0 ||
+          (initialData?.authType === "privateKey" &&
+            initialData?.privateKeyPassphraseConfigured === true)),
       proxy: {
         type: proxyType,
         url: proxyUrl.trim(),
@@ -284,7 +297,7 @@ function SshHostModal(props: {
             <div className="text-xs font-medium text-muted-foreground">
               {t("settings.sshAuthMethod")}
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <button
                 type="button"
                 onClick={() => setAuthType("password")}
@@ -292,7 +305,7 @@ function SshHostModal(props: {
                   isPasswordAuth
                     ? "border-emerald-500/40 bg-emerald-500/[0.06] shadow-sm"
                     : "border-border/60 bg-card hover:border-border hover:bg-muted/20"
-                }`}
+                  }`}
               >
                 <Lock
                   className={`h-4 w-4 shrink-0 text-emerald-500 transition-transform duration-200 ${
@@ -316,14 +329,14 @@ function SshHostModal(props: {
                 type="button"
                 onClick={() => setAuthType("privateKey")}
                 className={`group relative flex items-center gap-3 rounded-xl border px-3 py-3 text-left transition-all duration-200 ease-out hover:-translate-y-0.5 ${
-                  !isPasswordAuth
+                  isPrivateKeyAuth
                     ? "border-emerald-500/40 bg-emerald-500/[0.06] shadow-sm"
                     : "border-border/60 bg-card hover:border-border hover:bg-muted/20"
                 }`}
               >
                 <Key
                   className={`h-4 w-4 shrink-0 text-emerald-500 transition-transform duration-200 ${
-                    !isPasswordAuth ? "scale-110" : "group-hover:scale-105"
+                    isPrivateKeyAuth ? "scale-110" : "group-hover:scale-105"
                   }`}
                 />
                 <div className="min-w-0">
@@ -335,7 +348,34 @@ function SshHostModal(props: {
                 <Check
                   aria-hidden="true"
                   className={`ml-auto h-4 w-4 shrink-0 text-emerald-500 transition-all duration-200 ${
-                    !isPasswordAuth ? "scale-100 opacity-100" : "scale-75 opacity-0"
+                    isPrivateKeyAuth ? "scale-100 opacity-100" : "scale-75 opacity-0"
+                  }`}
+                />
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuthType("agent")}
+                className={`group relative flex items-center gap-3 rounded-xl border px-3 py-3 text-left transition-all duration-200 ease-out hover:-translate-y-0.5 ${
+                  isAgentAuth
+                    ? "border-emerald-500/40 bg-emerald-500/[0.06] shadow-sm"
+                    : "border-border/60 bg-card hover:border-border hover:bg-muted/20"
+                }`}
+              >
+                <Plug
+                  className={`h-4 w-4 shrink-0 text-emerald-500 transition-transform duration-200 ${
+                    isAgentAuth ? "scale-110" : "group-hover:scale-105"
+                  }`}
+                />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{t("settings.sshAuthAgent")}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {t("settings.sshAuthAgentHint")}
+                  </div>
+                </div>
+                <Check
+                  aria-hidden="true"
+                  className={`ml-auto h-4 w-4 shrink-0 text-emerald-500 transition-all duration-200 ${
+                    isAgentAuth ? "scale-100 opacity-100" : "scale-75 opacity-0"
                   }`}
                 />
               </button>
@@ -368,9 +408,9 @@ function SshHostModal(props: {
             </div>
 
             <div
-              aria-hidden={isPasswordAuth}
+              aria-hidden={!isPrivateKeyAuth}
               className="ssh-auth-panel ssh-auth-panel--private-key"
-              data-state={!isPasswordAuth ? "open" : "closed-down"}
+              data-state={isPrivateKeyAuth ? "open" : "closed-down"}
               style={privateKeyAuthPanelStyle}
             >
               <div className="space-y-3">
@@ -380,7 +420,7 @@ function SshHostModal(props: {
                     size="icon"
                     className="absolute right-2 top-2 z-10 h-7 w-7 rounded-md border border-transparent bg-background/80 p-0 text-muted-foreground shadow-none hover:border-border/70 hover:bg-muted/70 hover:text-foreground"
                     aria-label={t("settings.sshPrivateKeyImport")}
-                    disabled={isPasswordAuth}
+                    disabled={!isPrivateKeyAuth}
                     onClick={() => fileInputRef.current?.click()}
                     title={t("settings.sshPrivateKeyImport")}
                   >
@@ -390,14 +430,14 @@ function SshHostModal(props: {
                     ref={fileInputRef}
                     type="file"
                     className="hidden"
-                    disabled={isPasswordAuth}
+                    disabled={!isPrivateKeyAuth}
                     onChange={(event) => handleFileSelected(event.currentTarget.files?.[0])}
                   />
                   <Textarea
                     id="ssh-private-key"
                     aria-label={t("settings.sshPrivateKey")}
                     value={privateKey}
-                    disabled={isPasswordAuth}
+                    disabled={!isPrivateKeyAuth}
                     className="min-h-[180px] resize-y pr-12 font-mono text-xs leading-relaxed"
                     onChange={(event) => setPrivateKey(event.currentTarget.value)}
                   />
@@ -417,7 +457,7 @@ function SshHostModal(props: {
                   <SshPasswordInput
                     id="ssh-private-key-passphrase"
                     value={privateKeyPassphrase}
-                    disabled={isPasswordAuth}
+                    disabled={!isPrivateKeyAuth}
                     onChange={setPrivateKeyPassphrase}
                   />
                   {initialData?.privateKeyPassphraseConfigured &&
@@ -747,9 +787,10 @@ function SshHostCard(props: {
   const { t } = useLocale();
   const showKeyPath = host.authType === "privateKey" && host.privateKeyPath.trim().length > 0;
   const showKeyConfigured = host.authType === "privateKey" && host.privateKeyConfigured;
+  const showAgentConfigured = host.authType === "agent";
   const showProxy =
     host.proxy.url.trim().length > 0 || host.proxy.port > 0 || host.proxy.passwordConfigured;
-  const hasMeta = showKeyPath || showKeyConfigured || showProxy;
+  const hasMeta = showKeyPath || showKeyConfigured || showAgentConfigured || showProxy;
   const hasFooter = hasMeta || resetStatus;
 
   const actions = (
@@ -803,6 +844,7 @@ function SshHostCard(props: {
     <div className="flex flex-wrap items-center gap-1.5">
       {showKeyPath ? <PromptTag label={host.privateKeyPath} muted /> : null}
       {showKeyConfigured ? <PromptTag label={t("settings.sshPrivateKeyConfigured")} muted /> : null}
+      {showAgentConfigured ? <PromptTag label={t("settings.sshAgentConfigured")} muted /> : null}
       {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
     </div>
   );
@@ -964,34 +1006,52 @@ export function SshSection(props: SettingsSectionProps) {
     setSettings((prev) => {
       if (editingHost) {
         return updateSsh(prev, {
-          hosts: prev.ssh.hosts.map((host) =>
-            host.id === editingHost.id
-              ? {
-                  ...host,
-                  ...data,
-                  password: data.password || host.password,
-                  privateKey: data.privateKey || host.privateKey,
-                  privateKeyPassphrase:
-                    data.privateKeyPassphrase || host.privateKeyPassphrase,
-                  passwordConfigured:
-                    data.password.trim().length > 0 || host.passwordConfigured === true,
-                  privateKeyConfigured:
-                    data.privateKey.trim().length > 0 ||
-                    data.privateKeyPath.trim().length > 0 ||
-                    host.privateKeyConfigured === true,
-                  privateKeyPassphraseConfigured:
-                    data.privateKeyPassphrase.trim().length > 0 ||
-                    host.privateKeyPassphraseConfigured === true,
-                  proxy: {
-                    ...data.proxy,
-                    password: data.proxy.password || host.proxy.password,
-                    passwordConfigured:
-                      data.proxy.password.trim().length > 0 ||
-                      host.proxy.passwordConfigured === true,
-                  },
-                }
-              : host,
-          ),
+          hosts: prev.ssh.hosts.map((host) => {
+            if (host.id !== editingHost.id) return host;
+            const keepPasswordSecret = data.authType === "password" && host.authType === "password";
+            const keepPrivateKeySecret =
+              data.authType === "privateKey" && host.authType === "privateKey";
+            const nextPassword =
+              data.authType === "password"
+                ? data.password || (keepPasswordSecret ? host.password : "")
+                : "";
+            const nextPrivateKey =
+              data.authType === "privateKey"
+                ? data.privateKey || (keepPrivateKeySecret ? host.privateKey : "")
+                : "";
+            const nextPrivateKeyPassphrase =
+              data.authType === "privateKey"
+                ? data.privateKeyPassphrase ||
+                  (keepPrivateKeySecret ? host.privateKeyPassphrase : "")
+                : "";
+            return {
+              ...host,
+              ...data,
+              password: nextPassword,
+              privateKey: nextPrivateKey,
+              privateKeyPassphrase: nextPrivateKeyPassphrase,
+              passwordConfigured:
+                data.authType === "password" &&
+                (data.password.trim().length > 0 ||
+                  (keepPasswordSecret && host.passwordConfigured === true)),
+              privateKeyConfigured:
+                data.authType === "privateKey" &&
+                (data.privateKey.trim().length > 0 ||
+                  data.privateKeyPath.trim().length > 0 ||
+                  (keepPrivateKeySecret && host.privateKeyConfigured === true)),
+              privateKeyPassphraseConfigured:
+                data.authType === "privateKey" &&
+                (data.privateKeyPassphrase.trim().length > 0 ||
+                  (keepPrivateKeySecret && host.privateKeyPassphraseConfigured === true)),
+              proxy: {
+                ...data.proxy,
+                password: data.proxy.password || host.proxy.password,
+                passwordConfigured:
+                  data.proxy.password.trim().length > 0 ||
+                  host.proxy.passwordConfigured === true,
+              },
+            };
+          }),
         });
       }
       return updateSsh(prev, {

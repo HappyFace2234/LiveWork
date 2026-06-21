@@ -243,6 +243,57 @@
     background: hsl(var(--muted-foreground) / 0.35);
   }
 
+  .project-tools-panel-tabs {
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .project-tools-panel-tabs::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  .project-tools-panel-tabs-scrollbar {
+    position: relative;
+    height: 4px;
+    flex: 0 0 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: hsl(var(--muted) / 0.42);
+    opacity: 0;
+    pointer-events: none;
+    touch-action: none;
+    transition:
+      background-color 160ms ease,
+      opacity 160ms ease;
+  }
+  .project-tools-panel-tabs-scrollbar-visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .project-tools-panel-tabs-scrollbar-thumb {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    min-width: 28px;
+    border-radius: inherit;
+    background: hsl(var(--muted-foreground) / 0.22);
+    box-shadow: inset 0 0 0 1px hsl(var(--background) / 0.82);
+    transition:
+      background-color 160ms ease,
+      box-shadow 160ms ease;
+  }
+  .project-tools-panel-tabs-scrollbar:hover,
+  .project-tools-panel-tabs-scrollbar-dragging {
+    background: hsl(var(--muted) / 0.5);
+  }
+  .project-tools-panel-tabs-scrollbar:hover .project-tools-panel-tabs-scrollbar-thumb,
+  .project-tools-panel-tabs-scrollbar-dragging .project-tools-panel-tabs-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.36);
+  }
+
   /* Upload file list scrollbar */
   .upload-file-list {
     scrollbar-width: thin;
@@ -312,11 +363,8 @@
     box-sizing: border-box;
     width: 100%;
     height: 100%;
-    padding:
-      var(--project-terminal-padding-y)
-      var(--project-terminal-padding-x)
-      var(--project-terminal-padding-y)
-      var(--project-terminal-padding-x);
+    padding: var(--project-terminal-padding-y) var(--project-terminal-padding-x)
+      var(--project-terminal-padding-y) var(--project-terminal-padding-x);
   }
   .project-terminal-viewport .xterm-viewport,
   .project-terminal-viewport .xterm-screen,
@@ -2194,11 +2242,7 @@ body > div:not(#root) [data-streamdown="mermaid"] svg {
       hsl(38 92% 50% / 0.08) 10.5rem 12.25rem,
       transparent 12.25rem
     ),
-    repeating-linear-gradient(
-      to bottom,
-      transparent 0 27px,
-      hsl(var(--border) / 0.42) 27px 28px
-    ),
+    repeating-linear-gradient(to bottom, transparent 0 27px, hsl(var(--border) / 0.42) 27px 28px),
     hsl(var(--background));
   box-shadow:
     inset 0 1px 0 hsl(var(--foreground) / 0.04),

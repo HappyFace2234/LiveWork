@@ -1,6 +1,6 @@
 import type { Context, Tool, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import { useEffect, useRef } from "react";
+import { Type } from "typebox";
 import { runAssistantWithTools } from "../../lib/chat/runner/agentRunner";
 import { createStreamDebugLogger } from "../../lib/debug/agentDebug";
 import {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "@/i18n";
+import { workspaceProjectPathKey } from "@/lib/settings";
 import { cn } from "@/lib/shared/utils";
 import type {
   TunnelCreateInput,
@@ -206,7 +207,7 @@ function tunnelStatusKey(status: TunnelSummary["status"]) {
 }
 
 function normalizeProjectPathKey(value: string | undefined) {
-  return value?.trim() ?? "";
+  return workspaceProjectPathKey(value ?? "");
 }
 
 function ttlFromTunnel(tunnel: TunnelSummary, nowSeconds: number): TunnelTtlSeconds {

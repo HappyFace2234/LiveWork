@@ -1,13 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "../../i18n";
-import type {
-  ProjectToolsFileTreeProjectState,
-  ProjectToolsFileTreeStatePatch,
-} from "../../lib/settings";
+import type { RightDockFileTreeState, RightDockFileTreeStatePatch } from "../../lib/settings";
 import { cn } from "../../lib/shared/utils";
 import { getFileTypeIcon } from "../chat/fileTypeIcons";
-import { isWorkspaceImagePath } from "../workspace-editor/workspaceImagePreview";
 import {
   Check,
   ChevronRight,
@@ -27,6 +23,7 @@ import {
 import { Button } from "../ui/button";
 import { useConfirmDialog } from "../ui/confirm-dialog";
 import { Input } from "../ui/input";
+import { isWorkspaceImagePath } from "../workspace-editor/workspaceImagePreview";
 
 type FileTreeKind = "file" | "dir";
 
@@ -147,9 +144,9 @@ export function ProjectFileTreePanel(props: {
   projectPathKey: string;
   cwd: string;
   initialized: boolean;
-  syncState: ProjectToolsFileTreeProjectState;
+  syncState: RightDockFileTreeState;
   onInitializedChange: (initialized: boolean) => void;
-  onSyncStateChange: (patch: ProjectToolsFileTreeStatePatch) => void;
+  onSyncStateChange: (patch: RightDockFileTreeStatePatch) => void;
   onInsertFileMention?: (path: string, kind: FileTreeKind) => void;
   onOpenFile?: (path: string) => void;
 }) {
@@ -206,7 +203,7 @@ export function ProjectFileTreePanel(props: {
     [cwd, projectPathKey],
   );
 
-  const syncFileTreeState = useCallback((patch: ProjectToolsFileTreeStatePatch) => {
+  const syncFileTreeState = useCallback((patch: RightDockFileTreeStatePatch) => {
     onSyncStateChangeRef.current(patch);
   }, []);
 

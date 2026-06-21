@@ -10,8 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 
+	"github.com/liveagent/agent-gateway/internal/auth"
 	"github.com/liveagent/agent-gateway/internal/config"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
@@ -32,21 +33,6 @@ type websocketEnvelope struct {
 
 type websocketAuthPayload struct {
 	Token string `json:"token"`
-}
-
-type websocketChatResumePayload struct {
-	RequestID      string `json:"request_id"`
-	ConversationID string `json:"conversation_id"`
-	AfterSeq       int64  `json:"after_seq"`
-}
-
-type websocketChatAttachPayload struct {
-	ConversationID string `json:"conversation_id"`
-	AfterSeq       int64  `json:"after_seq"`
-}
-
-type websocketChatDetachPayload struct {
-	RequestID string `json:"request_id"`
 }
 
 type websocketTerminalRequestPayload struct {
@@ -101,17 +87,12 @@ type websocketGitRequestPayload struct {
 	Args    json.RawMessage `json:"args,omitempty"`
 }
 
-type websocketChatState struct {
-	cancel          context.CancelFunc
-	conversationID  string
-	sourceRequestID string
-}
-
 type websocketConnection struct {
 	cfg *config.Config
 	sm  *session.Manager
 
 	conn *websocket.Conn
+	req  *http.Request
 
 	writer     *websocketConnectionWriter
 	closeOnce  sync.Once
@@ -126,45 +107,53 @@ type websocketConnection struct {
 	terminalEventsCleanup func()
 	sftpEvents            <-chan *gatewayv1.SftpEvent
 	sftpEventsCleanup     func()
-	chatEvents            <-chan *session.ChatBroadcastEvent
-	chatEventsCleanup     func()
 	heartbeatOnce         sync.Once
 
-	chatTracker      *websocketChatTracker
 	terminalInterest *websocketTerminalInterestTracker
 }
 
-const recentActiveChatRetention = 5 * time.Second
 const maxHistoryListLimit = 200
 const defaultHistoryListPage = 1
 const defaultHistoryListPageSize = 80
 
 func NewWebSocketServer(cfg *config.Config, sm *session.Manager) http.Handler {
-	server := &websocket.Server{
-		Handshake: func(_ *websocket.Config, _ *http.Request) error {
-			return nil
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return originAllowed(r)
 		},
-		Handler: websocket.Handler(func(conn *websocket.Conn) {
-			state := &websocketConnection{
-				cfg:              cfg,
-				sm:               sm,
-				conn:             conn,
-				writer:           newWebsocketConnectionWriter(conn, cfg.WebSocketWriteTimeout),
-				done:             make(chan struct{}),
-				chatTracker:      newWebsocketChatTracker(),
-				terminalInterest: newWebsocketTerminalInterestTracker(),
-			}
-			defer state.close()
-			state.serve()
-		}),
 	}
-	return server
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		conn.SetReadLimit(webSocketReadLimit(cfg))
+
+		state := &websocketConnection{
+			cfg:              cfg,
+			sm:               sm,
+			conn:             conn,
+			req:              r,
+			writer:           newWebsocketConnectionWriter(conn, cfg.WebSocketWriteTimeout),
+			done:             make(chan struct{}),
+			terminalInterest: newWebsocketTerminalInterestTracker(),
+		}
+		defer state.close()
+		state.serve()
+	})
+}
+
+func webSocketReadLimit(cfg *config.Config) int64 {
+	if cfg != nil && cfg.GRPCMaxMessageBytes > 0 {
+		return int64(cfg.GRPCMaxMessageBytes)
+	}
+	return int64(config.DefaultGRPCMaxMessageBytes)
 }
 
 func (c *websocketConnection) serve() {
 	for {
 		var req websocketRequest
-		if err := websocket.JSON.Receive(c.conn, &req); err != nil {
+		if err := c.conn.ReadJSON(&req); err != nil {
 			if errors.Is(err, io.EOF) {
 				return
 			}
@@ -218,18 +207,6 @@ func (c *websocketConnection) close() {
 			c.sftpEventsCleanup()
 			c.sftpEventsCleanup = nil
 		}
-		if c.chatEventsCleanup != nil {
-			c.chatEventsCleanup()
-			c.chatEventsCleanup = nil
-		}
-		activeAttachments := c.releaseAllActiveChatAttachments()
-		for _, cancel := range activeAttachments {
-			cancel()
-		}
-		activeChats := c.releaseAllActiveChats()
-		for _, chat := range activeChats {
-			chat.cancel()
-		}
 		_ = c.conn.Close()
 	})
 }
@@ -242,8 +219,7 @@ func (c *websocketConnection) handleAuth(req websocketRequest) {
 		return
 	}
 
-	expectedToken := strings.TrimSpace(c.cfg.Token)
-	if expectedToken == "" || strings.TrimSpace(payload.Token) != expectedToken {
+	if !auth.ValidateToken(payload.Token, c.cfg.Token) {
 		_ = c.writeError(req.ID, "unauthorized")
 		c.close()
 		return
@@ -254,7 +230,6 @@ func (c *websocketConnection) handleAuth(req websocketRequest) {
 	c.startSettingsSyncForwarder()
 	c.startTerminalEventForwarder()
 	c.startSftpEventForwarder()
-	c.startChatEventForwarder()
 	c.startWebSocketHeartbeat()
 	if err := c.writeResponse(req.ID, map[string]any{"ok": true}); err != nil {
 		c.close()
@@ -284,46 +259,6 @@ func (c *websocketConnection) startHistorySyncForwarder() {
 				if err := c.writeHistoryEvent(websocketHistorySyncPayload(event)); err != nil {
 					c.close()
 					return
-				}
-			}
-		}
-	}()
-}
-
-func (c *websocketConnection) startChatEventForwarder() {
-	if c.chatEvents != nil || c.chatEventsCleanup != nil {
-		return
-	}
-
-	chatEvents, cleanup := c.sm.SubscribeChatEvents()
-	c.chatEvents = chatEvents
-	c.chatEventsCleanup = cleanup
-
-	go func() {
-		for {
-			select {
-			case <-c.done:
-				return
-			case event, ok := <-chatEvents:
-				if !ok {
-					return
-				}
-				if c.hasActiveChatRequest(event.RequestID) {
-					continue
-				}
-				if event.Control != nil {
-					if err := c.writeEnvelope(websocketEnvelope{
-						Type:    "conversation.control",
-						Payload: websocketChatControlPayload(event.Control, event.Seq, event.Workdir),
-					}); err != nil {
-						c.close()
-						return
-					}
-				} else if event.Event != nil {
-					if err := c.writeConversationEvent(websocketChatEventPayload(event.Event, event.Seq, event.Workdir)); err != nil {
-						c.close()
-						return
-					}
 				}
 			}
 		}
@@ -532,22 +467,6 @@ func (c *websocketConnection) sendToAgent(envelope *gatewayv1.GatewayEnvelope) e
 	return c.sm.SendToAgentContext(ctx, envelope)
 }
 
-func (c *websocketConnection) chatStartTimeout() time.Duration {
-	timeout := c.cfg.ChatStartTimeout
-	if timeout <= 0 {
-		timeout = 15 * time.Second
-	}
-	return timeout
-}
-
-func (c *websocketConnection) chatRenderStartTimeout() time.Duration {
-	timeout := c.cfg.ChatRenderStartTimeout
-	if timeout <= 0 {
-		timeout = 45 * time.Second
-	}
-	return timeout
-}
-
 func (c *websocketConnection) writeResponse(requestID string, payload any) error {
 	return c.writeEnvelope(websocketEnvelope{
 		ID:      requestID,
@@ -564,32 +483,9 @@ func (c *websocketConnection) writeError(requestID string, message string) error
 	})
 }
 
-func (c *websocketConnection) writeChatEvent(requestID string, payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		ID:      requestID,
-		Type:    "chat.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeChatControl(requestID string, payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		ID:      requestID,
-		Type:    "chat.control",
-		Payload: payload,
-	})
-}
-
 func (c *websocketConnection) writeHistoryEvent(payload any) error {
 	return c.writeEnvelope(websocketEnvelope{
 		Type:    "history.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeConversationEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "conversation.event",
 		Payload: payload,
 	})
 }

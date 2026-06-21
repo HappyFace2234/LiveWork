@@ -25,6 +25,11 @@ import {
   streamSimpleByApi,
   toSimpleStreamReasoning,
 } from "../../providers/llm";
+import {
+  buildProviderNativeWebSearchBridgeResult,
+  HIDDEN_PROVIDER_NATIVE_WEB_SEARCH_TOOL_NAMES,
+  isProviderNativeWebSearchToolName,
+} from "../../providers/nativeWebSearch";
 import { prepareProxyRequest } from "../../providers/proxy";
 import type {
   CodexRequestFormat,
@@ -405,66 +410,6 @@ function getAssistantToolCalls(assistant: AssistantMessage): ToolCall[] {
   return assistant.content.filter((block): block is ToolCall => block.type === "toolCall");
 }
 
-function isProviderNativeWebSearchName(toolName: string) {
-  const normalized = toolName.trim().toLowerCase();
-  return (
-    normalized === "web_search" ||
-    normalized === "web_search_20250305" ||
-    normalized === "web_search_20260209" ||
-    normalized === "web_search_preview" ||
-    normalized.startsWith("web_search_call")
-  );
-}
-
-function readToolCallStringArgument(toolCall: ToolCall, name: string) {
-  const args = toolCall.arguments;
-  if (!args || typeof args !== "object") return "";
-  const value = (args as Record<string, unknown>)[name];
-  return typeof value === "string" ? value.trim() : "";
-}
-
-function buildRecoveredProviderNativeWebSearchResult(params: {
-  toolCall: ToolCall;
-  roundHostedSearchBlocks: HostedSearchBlock[];
-}): ToolResultMessage {
-  const query =
-    readToolCallStringArgument(params.toolCall, "query") ||
-    readToolCallStringArgument(params.toolCall, "search_query");
-  const sources = params.roundHostedSearchBlocks
-    .flatMap((block) => block.sources)
-    .filter((source, index, all) => all.findIndex((item) => item.url === source.url) === index)
-    .slice(0, 10);
-  const sourceLines = sources.map((source, index) => {
-    const title = source.title?.trim() || source.url;
-    return `${index + 1}. ${title} - ${source.url}`;
-  });
-  const text = [
-    "Recovered a provider-native web search request that was emitted as DSML text instead of a structured provider tool call.",
-    query ? `Requested query: ${query}` : "",
-    sourceLines.length > 0
-      ? ["Hosted search sources already captured in this round:", ...sourceLines].join("\n")
-      : "No local web_search executor is available. Continue from existing context, or request provider-native web search through the model/tool protocol instead of printing DSML markup.",
-    "Do not repeat the DSML markup in the final answer.",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  return {
-    role: "toolResult",
-    toolCallId: params.toolCall.id,
-    toolName: params.toolCall.name,
-    content: [{ type: "text", text }],
-    details: {
-      recoveredProviderNativeWebSearch: true,
-      query,
-      sourceCount: sources.length,
-      sources,
-    },
-    isError: false,
-    timestamp: Date.now(),
-  };
-}
-
 function findConsecutiveToolGroup(
   assistant: AssistantMessage,
   toolCallId: string,
@@ -665,15 +610,14 @@ export async function runAssistantWithTools(params: {
       let toolResult: ToolResultMessage;
       const linkedSignal = createLinkedAbortSignal([signal, params.signal]);
       try {
-        const hasLocalTool = (params.tools ?? []).some((tool) => tool.name === toolCall.name);
-        if (
-          nativeWebSearchStatus &&
-          !hasLocalTool &&
-          isProviderNativeWebSearchName(toolCall.name)
-        ) {
-          toolResult = buildRecoveredProviderNativeWebSearchResult({
+        if (shouldSilenceProviderNativeWebSearchToolCall(toolCall)) {
+          toolResult = buildProviderNativeWebSearchBridgeResult({
             toolCall,
-            roundHostedSearchBlocks: hostedSearchBlocksByRound.get(currentRound) ?? [],
+            hostedSearchBlocks: hostedSearchBlocksByRound.get(currentRound) ?? [],
+            sourcesIntro: "Hosted search sources already captured in this round:",
+            fallbackText:
+              "No local web_search executor is available. Continue from existing context, or request provider-native web search through the model/tool protocol instead of printing raw tool-call markup.",
+            extraInstructions: ["Do not repeat raw tool-call markup in the final answer."],
           });
         } else {
           const execute = () =>
@@ -769,6 +713,22 @@ export async function runAssistantWithTools(params: {
     };
 
     const llmTools = params.tools ?? [];
+    const localToolNames = new Set(llmTools.map((tool) => tool.name));
+    const hiddenProviderNativeWebSearchToolNames = new Set<string>(
+      nativeWebSearchStatus
+        ? HIDDEN_PROVIDER_NATIVE_WEB_SEARCH_TOOL_NAMES.filter((name) => !localToolNames.has(name))
+        : [],
+    );
+    const shouldSilenceProviderNativeWebSearchToolCall = (toolCall: ToolCall) =>
+      Boolean(
+        nativeWebSearchStatus &&
+          !localToolNames.has(toolCall.name) &&
+          isProviderNativeWebSearchToolName(toolCall.name),
+      );
+    const filterRequestTools = (
+      tools: Context["tools"] | undefined,
+    ): Context["tools"] | undefined =>
+      tools?.filter((tool) => !hiddenProviderNativeWebSearchToolNames.has(tool.name));
     const toolsSuffix = buildToolsSuffix(
       params.workdir,
       llmTools.map((tool) => tool.name),
@@ -985,7 +945,7 @@ export async function runAssistantWithTools(params: {
       latestAgentEndMessages = [];
     }
 
-    agentTools = llmTools.map((tool) => ({
+    const visibleAgentTools: AgentTool<any>[] = llmTools.map((tool) => ({
       ...tool,
       label: tool.name,
       async execute(toolCallId, toolArgs, signal) {
@@ -1015,20 +975,46 @@ export async function runAssistantWithTools(params: {
         return executeSingleToolCall(toolCall, signal);
       },
     }));
+    const hiddenProviderNativeWebSearchAgentTools: AgentTool<any>[] = [
+      ...hiddenProviderNativeWebSearchToolNames,
+    ].map((name) => ({
+      name,
+      label: name,
+      description: "Internal provider-native web search bridge.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          search_query: { type: "string" },
+          additionalContext: { type: "string" },
+        },
+        additionalProperties: true,
+      },
+      async execute(toolCallId, toolArgs, signal) {
+        const toolCall = toSyntheticToolCall({
+          id: toolCallId,
+          name,
+          arguments: (toolArgs ?? {}) as Record<string, unknown>,
+        });
+        toolCallsById.set(toolCall.id, toolCall);
+        return executeSingleToolCall(toolCall, signal);
+      },
+    }));
+    agentTools = [...visibleAgentTools, ...hiddenProviderNativeWebSearchAgentTools];
 
     let streamRound = 0;
     const streamFn = (streamModel: typeof model, streamContext: Context, options?: any) => {
       const round = ++streamRound;
-      const stateMessages = getAgentMessages(agent);
+      const streamTools =
+        streamContext.tools ?? (agent?.state.tools as Context["tools"] | undefined) ?? llmTools;
       const effectiveContext = sanitizeContextForModelRequest({
         ...streamContext,
         systemPrompt:
           typeof currentSystemPrompt === "string"
             ? currentSystemPrompt
             : streamContext.systemPrompt,
-        messages: stateMessages.slice(),
-        tools:
-          streamContext.tools ?? (agent?.state.tools as Context["tools"] | undefined) ?? llmTools,
+        messages: streamContext.messages.slice(),
+        tools: filterRequestTools(streamTools),
       });
       const fallbackReasoning =
         params.providerId === "claude_code" || params.providerId === "gemini"
@@ -1201,12 +1187,16 @@ export async function runAssistantWithTools(params: {
             const block = streamEvent.partial.content[streamEvent.contentIndex];
             if (block && block.type === "toolCall") {
               toolCallsById.set(block.id, block);
-              params.onToolCall?.(block, currentRound);
+              if (!shouldSilenceProviderNativeWebSearchToolCall(block)) {
+                params.onToolCall?.(block, currentRound);
+              }
             }
           } else if (streamEvent.type === "toolcall_end") {
             nativeWebSearchStatusController.pause();
             toolCallsById.set(streamEvent.toolCall.id, streamEvent.toolCall);
-            params.onToolCall?.(streamEvent.toolCall, currentRound);
+            if (!shouldSilenceProviderNativeWebSearchToolCall(streamEvent.toolCall)) {
+              params.onToolCall?.(streamEvent.toolCall, currentRound);
+            }
           }
           break;
         }
@@ -1251,7 +1241,9 @@ export async function runAssistantWithTools(params: {
               round: currentRound,
               assistant: assistantMessage,
             });
-            const toolCallCount = getAssistantToolCalls(assistantMessage).length;
+            const toolCallCount = getAssistantToolCalls(assistantMessage).filter(
+              (toolCall) => !shouldSilenceProviderNativeWebSearchToolCall(toolCall),
+            ).length;
             if (toolCallCount > 0) {
               nativeWebSearchStatusController.pause();
               params.onToolStatus?.(`第 ${currentRound} 轮：准备执行 ${toolCallCount} 个工具...`);
@@ -1264,7 +1256,9 @@ export async function runAssistantWithTools(params: {
                 id: event.message.toolCallId,
                 name: event.message.toolName,
               });
-            params.onToolResult?.(toolCall, event.message, currentRound);
+            if (!shouldSilenceProviderNativeWebSearchToolCall(toolCall)) {
+              params.onToolResult?.(toolCall, event.message, currentRound);
+            }
           }
           break;
         case "turn_end": {
@@ -1306,6 +1300,9 @@ export async function runAssistantWithTools(params: {
               arguments: event.args ?? {},
             });
           toolCallsById.set(toolCall.id, toolCall);
+          if (shouldSilenceProviderNativeWebSearchToolCall(toolCall)) {
+            break;
+          }
           const parallelBatch = getParallelToolBatch(
             toolCall.id,
             parallelBatchKeyByToolCallId,
@@ -1368,16 +1365,24 @@ export async function runAssistantWithTools(params: {
           throw new Error("Too many seed tool-call recovery attempts");
         }
 
-        params.onToolStatus?.(
-          `第 ${recoveredSeedRound} 轮：恢复执行 ${recoveredSeedToolCalls.length} 个工具...`,
+        const visibleRecoveredSeedToolCalls = recoveredSeedToolCalls.filter(
+          (toolCall) => !shouldSilenceProviderNativeWebSearchToolCall(toolCall),
         );
+        if (visibleRecoveredSeedToolCalls.length > 0) {
+          params.onToolStatus?.(
+            `第 ${recoveredSeedRound} 轮：恢复执行 ${visibleRecoveredSeedToolCalls.length} 个工具...`,
+          );
+        }
 
         const syntheticToolResults: ToolResultMessage[] = [];
         for (const toolCall of recoveredSeedToolCalls) {
           toolCallsById.set(toolCall.id, toolCall);
-          params.onToolCall?.(toolCall, recoveredSeedRound);
-          params.onToolStatus?.(`正在执行：${summarizeToolCall(toolCall)}`);
-          params.onToolExecutionStart?.(toolCall, recoveredSeedRound);
+          const shouldSilenceToolCall = shouldSilenceProviderNativeWebSearchToolCall(toolCall);
+          if (!shouldSilenceToolCall) {
+            params.onToolCall?.(toolCall, recoveredSeedRound);
+            params.onToolStatus?.(`正在执行：${summarizeToolCall(toolCall)}`);
+            params.onToolExecutionStart?.(toolCall, recoveredSeedRound);
+          }
 
           const result = await executeSingleToolCall(toolCall, params.signal);
           const toolResult = {
@@ -1391,7 +1396,9 @@ export async function runAssistantWithTools(params: {
           } satisfies ToolResultMessage;
 
           syntheticToolResults.push(toolResult);
-          params.onToolResult?.(toolCall, toolResult, recoveredSeedRound);
+          if (!shouldSilenceToolCall) {
+            params.onToolResult?.(toolCall, toolResult, recoveredSeedRound);
+          }
         }
 
         if (syntheticToolResults.length > 0) {

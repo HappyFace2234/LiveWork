@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -18,7 +20,6 @@ func HTTPMiddleware(expectedToken string, next http.Handler) http.Handler {
 
 func ValidateBearerHeader(headerValue, expectedToken string) bool {
 	headerValue = strings.TrimSpace(headerValue)
-	expectedToken = strings.TrimSpace(expectedToken)
 	if headerValue == "" {
 		return false
 	}
@@ -29,7 +30,18 @@ func ValidateBearerHeader(headerValue, expectedToken string) bool {
 	if !strings.EqualFold(parts[0], "Bearer") {
 		return false
 	}
-	return expectedToken != "" && strings.TrimSpace(parts[1]) == expectedToken
+	return ValidateToken(parts[1], expectedToken)
+}
+
+func ValidateToken(value, expectedToken string) bool {
+	value = strings.TrimSpace(value)
+	expectedToken = strings.TrimSpace(expectedToken)
+	if value == "" || expectedToken == "" {
+		return false
+	}
+	valueHash := sha256.Sum256([]byte(value))
+	expectedHash := sha256.Sum256([]byte(expectedToken))
+	return subtle.ConstantTimeCompare(valueHash[:], expectedHash[:]) == 1
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {

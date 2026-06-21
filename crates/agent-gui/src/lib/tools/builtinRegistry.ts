@@ -31,10 +31,10 @@ import { createMcpManagerTools } from "./mcpManagerTools";
 import { createMcpTools } from "./mcpTools";
 import { createMemoryTools } from "./memoryTools";
 import { createShellTools } from "./shellTools";
-import { createSSHManagerTools } from "./sshManagerTools";
-import type { SystemToolId, SystemToolRuntimeScope } from "./systemToolOptions";
 import type { SkillAccessPolicy } from "./skillAccessPolicy";
 import { createSkillTools } from "./skillTools";
+import { createSSHManagerTools, type SshManagerSessionChange } from "./sshManagerTools";
+import type { SystemToolId, SystemToolRuntimeScope } from "./systemToolOptions";
 import { createTerminalTools } from "./terminalTools";
 import { createTunnelManagerTools } from "./tunnelManagerTools";
 
@@ -175,6 +175,7 @@ type BuildBuiltinBaseToolRegistryParams = {
   sshHosts?: SshHostConfig[];
   associatedSshHostIds?: string[];
   sshManagerRemoteAllowed?: boolean;
+  onSshSessionsChanged?: (change: SshManagerSessionChange) => void | Promise<void>;
   onTunnelsChanged?: (change: {
     action: "create" | "close";
     tunnel: {
@@ -259,6 +260,7 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
       projectPathKey: params.tunnelProjectPathKey,
       hosts: params.sshHosts,
       associatedHostIds: params.associatedSshHostIds,
+      onSshSessionsChanged: params.onSshSessionsChanged,
     }),
     ...(params.runtimeScope === "chat"
       ? [

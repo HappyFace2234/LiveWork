@@ -26,6 +26,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     "tooltip.switchToDark": "切换到深色模式",
     "tooltip.closeSidebar": "关闭边栏",
     "tooltip.openSidebar": "打开边栏",
+    "appUpdate.update": "更新",
+    "appUpdate.updateTo": "更新到 v{version}",
+    "appUpdate.failedRetry": "更新失败：{message}。点击重试。",
 
     /* ── Chat Page ── */
     "chat.newConversation": "新对话",
@@ -261,19 +264,23 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.sshTunnelConfiguredHosts": "已关联 {count} 台 SSH 主机",
     "projectTools.sshTunnelNoProject": "选择项目后可关联 SSH 主机",
     "projectTools.sshTunnelProjectEmpty": "当前项目暂无 SSH 连接",
-    "projectTools.sshTunnelProjectEmptyHint": "先关联设置中已配置的 SSH 主机，然后在这里启动交互式终端。",
+    "projectTools.sshTunnelProjectEmptyHint":
+      "先关联设置中已配置的 SSH 主机，然后在这里启动交互式终端。",
     "projectTools.sshTunnelProjectEmptyWithHosts": "选择已关联主机即可启动 SSH 终端。",
     "projectTools.sshTunnelAllEmpty": "暂无 SSH 连接",
     "projectTools.sshTunnelAllEmptyHint": "当前没有运行中的 SSH 终端。",
     "projectTools.sshTunnelAssociateHosts": "关联 SSH 主机",
-    "projectTools.sshTunnelAssociateHostsHint": "从 Settings > SSH 已配置主机中选择当前项目可用的主机",
+    "projectTools.sshTunnelAssociateHostsHint":
+      "从 Settings > SSH 已配置主机中选择当前项目可用的主机",
     "projectTools.sshTunnelAssociatedCount": "已关联",
     "projectTools.sshTunnelNoConfiguredHosts": "还没有配置 SSH 主机",
-    "projectTools.sshTunnelNoConfiguredHostsHint": "请先到 Settings > SSH 添加或导入主机，再回到这里关联当前项目。",
+    "projectTools.sshTunnelNoConfiguredHostsHint":
+      "请先到 Settings > SSH 添加或导入主机，再回到这里关联当前项目。",
     "projectTools.sshTunnelCreateTitle": "新建 SSH 连接",
     "projectTools.sshTunnelCreateHint": "选择主机并打开交互式 SSH 终端。",
     "projectTools.sshTunnelCreateNoAssociatedHosts": "当前项目还没有关联 SSH 主机",
-    "projectTools.sshTunnelCreateNoAssociatedHostsHint": "先关联 Settings > SSH 中的主机，再从这里新建 SSH 连接。",
+    "projectTools.sshTunnelCreateNoAssociatedHostsHint":
+      "先关联 Settings > SSH 中的主机，再从这里新建 SSH 连接。",
     "projectTools.sshTunnelHost": "SSH 主机",
     "projectTools.sshTunnelSftpEnabled": "SFTP功能",
     "projectTools.sshTunnelNote": "备注",
@@ -285,7 +292,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.sshTunnelConnecting": "连接中",
     "projectTools.sshTunnelTabTitle": "标签标题",
     "projectTools.sshTunnelTabTitlePlaceholder": "默认使用主机名称",
-    "projectTools.sshTunnelProxyUnsupported": "该主机配置了 proxy，V1 SSH 终端暂不支持代理连接。",
+    "projectTools.sshTunnelProxyUnsupported": "该主机配置了 proxy，连接时会通过代理拨号。",
     "projectTools.sshTunnelMissingSecret": "该主机缺少已保存的认证凭据。",
     "projectTools.sshTunnelRunningCount": "{count} 个 SSH 连接运行中",
     "projectTools.sshTunnelConnectionCount": "{count} 个 SSH 连接，{connected} 个已连接",
@@ -587,7 +594,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "workspaceSftp.confirmDeleteFile": "确认删除文件",
     "workspaceSftp.confirmDeleteFileSubtitle": "此文件会被删除，操作无法撤销。",
     "workspaceSftp.confirmDeleteDirectory": "确认递归删除目录",
-    "workspaceSftp.confirmDeleteDirectorySubtitle": "此目录及其所有内容会被递归删除，操作无法撤销。",
+    "workspaceSftp.confirmDeleteDirectorySubtitle":
+      "此目录及其所有内容会被递归删除，操作无法撤销。",
     "workspaceSftp.deleteConfirm": "删除",
     "workspaceSftp.cancel": "取消",
     "workspaceSftp.disconnected": "SSH 连接未连接",
@@ -1018,6 +1026,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.sshAuthPasswordHint": "保存用户名与密码",
     "settings.sshAuthPrivateKey": "私钥登录",
     "settings.sshAuthPrivateKeyHint": "导入私钥文件或直接粘贴内容",
+    "settings.sshAuthAgent": "SSH Agent",
+    "settings.sshAuthAgentHint": "使用本机已解锁的 SSH Agent",
     "settings.sshPassword": "密码",
     "settings.sshPasswordPlaceholder": "输入 SSH 登录密码",
     "settings.sshPasswordConfigured": "密码已保存",
@@ -1030,6 +1040,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.sshPrivateKeyConfigured": "私钥已保存",
     "settings.sshPrivateKeyPassphrase": "私钥口令",
     "settings.sshPrivateKeyPassphraseConfigured": "私钥口令已保存",
+    "settings.sshAgentConfigured": "SSH Agent",
     "settings.sshKnownHostReset": "重置信任记录",
     "settings.sshKnownHostResetTitle": "重置 SSH 信任记录",
     "settings.sshKnownHostResetDesc":
@@ -1470,6 +1481,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     "tooltip.switchToDark": "Switch to Dark Mode",
     "tooltip.closeSidebar": "Close Sidebar",
     "tooltip.openSidebar": "Open Sidebar",
+    "appUpdate.update": "Update",
+    "appUpdate.updateTo": "Update to v{version}",
+    "appUpdate.failedRetry": "Update failed: {message}. Click to retry.",
 
     /* ── Chat Page ── */
     "chat.newConversation": "New Conversation",
@@ -1706,7 +1720,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.tunnelDescription": "Expose HTTP services through Gateway",
     "projectTools.sshTunnelTitle": "SSH Tunnel",
     "projectTools.newSshTunnel": "New SSH Connection",
-    "projectTools.sshTunnelDescription": "Start interactive SSH terminals and associate project hosts",
+    "projectTools.sshTunnelDescription":
+      "Start interactive SSH terminals and associate project hosts",
     "projectTools.sshTunnelSettings": "SSH host settings",
     "projectTools.sshTunnelBack": "Back to SSH",
     "projectTools.sshTunnelScopeGroup": "Switch SSH tunnel scope",
@@ -1744,8 +1759,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.sshTunnelConnecting": "Connecting",
     "projectTools.sshTunnelTabTitle": "Tab title",
     "projectTools.sshTunnelTabTitlePlaceholder": "Defaults to the host name",
-    "projectTools.sshTunnelProxyUnsupported":
-      "This host has a proxy configured. V1 SSH terminal does not support proxy connections.",
+    "projectTools.sshTunnelProxyUnsupported": "This host is configured to connect through a proxy.",
     "projectTools.sshTunnelMissingSecret": "This host is missing saved authentication material.",
     "projectTools.sshTunnelRunningCount": "{count} SSH connections running",
     "projectTools.sshTunnelConnectionCount": "{count} SSH connections, {connected} connected",
@@ -2051,16 +2065,19 @@ export const translations: Record<Locale, Record<string, string>> = {
     "workspaceSftp.drop.upload": "Upload to remote",
     "workspaceSftp.drop.download": "Download to local",
     "workspaceSftp.confirmOverwrite": "Confirm overwrite",
-    "workspaceSftp.confirmOverwriteSubtitle": "The target path already exists. Continuing will overwrite existing content.",
+    "workspaceSftp.confirmOverwriteSubtitle":
+      "The target path already exists. Continuing will overwrite existing content.",
     "workspaceSftp.overwrite": "Overwrite",
     "workspaceSftp.confirmDeleteFile": "Confirm file deletion",
     "workspaceSftp.confirmDeleteFileSubtitle": "This file will be deleted. This cannot be undone.",
     "workspaceSftp.confirmDeleteDirectory": "Confirm recursive directory deletion",
-    "workspaceSftp.confirmDeleteDirectorySubtitle": "This directory and all of its contents will be deleted recursively. This cannot be undone.",
+    "workspaceSftp.confirmDeleteDirectorySubtitle":
+      "This directory and all of its contents will be deleted recursively. This cannot be undone.",
     "workspaceSftp.deleteConfirm": "Delete",
     "workspaceSftp.cancel": "Cancel",
     "workspaceSftp.disconnected": "SSH connection is not connected",
-    "workspaceSftp.disconnectedHint": "SFTP requires the SSH session to stay connected. Reconnect and try again.",
+    "workspaceSftp.disconnectedHint":
+      "SFTP requires the SSH session to stay connected. Reconnect and try again.",
     "workspaceSftp.transfer.idle": "No transfer",
     "workspaceSftp.transfer.queued": "Queued",
     "workspaceSftp.transfer.running": "Transferring",
@@ -2509,6 +2526,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.sshAuthPasswordHint": "Store username and password",
     "settings.sshAuthPrivateKey": "Private key",
     "settings.sshAuthPrivateKeyHint": "Import a key file or paste the key directly",
+    "settings.sshAuthAgent": "SSH Agent",
+    "settings.sshAuthAgentHint": "Use the local unlocked SSH agent",
     "settings.sshPassword": "Password",
     "settings.sshPasswordPlaceholder": "Enter the SSH login password",
     "settings.sshPasswordConfigured": "Password saved",
@@ -2521,6 +2540,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.sshPrivateKeyConfigured": "Private key saved",
     "settings.sshPrivateKeyPassphrase": "Private key passphrase",
     "settings.sshPrivateKeyPassphraseConfigured": "Private key passphrase saved",
+    "settings.sshAgentConfigured": "SSH Agent",
     "settings.sshKnownHostReset": "Reset trust record",
     "settings.sshKnownHostResetTitle": "Reset SSH trust record",
     "settings.sshKnownHostResetDesc":

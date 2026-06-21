@@ -3,31 +3,114 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
+	"strconv"
 	"strings"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
-func websocketConversationSummaryPayload(conversation *gatewayv1.ConversationSummary) map[string]any {
-	if conversation == nil {
+func websocketProtoPayload(message proto.Message, useProtoNames bool) map[string]any {
+	if isNilProtoMessage(message) {
 		return nil
 	}
-
-	return map[string]any{
-		"id":            conversation.GetId(),
-		"title":         conversation.GetTitle(),
-		"created_at":    conversation.GetCreatedAt(),
-		"updated_at":    conversation.GetUpdatedAt(),
-		"message_count": conversation.GetMessageCount(),
-		"provider_id":   conversation.GetProviderId(),
-		"model":         conversation.GetModel(),
-		"session_id":    conversation.GetSessionId(),
-		"cwd":           conversation.GetCwd(),
-		"is_pinned":     conversation.GetIsPinned(),
-		"pinned_at":     conversation.GetPinnedAt(),
-		"is_shared":     conversation.GetIsShared(),
+	raw, err := protojson.MarshalOptions{
+		UseProtoNames:   useProtoNames,
+		EmitUnpopulated: true,
+	}.Marshal(message)
+	if err != nil {
+		return map[string]any{}
 	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return map[string]any{}
+	}
+	coerceProtoJSONNumbers(payload, message.ProtoReflect().Descriptor(), useProtoNames)
+	return payload
+}
+
+func isNilProtoMessage(message proto.Message) bool {
+	if message == nil {
+		return true
+	}
+	value := reflect.ValueOf(message)
+	return value.Kind() == reflect.Pointer && value.IsNil()
+}
+
+func coerceProtoJSONNumbers(payload map[string]any, descriptor protoreflect.MessageDescriptor, useProtoNames bool) {
+	if payload == nil || descriptor == nil {
+		return
+	}
+	fields := descriptor.Fields()
+	for i := 0; i < fields.Len(); i++ {
+		field := fields.Get(i)
+		key := field.JSONName()
+		if useProtoNames {
+			key = field.TextName()
+		}
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		payload[key] = coerceProtoJSONField(value, field, useProtoNames)
+	}
+}
+
+func coerceProtoJSONField(value any, field protoreflect.FieldDescriptor, useProtoNames bool) any {
+	if field == nil || value == nil {
+		return value
+	}
+	if field.IsList() {
+		items, ok := value.([]any)
+		if !ok {
+			return value
+		}
+		for i, item := range items {
+			items[i] = coerceProtoJSONScalarOrMessage(item, field, useProtoNames)
+		}
+		return items
+	}
+	return coerceProtoJSONScalarOrMessage(value, field, useProtoNames)
+}
+
+func coerceProtoJSONScalarOrMessage(value any, field protoreflect.FieldDescriptor, useProtoNames bool) any {
+	if field.Kind() == protoreflect.MessageKind || field.Kind() == protoreflect.GroupKind {
+		if nested, ok := value.(map[string]any); ok {
+			coerceProtoJSONNumbers(nested, field.Message(), useProtoNames)
+		}
+		return value
+	}
+	switch field.Kind() {
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		if number, ok := value.(float64); ok {
+			return int32(number)
+		}
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		if number, ok := value.(float64); ok {
+			return uint32(number)
+		}
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		if text, ok := value.(string); ok {
+			if parsed, err := strconv.ParseInt(text, 10, 64); err == nil {
+				return parsed
+			}
+		}
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		if text, ok := value.(string); ok {
+			if parsed, err := strconv.ParseUint(text, 10, 64); err == nil {
+				return parsed
+			}
+		}
+	}
+	return value
+}
+
+func websocketConversationSummaryPayload(conversation *gatewayv1.ConversationSummary) map[string]any {
+	return websocketProtoPayload(conversation, true)
 }
 
 func websocketActiveChatRunSummariesPayload(summaries []session.ActiveChatRunSummary) []map[string]any {
@@ -37,28 +120,30 @@ func websocketActiveChatRunSummariesPayload(summaries []session.ActiveChatRunSum
 		if conversationID == "" {
 			continue
 		}
-		payload = append(payload, map[string]any{
+		item := map[string]any{
 			"conversation_id": conversationID,
 			"cwd":             strings.TrimSpace(summary.Workdir),
 			"updated_at":      summary.UpdatedAt,
-		})
+		}
+		if requestID := strings.TrimSpace(summary.RequestID); requestID != "" {
+			item["run_id"] = requestID
+		}
+		if summary.FirstSeq > 0 {
+			item["first_seq"] = summary.FirstSeq
+		}
+		if summary.LatestSeq > 0 {
+			item["latest_seq"] = summary.LatestSeq
+		}
+		if summary.RunEpoch > 0 {
+			item["run_epoch"] = summary.RunEpoch
+		}
+		payload = append(payload, item)
 	}
 	return payload
 }
 
 func websocketHistoryShareStatusPayload(share *gatewayv1.HistoryShareStatus) map[string]any {
-	if share == nil {
-		return nil
-	}
-
-	return map[string]any{
-		"conversation_id":     share.GetConversationId(),
-		"enabled":             share.GetEnabled(),
-		"token":               share.GetToken(),
-		"created_at":          share.GetCreatedAt(),
-		"updated_at":          share.GetUpdatedAt(),
-		"redact_tool_content": share.GetRedactToolContent(),
-	}
+	return websocketProtoPayload(share, true)
 }
 
 func websocketHistorySyncPayload(event *gatewayv1.HistorySyncEvent) map[string]any {
@@ -151,14 +236,14 @@ func terminalSessionKind(session *gatewayv1.TerminalSession) string {
 }
 
 func websocketTerminalShellOptionPayload(option *gatewayv1.TerminalShellOption) map[string]any {
-	if option == nil {
+	payload := websocketProtoPayload(option, false)
+	if payload == nil {
 		return nil
 	}
-	return map[string]any{
-		"id":      strings.TrimSpace(option.GetId()),
-		"label":   strings.TrimSpace(option.GetLabel()),
-		"command": strings.TrimSpace(option.GetCommand()),
-	}
+	payload["id"] = strings.TrimSpace(option.GetId())
+	payload["label"] = strings.TrimSpace(option.GetLabel())
+	payload["command"] = strings.TrimSpace(option.GetCommand())
+	return payload
 }
 
 func websocketTerminalResponsePayload(resp *gatewayv1.TerminalResponse) map[string]any {

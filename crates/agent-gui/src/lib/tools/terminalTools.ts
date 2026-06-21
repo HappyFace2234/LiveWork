@@ -1,6 +1,6 @@
 import type { ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import { invoke } from "@tauri-apps/api/core";
+import { Type } from "typebox";
 import { type BuiltinToolBundle, createBuiltinMetadataMap } from "./builtinTypes";
 
 type TerminalReadTailResponse = {

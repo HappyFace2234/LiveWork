@@ -1,5 +1,5 @@
 import type { AppSettings } from "../../lib/settings";
-import type { SettingsSaveState } from "../../lib/settings/storage";
+import type { WebSettingsSaveState } from "../../lib/webSettings";
 
 export type SetSettingsFn = (updater: (prev: AppSettings) => AppSettings) => void;
 
@@ -16,7 +16,7 @@ export type SectionId =
 export type SettingsPageProps = {
   settings: AppSettings;
   setSettings: SetSettingsFn;
-  saveState: SettingsSaveState;
+  saveState: WebSettingsSaveState;
   onBack: () => void;
   initialSection?: SectionId;
   hiddenSections?: SectionId[];

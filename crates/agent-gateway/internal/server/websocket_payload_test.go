@@ -4,10 +4,11 @@ import (
 	"testing"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
+	"github.com/liveagent/agent-gateway/internal/session"
 )
 
-func TestWebsocketChatEventPayloadPreservesHostedSearch(t *testing.T) {
-	payload := websocketChatEventPayload(&gatewayv1.ChatEvent{
+func TestChatEventPayloadPreservesHostedSearch(t *testing.T) {
+	payload := chatEventPayload(&gatewayv1.ChatEvent{
 		Type:           gatewayv1.ChatEvent_HOSTED_SEARCH,
 		ConversationId: "conversation-1",
 		Data:           `{"id":"search-1","provider":"codex","status":"completed","queries":["设计模式定义"],"sources":[{"url":"https://example.com/pattern","title":"设计模式"}],"round":2}`,
@@ -30,6 +31,30 @@ func TestWebsocketChatEventPayloadPreservesHostedSearch(t *testing.T) {
 	}
 	if payload["seq"] != int64(7) {
 		t.Fatalf("expected seq 7, got %#v", payload["seq"])
+	}
+}
+
+func TestActiveChatRunSummaryPayloadIncludesReplayCursor(t *testing.T) {
+	payload := websocketActiveChatRunSummariesPayload([]session.ActiveChatRunSummary{
+		{
+			ConversationID: "conversation-1",
+			RequestID:      "run-1",
+			Workdir:        "/workspace",
+			FirstSeq:       4,
+			LatestSeq:      9,
+			RunEpoch:       2,
+			UpdatedAt:      123,
+		},
+	})
+	if len(payload) != 1 {
+		t.Fatalf("payload len = %d, want 1", len(payload))
+	}
+	item := payload[0]
+	if item["run_id"] != "run-1" ||
+		item["first_seq"] != int64(4) ||
+		item["latest_seq"] != int64(9) ||
+		item["run_epoch"] != int64(2) {
+		t.Fatalf("active run payload = %#v", item)
 	}
 }
 
@@ -60,6 +85,37 @@ func TestWebsocketTerminalPayloadsPreserveOutputOffsets(t *testing.T) {
 	}
 	if event["output_end_offset"] != uint64(24) {
 		t.Fatalf("terminal event output_end_offset = %#v, want 24", event["output_end_offset"])
+	}
+}
+
+func TestWebsocketProtoPayloadPreservesFrontendNumberTypes(t *testing.T) {
+	payload := websocketConversationSummaryPayload(&gatewayv1.ConversationSummary{
+		Id:           "conversation-1",
+		CreatedAt:    42,
+		UpdatedAt:    84,
+		MessageCount: 3,
+	})
+
+	if got := payload["created_at"]; got != int64(42) {
+		t.Fatalf("created_at = %#v (%T), want int64(42)", got, got)
+	}
+	if got := payload["updated_at"]; got != int64(84) {
+		t.Fatalf("updated_at = %#v (%T), want int64(84)", got, got)
+	}
+	if got := payload["message_count"]; got != int32(3) {
+		t.Fatalf("message_count = %#v (%T), want int32(3)", got, got)
+	}
+}
+
+func TestWebsocketProtoPayloadPreservesNilPayloads(t *testing.T) {
+	if payload := websocketConversationSummaryPayload(nil); payload != nil {
+		t.Fatalf("conversation nil payload = %#v, want nil", payload)
+	}
+	if payload := websocketHistoryShareStatusPayload(nil); payload != nil {
+		t.Fatalf("history share nil payload = %#v, want nil", payload)
+	}
+	if payload := websocketTerminalShellOptionPayload(nil); payload != nil {
+		t.Fatalf("terminal shell option nil payload = %#v, want nil", payload)
 	}
 }
 

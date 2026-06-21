@@ -14,6 +14,7 @@ import {
   normalizeLiveToolStatus,
   VIBING_STATUS,
 } from "@/lib/chat/chatPageHelpers";
+import { getRoundToolTrace } from "@/lib/chat/uiMessages";
 import type { HistoryMessageRef } from "@/lib/chat/conversationState";
 import {
   formatUploadedFileSize,
@@ -166,6 +167,11 @@ function shouldShowLiveStatusForRounds(rounds: GatewayTranscriptRound[]) {
   if (!activeRound) {
     return true;
   }
+  const visibleToolKeys = new Set(
+    getRoundToolTrace(activeRound).map(
+      (item) => `${item.toolCall.id}\u0000${item.toolCall.name}`,
+    ),
+  );
 
   for (let index = activeRound.blocks.length - 1; index >= 0; index -= 1) {
     const block = activeRound.blocks[index];
@@ -173,7 +179,10 @@ function shouldShowLiveStatusForRounds(rounds: GatewayTranscriptRound[]) {
       continue;
     }
     if (block.kind === "tool") {
-      return true;
+      if (visibleToolKeys.has(`${block.item.toolCall.id}\u0000${block.item.toolCall.name}`)) {
+        return true;
+      }
+      continue;
     }
     if (block.kind === "hostedSearch") {
       return false;

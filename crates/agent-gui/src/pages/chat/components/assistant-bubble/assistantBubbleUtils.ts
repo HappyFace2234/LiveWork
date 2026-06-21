@@ -19,6 +19,7 @@ import {
 import type { HostedSearchBlock } from "../../../../lib/chat/messages/hostedSearch";
 import {
   safeStringify,
+  shouldDisplayToolTraceItem,
   type ToolTraceItem,
   type UiRound,
 } from "../../../../lib/chat/messages/uiMessages";
@@ -237,6 +238,7 @@ export function groupRoundBlocks(blocks: UiRound["blocks"]): GroupedRoundBlock[]
   let pendingStartIndex = 0;
   let pendingSearches: HostedSearchBlock[] = [];
   let pendingSearchStartIndex = 0;
+  const hasHostedSearch = blocks.some((block) => block.kind === "hostedSearch");
 
   const flushPendingTools = () => {
     if (pendingTools.length === 0) return;
@@ -272,6 +274,9 @@ export function groupRoundBlocks(blocks: UiRound["blocks"]): GroupedRoundBlock[]
 
   blocks.forEach((block, index) => {
     if (block.kind === "tool") {
+      if (!shouldDisplayToolTraceItem(block.item, { hasHostedSearch })) {
+        return;
+      }
       flushPendingSearches();
       if (block.item.toolCall.name === "Image" || isAgentToolName(block.item.toolCall.name)) {
         flushPendingTools();

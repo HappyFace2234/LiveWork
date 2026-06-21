@@ -1,15 +1,17 @@
 package handler
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestImageProxyServesSupportedImage(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client := outboundHTTPClientFunc(func(r *http.Request) (*http.Response, error) {
 		if got := r.Header.Get("Accept"); got != imageProxyAccept {
 			t.Fatalf("upstream Accept = %q, want %q", got, imageProxyAccept)
 		}
@@ -19,17 +21,22 @@ func TestImageProxyServesSupportedImage(t *testing.T) {
 		if got := r.Header.Get("User-Agent"); got != imageProxyUserAgent {
 			t.Fatalf("upstream User-Agent = %q, want %q", got, imageProxyUserAgent)
 		}
-		if got, want := r.Header.Get("Referer"), upstreamOrigin(r)+"/"; got != want {
+		if got, want := r.Header.Get("Referer"), "https://images.example/"; got != want {
 			t.Fatalf("upstream Referer = %q, want %q", got, want)
 		}
-		w.Header().Set("Content-Type", "image/png")
-		_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nliveagent-test"))
-	}))
-	defer upstream.Close()
+		body := []byte("\x89PNG\r\n\x1a\nliveagent-test")
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"image/png"}},
+			Body:          io.NopCloser(strings.NewReader(string(body))),
+			ContentLength: int64(len(body)),
+			Request:       r,
+		}, nil
+	})
 
-	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url="+upstream.URL+"/photo.png", nil)
+	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url=https://images.example/photo.png", nil)
 	rec := httptest.NewRecorder()
-	ImageProxy(time.Second)(rec, req)
+	imageProxyWithClient(client)(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d body=%q", http.StatusOK, rec.Code, rec.Body.String())
@@ -74,25 +81,76 @@ func TestApplyImageProxyRequestHeaders(t *testing.T) {
 }
 
 func TestImageProxyRejectsNonImage(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		_, _ = w.Write([]byte("<html></html>"))
-	}))
-	defer upstream.Close()
+	client := outboundHTTPClientFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"text/html"}},
+			Body:          io.NopCloser(strings.NewReader("<html></html>")),
+			ContentLength: int64(len("<html></html>")),
+			Request:       r,
+		}, nil
+	})
 
-	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url="+upstream.URL+"/page", nil)
+	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url=https://images.example/page", nil)
 	rec := httptest.NewRecorder()
-	ImageProxy(time.Second)(rec, req)
+	imageProxyWithClient(client)(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, rec.Code)
 	}
 }
 
-func upstreamOrigin(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+func TestImageProxyRejectsLoopbackURL(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url=http://127.0.0.1/photo.png", nil)
+	rec := httptest.NewRecorder()
+
+	ImageProxy(time.Second)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusBadRequest, rec.Code, rec.Body.String())
 	}
-	return scheme + "://" + r.Host
+}
+
+func TestImageProxyRejectsIPv4MappedLoopbackURL(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url=http://[::ffff:127.0.0.1]/photo.png", nil)
+	rec := httptest.NewRecorder()
+
+	ImageProxy(time.Second)(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d body=%q", http.StatusBadRequest, rec.Code, rec.Body.String())
+	}
+}
+
+func TestImageProxyDoesNotTrustSpoofedImageContentType(t *testing.T) {
+	client := outboundHTTPClientFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        http.Header{"Content-Type": []string{"image/png"}},
+			Body:          io.NopCloser(strings.NewReader("<html></html>")),
+			ContentLength: int64(len("<html></html>")),
+			Request:       r,
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/image-proxy?url=https://images.example/spoofed", nil)
+	rec := httptest.NewRecorder()
+	imageProxyWithClient(client)(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, rec.Code)
+	}
+}
+
+func TestResolveImageProxyMimeDetectsSVGFromBytes(t *testing.T) {
+	mimeType, ok := resolveImageProxyMime("text/plain", []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`))
+	if !ok || mimeType != "image/svg+xml" {
+		t.Fatalf("resolveImageProxyMime() = %q, %v; want image/svg+xml, true", mimeType, ok)
+	}
+}
+
+type outboundHTTPClientFunc func(*http.Request) (*http.Response, error)
+
+func (fn outboundHTTPClientFunc) Do(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }

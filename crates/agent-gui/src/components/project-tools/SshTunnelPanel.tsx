@@ -47,6 +47,7 @@ type PendingSshCreate = {
 };
 
 type SshTunnelPanelProps = {
+  active: boolean;
   cwd: string;
   projectPathKey: string;
   hosts: SshHostConfig[];
@@ -55,6 +56,7 @@ type SshTunnelPanelProps = {
   sessions: TerminalSession[];
   onSessionSnapshot: (snapshot: TerminalSnapshot) => void;
   onSessionClosed: (sessionId: string) => void;
+  onSshSessionsReconcile: (sessions: TerminalSession[]) => void;
   onOpenSession: (session: TerminalSession, kind?: "bash" | "sftp") => void;
   onAssociatedHostIdsChange: (hostIds: string[]) => void;
 };
@@ -65,9 +67,9 @@ function endpointLabel(host: SshHostConfig) {
 }
 
 function authLabel(host: Pick<SshHostConfig, "authType">, t: (key: string) => string) {
-  return host.authType === "privateKey"
-    ? t("settings.sshAuthPrivateKey")
-    : t("settings.sshAuthPassword");
+  if (host.authType === "privateKey") return t("settings.sshAuthPrivateKey");
+  if (host.authType === "agent") return t("settings.sshAuthAgent");
+  return t("settings.sshAuthPassword");
 }
 
 function hostHasProxy(host: SshHostConfig) {
@@ -79,7 +81,8 @@ function hostHasProxy(host: SshHostConfig) {
   );
 }
 
-function hostSecretReady(host: SshHostConfig) {
+export function hostSecretReady(host: SshHostConfig) {
+  if (host.authType === "agent") return true;
   if (host.authType === "privateKey") {
     return (
       host.privateKey.trim().length > 0 ||
@@ -90,8 +93,7 @@ function hostSecretReady(host: SshHostConfig) {
   return host.password.trim().length > 0 || host.passwordConfigured === true;
 }
 
-function hostStatusMessage(host: SshHostConfig, t: (key: string) => string) {
-  if (hostHasProxy(host)) return t("projectTools.sshTunnelProxyUnsupported");
+export function hostStatusMessage(host: SshHostConfig, t: (key: string) => string) {
   if (!hostSecretReady(host)) return t("projectTools.sshTunnelMissingSecret");
   return "";
 }
@@ -141,6 +143,15 @@ function sshStatusLabel(session: TerminalSession, t: (key: string) => string) {
   return t("projectTools.sshTunnelConnected");
 }
 
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isTerminalSessionNotFoundError(error: unknown) {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("terminal session not found") || message.includes("session not found");
+}
+
 function HostMetaTags(props: { host: SshHostConfig }) {
   const { host } = props;
   const { t } = useLocale();
@@ -149,6 +160,8 @@ function HostMetaTags(props: { host: SshHostConfig }) {
     tags.push(host.privateKeyPath.trim());
   } else if (host.authType === "privateKey" && host.privateKeyConfigured) {
     tags.push(t("settings.sshPrivateKeyConfigured"));
+  } else if (host.authType === "agent") {
+    tags.push(t("settings.sshAgentConfigured"));
   }
   if (host.privateKeyPassphraseConfigured) {
     tags.push(t("settings.sshPrivateKeyPassphraseConfigured"));
@@ -174,6 +187,7 @@ function HostMetaTags(props: { host: SshHostConfig }) {
 
 export function SshTunnelPanel(props: SshTunnelPanelProps) {
   const {
+    active,
     cwd,
     projectPathKey,
     hosts,
@@ -182,6 +196,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     sessions,
     onSessionSnapshot,
     onSessionClosed,
+    onSshSessionsReconcile,
     onOpenSession,
     onAssociatedHostIdsChange,
   } = props;
@@ -199,11 +214,11 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
   const [prompt, setPrompt] = useState<TerminalSshPrompt | null>(null);
   const [promptAnswer, setPromptAnswer] = useState("");
   const [answeringPrompt, setAnsweringPrompt] = useState(false);
-  const [latencyBySessionId, setLatencyBySessionId] = useState<Record<string, SshLatencyState>>(
-    {},
-  );
+  const [latencyBySessionId, setLatencyBySessionId] = useState<Record<string, SshLatencyState>>({});
   const latencyRequestsRef = useRef<Set<string>>(new Set());
   const pendingCreateRef = useRef<PendingSshCreate | null>(null);
+  const onSshSessionsReconcileRef = useRef(onSshSessionsReconcile);
+  onSshSessionsReconcileRef.current = onSshSessionsReconcile;
   const associatedSet = useMemo(() => new Set(associatedHostIds), [associatedHostIds]);
   const associatedHosts = useMemo(
     () => hosts.filter((host) => associatedSet.has(host.id)),
@@ -232,6 +247,34 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     if (canCreateInScope || view !== "create") return;
     setView("list");
   }, [canCreateInScope, view]);
+
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    let inFlight = false;
+    const reconcileSshSessions = () => {
+      if (inFlight) return;
+      inFlight = true;
+      void client
+        .list()
+        .then((nextSessions) => {
+          if (cancelled) return;
+          onSshSessionsReconcileRef.current(
+            nextSessions.filter((session) => session.kind === "ssh" && session.ssh),
+          );
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    reconcileSshSessions();
+    const timer = window.setInterval(reconcileSshSessions, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [active, client]);
 
   const refreshSessionLatency = useCallback(
     (session: TerminalSession) => {
@@ -437,7 +480,13 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
       void client
         .close(session.id, session.projectPathKey)
         .then(() => onSessionClosed(session.id))
-        .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+        .catch((err) => {
+          if (isTerminalSessionNotFoundError(err)) {
+            onSessionClosed(session.id);
+            return;
+          }
+          setError(errorMessage(err));
+        })
         .finally(() => setClosingSessionId((current) => (current === session.id ? "" : current)));
     },
     [client, closingSessionId, onSessionClosed, requestCloseSessionConfirm, t],
@@ -492,10 +541,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     const state = latencyBySessionId[session.id];
     if (state?.failed) return t("projectTools.sshTunnelLatencyUnknown");
     if (state?.latencyMs) {
-      return t("projectTools.sshTunnelLatencyValue").replace(
-        "{ms}",
-        String(state.latencyMs),
-      );
+      return t("projectTools.sshTunnelLatencyValue").replace("{ms}", String(state.latencyMs));
     }
     if (state?.loading) return t("projectTools.sshTunnelLatencyChecking");
     return t("projectTools.sshTunnelLatencyUnknown");
@@ -681,7 +727,9 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                   value={createTitle}
                   onChange={(event) => setCreateTitle(event.currentTarget.value)}
                   className="h-10 w-full rounded-lg border border-border/70 bg-background/80 px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-emerald-500/50 focus-visible:ring-1 focus-visible:ring-emerald-500/20"
-                  placeholder={selectedCreateHost?.name || t("projectTools.sshTunnelTabTitlePlaceholder")}
+                  placeholder={
+                    selectedCreateHost?.name || t("projectTools.sshTunnelTabTitlePlaceholder")
+                  }
                 />
               </label>
 
@@ -739,7 +787,12 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
               >
                 {t("projectTools.sshTunnelCreateCancel")}
               </Button>
-              <Button type="submit" size="sm" className="h-8 rounded-lg px-3 text-xs" disabled={!canCreate}>
+              <Button
+                type="submit"
+                size="sm"
+                className="h-8 rounded-lg px-3 text-xs"
+                disabled={!canCreate}
+              >
                 {creating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                 {creating
                   ? t("projectTools.sshTunnelConnecting")
@@ -760,9 +813,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
               <div className="truncate text-sm font-semibold tracking-tight text-foreground">
                 {t("projectTools.sshTunnelTitle")}
               </div>
-              <div className="truncate text-xs text-muted-foreground">
-                {statusText}
-              </div>
+              <div className="truncate text-xs text-muted-foreground">{statusText}</div>
             </div>
             {canCreateInScope ? (
               <button
@@ -788,10 +839,9 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
             ) : null}
           </div>
 
-          <div
-            role="group"
+          <fieldset
             aria-label={t("projectTools.sshTunnelScopeGroup")}
-            className="relative mt-3 grid grid-cols-2 gap-0.5 rounded-lg bg-muted/70 p-0.5"
+            className="relative m-0 mt-3 grid min-w-0 grid-cols-2 gap-0.5 rounded-lg border-0 bg-muted/70 p-0.5"
           >
             <div
               aria-hidden="true"
@@ -825,7 +875,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                 </button>
               );
             })}
-          </div>
+          </fieldset>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
@@ -1054,7 +1104,6 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                 onChange={(event) => setPromptAnswer(event.currentTarget.value)}
                 className="mt-3 h-10 w-full rounded-lg border border-border/70 bg-background/80 px-3 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-emerald-500/50 focus-visible:ring-1 focus-visible:ring-emerald-500/20"
                 type={prompt.answerEcho ? "text" : "password"}
-                autoFocus
               />
             ) : null}
             <div className="mt-4 flex justify-end gap-2">
