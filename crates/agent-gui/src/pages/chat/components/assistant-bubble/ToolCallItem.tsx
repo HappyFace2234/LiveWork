@@ -4,6 +4,8 @@ import { memo, useEffect, useState } from "react";
 import { ChevronRight, Search } from "../../../../components/icons";
 import { useLocale } from "../../../../i18n";
 import {
+  getStreamingEditToolPreview,
+  getStreamingWriteToolPreview,
   previewText,
   safeStringify,
   summarizeToolCall,
@@ -148,10 +150,144 @@ function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unk
   }
 }
 
+function StreamingArgPlaceholder({ label }: { label: string }) {
+  return (
+    <ToolSurface>
+      <div className="text-[11.5px] leading-[1.6] text-muted-foreground/62">{label}</div>
+    </ToolSurface>
+  );
+}
+
+function StreamingTextPreviewSurface({
+  label,
+  hasValue,
+  emptyLabel,
+  preview,
+}: {
+  label: string;
+  hasValue: boolean;
+  emptyLabel: string;
+  preview: { text: string; chars: number; lines: number; truncated: boolean };
+}) {
+  return (
+    <ToolSurface className="overflow-hidden px-0 py-0">
+      <div className="px-2.5 pt-2">
+        <ToolSurfaceLabel label={label} />
+      </div>
+      {hasValue ? (
+        preview.text ? (
+          <ToolScrollablePre className="max-h-56 rounded-none bg-black/[0.02] dark:bg-white/[0.03]">
+            {preview.text}
+          </ToolScrollablePre>
+        ) : (
+          <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
+            {emptyLabel}
+          </div>
+        )
+      ) : (
+        <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
+          Waiting for {label}...
+        </div>
+      )}
+    </ToolSurface>
+  );
+}
+
 /** Expanded args display — tool-aware layout */
 function ToolArgsDisplay({ item }: { item: ToolTraceItem }) {
   const toolCall = item.toolCall;
   const display = getToolDisplay(toolCall);
+
+  const writePreview = getStreamingWriteToolPreview(toolCall);
+  if (writePreview) {
+    const hasAnyArg = Boolean(writePreview.path || writePreview.hasContent);
+    if (!hasAnyArg) {
+      return <StreamingArgPlaceholder label="Waiting for file content..." />;
+    }
+    return (
+      <div className="tool-expand flex flex-col gap-2">
+        {writePreview.path ? (
+          <ToolSurface>
+            <ToolSurfaceLabel label="path" />
+            <PathDisplay
+              path={writePreview.path}
+              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
+            />
+          </ToolSurface>
+        ) : null}
+        {writePreview.hasContent ? (
+          <MetaTags
+            tags={[
+              { label: "mode", value: writePreview.mode },
+              { label: "chars", value: String(writePreview.content.chars) },
+              { label: "lines", value: String(writePreview.content.lines) },
+              ...(writePreview.content.truncated ? [{ label: "preview", value: "partial" }] : []),
+            ]}
+          />
+        ) : null}
+        <StreamingTextPreviewSurface
+          label="content"
+          hasValue={writePreview.hasContent}
+          emptyLabel="(empty content)"
+          preview={writePreview.content}
+        />
+      </div>
+    );
+  }
+
+  const editPreview = getStreamingEditToolPreview(toolCall);
+  if (editPreview) {
+    const hasAnyArg =
+      Boolean(editPreview.path) || editPreview.hasOldString || editPreview.hasNewString;
+    if (!hasAnyArg) {
+      return <StreamingArgPlaceholder label="Waiting for replacement strings..." />;
+    }
+    return (
+      <div className="tool-expand flex flex-col gap-2">
+        {editPreview.path ? (
+          <ToolSurface>
+            <ToolSurfaceLabel label="path" />
+            <PathDisplay
+              path={editPreview.path}
+              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
+            />
+          </ToolSurface>
+        ) : null}
+        <MetaTags
+          tags={[
+            ...(typeof editPreview.expectedReplacements === "number"
+              ? [{ label: "expected", value: String(editPreview.expectedReplacements) }]
+              : []),
+            ...(editPreview.replaceAll ? [{ label: "all", value: "true" }] : []),
+            ...(editPreview.hasOldString
+              ? [
+                  { label: "old", value: `${editPreview.oldString.chars} chars` },
+                  { label: "old lines", value: String(editPreview.oldString.lines) },
+                ]
+              : []),
+            ...(editPreview.hasNewString
+              ? [
+                  { label: "new", value: `${editPreview.newString.chars} chars` },
+                  { label: "new lines", value: String(editPreview.newString.lines) },
+                ]
+              : []),
+          ]}
+        />
+        <StreamingTextPreviewSurface
+          label="old string"
+          hasValue={editPreview.hasOldString}
+          emptyLabel="(empty old string)"
+          preview={editPreview.oldString}
+        />
+        <StreamingTextPreviewSurface
+          label="new string"
+          hasValue={editPreview.hasNewString}
+          emptyLabel="(empty replacement)"
+          preview={editPreview.newString}
+        />
+      </div>
+    );
+  }
 
   if (isDelegateAgentCardToolCall(toolCall)) {
     const args = toolCall.arguments || {};
@@ -282,7 +418,10 @@ function ToolCallItem({
   const [open, setOpen] = useState(shouldAutoOpen);
   const isDelegateAgentCard = isDelegateAgentCardToolCall(item.toolCall);
   const hasArgs = Object.keys(item.toolCall.arguments || {}).length > 0;
-  const shouldShowArgs = hasArgs && (!isDelegateAgentCard || !result);
+  const isStreamingFilePreviewTool =
+    item.toolCall.name === "Write" || item.toolCall.name === "Edit";
+  const shouldShowArgs =
+    (!isDelegateAgentCard || !result) && (isStreamingFilePreviewTool ? !result : hasArgs);
   const isBash = item.toolCall.name === "Bash";
   const bashCmd =
     isBash && typeof item.toolCall.arguments?.command === "string"

@@ -9,6 +9,7 @@ const uiMessages = loader.loadModule("src/lib/chat/messages/uiMessages.ts");
 const hostedSearch = loader.loadModule("src/lib/chat/messages/hostedSearch.ts");
 const seedToolCalls = loader.loadModule("src/lib/chat/runner/seedToolCalls.ts");
 const chatHelpers = loader.loadModule("src/lib/chat/page/chatPageHelpers.ts");
+const gatewayToolPreview = loader.loadModule("src/pages/chat/turns/gatewayToolPreview.ts");
 
 const fileA = {
   relativePath: "src/App.tsx",
@@ -29,6 +30,110 @@ const fileC = {
   kind: "word",
   sizeBytes: 4096,
 };
+
+test("gateway tool preview keeps Write payloads small while preserving full metrics", () => {
+  const content = Array.from({ length: 700 }, (_, index) =>
+    `line-${index.toString().padStart(3, "0")} ${"x".repeat(24)}`,
+  ).join("\n");
+
+  const args = gatewayToolPreview.buildGatewayToolCallPreviewArguments({
+    name: "Write",
+    arguments: {
+      path: "src/generated.txt",
+      content,
+    },
+  });
+  const metadata = args[gatewayToolPreview.LIVE_TOOL_PREVIEW_META_KEY];
+  const contentMetrics = metadata.fields.content;
+
+  assert.equal(args.path, "src/generated.txt");
+  assert.notEqual(args.content, content);
+  assert.ok(args.content.length <= 4000, `preview length ${args.content.length} should be capped`);
+  assert.equal(contentMetrics.chars, content.length);
+  assert.equal(contentMetrics.lines, 700);
+  assert.equal(contentMetrics.truncated, true);
+  assert.equal(contentMetrics.strategy, "head-tail");
+
+  const preview = uiMessages.getStreamingWriteToolPreview({
+    name: "Write",
+    arguments: args,
+  });
+  assert.equal(preview.content.chars, content.length);
+  assert.equal(preview.content.lines, 700);
+  assert.equal(preview.content.truncated, true);
+  assert.equal(preview.content.text, args.content);
+});
+
+test("gateway tool preview handles empty and short Write content without false truncation", () => {
+  const partialPreview = uiMessages.getStreamingWriteToolPreview({
+    name: "Write",
+    arguments: {},
+  });
+  assert.equal(partialPreview.hasContent, false);
+  assert.equal(partialPreview.content.chars, 0);
+  assert.equal(partialPreview.content.lines, 0);
+  assert.equal(partialPreview.content.truncated, false);
+
+  const args = gatewayToolPreview.buildGatewayToolCallPreviewArguments({
+    name: "Write",
+    arguments: {
+      path: "src/small.txt",
+      content: "hello\nworld",
+    },
+  });
+  const metadata = args[gatewayToolPreview.LIVE_TOOL_PREVIEW_META_KEY];
+  assert.equal(args.content, "hello\nworld");
+  assert.equal(metadata.fields.content.chars, 11);
+  assert.equal(metadata.fields.content.lines, 2);
+  assert.equal(metadata.fields.content.truncated, false);
+
+  const preview = uiMessages.getStreamingWriteToolPreview({
+    name: "Write",
+    arguments: args,
+  });
+  assert.equal(preview.hasContent, true);
+  assert.equal(preview.content.text, "hello\nworld");
+  assert.equal(preview.content.lines, 2);
+});
+
+test("gateway tool preview keeps Edit old/new payloads small with independent metrics", () => {
+  const oldString = Array.from({ length: 520 }, (_, index) => `old-${index} ${"a".repeat(20)}`).join(
+    "\n",
+  );
+  const newString = Array.from({ length: 480 }, (_, index) => `new-${index} ${"b".repeat(22)}`).join(
+    "\n",
+  );
+
+  const args = gatewayToolPreview.buildGatewayToolCallPreviewArguments({
+    name: "Edit",
+    arguments: {
+      path: "src/app.ts",
+      old_string: oldString,
+      new_string: newString,
+      expected_replacements: 1,
+    },
+  });
+  const metadata = args[gatewayToolPreview.LIVE_TOOL_PREVIEW_META_KEY];
+
+  assert.notEqual(args.old_string, oldString);
+  assert.notEqual(args.new_string, newString);
+  assert.ok(args.old_string.length <= 4000);
+  assert.ok(args.new_string.length <= 4000);
+  assert.equal(metadata.fields.old_string.chars, oldString.length);
+  assert.equal(metadata.fields.old_string.lines, 520);
+  assert.equal(metadata.fields.new_string.chars, newString.length);
+  assert.equal(metadata.fields.new_string.lines, 480);
+
+  const preview = uiMessages.getStreamingEditToolPreview({
+    name: "Edit",
+    arguments: args,
+  });
+  assert.equal(preview.oldString.chars, oldString.length);
+  assert.equal(preview.oldString.lines, 520);
+  assert.equal(preview.newString.chars, newString.length);
+  assert.equal(preview.newString.lines, 480);
+  assert.equal(preview.expectedReplacements, 1);
+});
 
 test("uploaded file helpers preserve display text and strip model-hidden metadata", () => {
   const merged = uploadedFiles.mergePendingUploadedFiles([fileA], [{ ...fileA, sizeBytes: 4096 }, fileB]);
@@ -1234,7 +1339,12 @@ test("round update helpers append deltas, upsert tools, and collapse completed t
   });
   const toolCall = { type: "toolCall", id: "call-1", name: "Edit", arguments: { path: "a.txt" } };
   const withTool = uiMessages.upsertToolCallToRound(withHiddenProviderSearch, toolCall);
-  const withToolResult = uiMessages.attachToolResultToRound(withTool, toolCall, {
+  const finalToolCall = {
+    ...toolCall,
+    arguments: { path: "a.txt", old_string: "old", new_string: "new" },
+  };
+  const withPartialTool = uiMessages.upsertToolCallToRound(withTool, finalToolCall);
+  const withToolResult = uiMessages.attachToolResultToRound(withPartialTool, finalToolCall, {
     role: "toolResult",
     toolCallId: "call-1",
     toolName: "Edit",
@@ -1255,6 +1365,11 @@ test("round update helpers append deltas, upsert tools, and collapse completed t
   );
   assert.equal(uiMessages.getRoundHostedSearches(withToolResult).length, 1);
   assert.equal(uiMessages.getRoundToolTrace(withToolResult).length, 1);
+  assert.deepEqual(uiMessages.getRoundToolTrace(withPartialTool)[0].toolCall.arguments, {
+    path: "a.txt",
+    old_string: "old",
+    new_string: "new",
+  });
   assert.equal(uiMessages.collapseThinking(withToolResult).thinkingOpen, false);
 
   const updated = uiMessages.updateLiveRound([initialRound, withText], 1, (round) =>
@@ -1546,6 +1661,52 @@ After`,
     }),
     "Before\n\nAfter",
   );
+});
+
+test("streaming Write and Edit tool previews expose bounded live argument previews", () => {
+  const missingWrite = uiMessages.getStreamingWriteToolPreview({
+    type: "toolCall",
+    id: "write-missing",
+    name: "Write",
+    arguments: { path: "report.md" },
+  });
+  assert.equal(missingWrite.path, "report.md");
+  assert.equal(missingWrite.hasContent, false);
+  assert.equal(missingWrite.content.chars, 0);
+  assert.equal(missingWrite.content.lines, 0);
+
+  const longContent = `line 1\n${"x".repeat(4100)}`;
+  const writePreview = uiMessages.getStreamingWriteToolPreview({
+    type: "toolCall",
+    id: "write-live",
+    name: "Write",
+    arguments: { path: "report.md", content: longContent },
+  });
+  assert.equal(writePreview.hasContent, true);
+  assert.equal(writePreview.content.chars, longContent.length);
+  assert.equal(writePreview.content.lines, 2);
+  assert.equal(writePreview.content.truncated, true);
+  assert.match(writePreview.content.text, /已截断预览/);
+
+  const editPreview = uiMessages.getStreamingEditToolPreview({
+    type: "toolCall",
+    id: "edit-live",
+    name: "Edit",
+    arguments: {
+      path: "src/App.tsx",
+      old_string: "const oldValue = true;",
+      new_string: "",
+      expected_replacements: 1,
+      replace_all: true,
+    },
+  });
+  assert.equal(editPreview.path, "src/App.tsx");
+  assert.equal(editPreview.hasOldString, true);
+  assert.equal(editPreview.oldString.chars, 22);
+  assert.equal(editPreview.hasNewString, true);
+  assert.equal(editPreview.newString.chars, 0);
+  assert.equal(editPreview.expectedReplacements, 1);
+  assert.equal(editPreview.replaceAll, true);
 });
 
 test("seed tool call recovery strips repeated historical tool call text without duplicating native calls", () => {

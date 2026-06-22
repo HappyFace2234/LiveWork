@@ -341,6 +341,8 @@ func cloudChatEventType(payload map[string]any) string {
 		return "thinking.delta"
 	case "tool_call":
 		return "tool.call"
+	case "tool_call_delta":
+		return "tool.call.delta"
 	case "tool_result":
 		return "tool.result"
 	case "done", "completed":

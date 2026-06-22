@@ -27,6 +27,62 @@ const USER_SCROLL_INTENT_WINDOW_MS = 500;
 const BOTTOM_LOCK_DURATION_MS = 700;
 const VIEWPORT_ATTACH_RETRY_MS = 80;
 const VIEWPORT_ATTACH_MAX_ATTEMPTS = 75;
+const LIVE_TRANSCRIPT_RAF_FALLBACK_MS = 96;
+const LIVE_TRANSCRIPT_BACKGROUND_BATCH_MS = 160;
+
+function shouldUseLiveTranscriptAnimationFrame() {
+  return (
+    typeof globalThis.requestAnimationFrame === "function" &&
+    (typeof document === "undefined" || document.visibilityState === "visible")
+  );
+}
+
+export function scheduleLiveTranscriptFlush(callback: () => void) {
+  let frameId: number | null = null;
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+  let finished = false;
+
+  const run = () => {
+    if (finished) return;
+    finished = true;
+    if (frameId !== null && typeof globalThis.cancelAnimationFrame === "function") {
+      globalThis.cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+    if (timeoutId !== null && typeof globalThis.clearTimeout === "function") {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    callback();
+  };
+
+  const useFrame = shouldUseLiveTranscriptAnimationFrame();
+  if (useFrame) {
+    frameId = globalThis.requestAnimationFrame(run);
+  }
+
+  if (typeof globalThis.setTimeout === "function") {
+    timeoutId = globalThis.setTimeout(
+      run,
+      useFrame ? LIVE_TRANSCRIPT_RAF_FALLBACK_MS : LIVE_TRANSCRIPT_BACKGROUND_BATCH_MS,
+    );
+  } else if (!useFrame && typeof queueMicrotask === "function") {
+    queueMicrotask(run);
+  }
+
+  return () => {
+    if (finished) return;
+    finished = true;
+    if (frameId !== null && typeof globalThis.cancelAnimationFrame === "function") {
+      globalThis.cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+    if (timeoutId !== null && typeof globalThis.clearTimeout === "function") {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
+}
 
 function getViewportBottomGap(viewport: HTMLDivElement) {
   return Math.max(0, viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight);
@@ -78,10 +134,10 @@ type AbortSnapshot = {
 type LiveTranscriptArtifacts = {
   store: LiveTranscriptStore;
   pendingDraftDelta: string;
-  draftRafId: number | null;
+  draftFlushCancel: (() => void) | null;
   draftShouldAutoScroll: boolean;
   pendingLRUpdates: Array<(prev: LiveRound[]) => LiveRound[]>;
-  lrRafId: number | null;
+  lrFlushCancel: (() => void) | null;
   lrShouldAutoScroll: boolean;
   abortSnapshot: AbortSnapshot | null;
 };
@@ -90,10 +146,10 @@ function createLiveTranscriptArtifacts(): LiveTranscriptArtifacts {
   return {
     store: createLiveTranscriptStore(),
     pendingDraftDelta: "",
-    draftRafId: null,
+    draftFlushCancel: null,
     draftShouldAutoScroll: false,
     pendingLRUpdates: [],
-    lrRafId: null,
+    lrFlushCancel: null,
     lrShouldAutoScroll: false,
     abortSnapshot: null,
   };
@@ -249,17 +305,13 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
   const cancelPendingLiveUpdates = useCallback((artifacts: LiveTranscriptArtifacts | null) => {
     if (!artifacts) return;
 
-    if (artifacts.draftRafId !== null) {
-      cancelAnimationFrame(artifacts.draftRafId);
-      artifacts.draftRafId = null;
-    }
+    artifacts.draftFlushCancel?.();
+    artifacts.draftFlushCancel = null;
     artifacts.pendingDraftDelta = "";
     artifacts.draftShouldAutoScroll = false;
 
-    if (artifacts.lrRafId !== null) {
-      cancelAnimationFrame(artifacts.lrRafId);
-      artifacts.lrRafId = null;
-    }
+    artifacts.lrFlushCancel?.();
+    artifacts.lrFlushCancel = null;
     artifacts.pendingLRUpdates.length = 0;
     artifacts.lrShouldAutoScroll = false;
   }, []);
@@ -271,10 +323,8 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
 
       let nextShouldAutoScroll = shouldAutoScroll;
 
-      if (artifacts.draftRafId !== null) {
-        cancelAnimationFrame(artifacts.draftRafId);
-        artifacts.draftRafId = null;
-      }
+      artifacts.draftFlushCancel?.();
+      artifacts.draftFlushCancel = null;
       if (artifacts.pendingDraftDelta) {
         const acc = artifacts.pendingDraftDelta;
         artifacts.pendingDraftDelta = "";
@@ -285,10 +335,8 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
         artifacts.draftShouldAutoScroll = false;
       }
 
-      if (artifacts.lrRafId !== null) {
-        cancelAnimationFrame(artifacts.lrRafId);
-        artifacts.lrRafId = null;
-      }
+      artifacts.lrFlushCancel?.();
+      artifacts.lrFlushCancel = null;
       if (artifacts.pendingLRUpdates.length > 0) {
         const batch = artifacts.pendingLRUpdates.splice(0);
         nextShouldAutoScroll ||= artifacts.lrShouldAutoScroll;
@@ -399,7 +447,7 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
 
       const shouldApplyImmediately =
         artifacts.pendingDraftDelta.length === 0 &&
-        artifacts.draftRafId === null &&
+        artifacts.draftFlushCancel === null &&
         targetStore.getSnapshot().draftAssistantText.length === 0;
       if (shouldApplyImmediately) {
         targetStore.appendDraftAssistantText(delta);
@@ -411,10 +459,10 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
 
       artifacts.pendingDraftDelta += delta;
       artifacts.draftShouldAutoScroll ||= shouldAutoScroll;
-      if (artifacts.draftRafId !== null) return;
+      if (artifacts.draftFlushCancel !== null) return;
 
-      artifacts.draftRafId = requestAnimationFrame(() => {
-        artifacts.draftRafId = null;
+      artifacts.draftFlushCancel = scheduleLiveTranscriptFlush(() => {
+        artifacts.draftFlushCancel = null;
 
         const acc = artifacts.pendingDraftDelta;
         const shouldScroll = artifacts.draftShouldAutoScroll;
@@ -449,7 +497,7 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
       const lastRound = snapshot.liveRounds[snapshot.liveRounds.length - 1];
       const shouldApplyImmediately =
         artifacts.pendingLRUpdates.length === 0 &&
-        artifacts.lrRafId === null &&
+        artifacts.lrFlushCancel === null &&
         (snapshot.liveRounds.length === 0 || (lastRound?.blocks.length ?? 0) === 0);
       if (shouldApplyImmediately) {
         targetStore.updateLiveRounds(updater);
@@ -461,10 +509,10 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
 
       artifacts.pendingLRUpdates.push(updater);
       artifacts.lrShouldAutoScroll ||= shouldAutoScroll;
-      if (artifacts.lrRafId !== null) return;
+      if (artifacts.lrFlushCancel !== null) return;
 
-      artifacts.lrRafId = requestAnimationFrame(() => {
-        artifacts.lrRafId = null;
+      artifacts.lrFlushCancel = scheduleLiveTranscriptFlush(() => {
+        artifacts.lrFlushCancel = null;
 
         const batch = artifacts.pendingLRUpdates.splice(0);
         const shouldScroll = artifacts.lrShouldAutoScroll;

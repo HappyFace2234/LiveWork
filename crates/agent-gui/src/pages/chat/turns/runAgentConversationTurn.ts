@@ -78,6 +78,7 @@ import {
   type ConversationRuntimeEntry,
 } from "../runtime/chatPageRuntime";
 import { buildProtectionCompactionStatus } from "../runtime/compactionStatusText";
+import { buildGatewayToolCallPreviewArguments } from "./gatewayToolPreview";
 
 export type RuntimeModel = {
   api: AssistantMessage["api"];
@@ -109,11 +110,61 @@ export type PersistConversationParams = {
 };
 
 const AGENT_PERF_LOG_THRESHOLD_MS = 250;
+const TOOL_CALL_DELTA_RAF_FALLBACK_DELAY_MS = 64;
 
 function perfNowMs() {
   return typeof performance !== "undefined" && typeof performance.now === "function"
     ? performance.now()
     : Date.now();
+}
+
+export function scheduleToolCallDeltaFlush(callback: () => void) {
+  let frameId: number | null = null;
+  let timeoutId: ReturnType<typeof globalThis.setTimeout> | null = null;
+  let finished = false;
+
+  const run = () => {
+    if (finished) return;
+    finished = true;
+    if (frameId !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    callback();
+  };
+
+  const canUseAnimationFrame =
+    typeof requestAnimationFrame === "function" &&
+    (typeof document === "undefined" || document.visibilityState === "visible");
+  if (canUseAnimationFrame) {
+    frameId = requestAnimationFrame(run);
+  }
+
+  if (typeof globalThis.setTimeout === "function") {
+    timeoutId = globalThis.setTimeout(
+      run,
+      canUseAnimationFrame ? TOOL_CALL_DELTA_RAF_FALLBACK_DELAY_MS : 0,
+    );
+  } else if (!canUseAnimationFrame && typeof queueMicrotask === "function") {
+    queueMicrotask(run);
+  }
+
+  return () => {
+    if (finished) return;
+    finished = true;
+    if (frameId !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(frameId);
+      frameId = null;
+    }
+    if (timeoutId !== null) {
+      globalThis.clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+  };
 }
 
 function finishAgentPerfSpan(
@@ -642,6 +693,67 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     );
   }
 
+  const pendingToolCallDeltas = new Map<string, { round: number; toolCall: ToolCall }>();
+  let cancelPendingToolCallDeltaFlush: (() => void) | null = null;
+
+  function toolCallDeltaKey(round: number, toolCallId: string) {
+    return `${round}:${toolCallId}`;
+  }
+
+  function flushPendingToolCallDeltas() {
+    cancelPendingToolCallDeltaFlush?.();
+    cancelPendingToolCallDeltaFlush = null;
+    if (pendingToolCallDeltas.size === 0) return;
+
+    const deltas = Array.from(pendingToolCallDeltas.values());
+    pendingToolCallDeltas.clear();
+
+    for (const { round, toolCall } of deltas) {
+      gatewayBridgeEvents.queueEvent({
+        type: "tool_call_delta",
+        id: toolCall.id,
+        name: toolCall.name,
+        arguments: buildGatewayToolCallPreviewArguments(toolCall),
+        round,
+        conversation_id: conversationId,
+      });
+    }
+
+    batchLiveRoundsUpdate(
+      (prev) => {
+        let next = prev;
+        for (const { round, toolCall } of deltas) {
+          next = updateLiveRound(next, round, (target) =>
+            upsertToolCallToRound(collapseThinking(target), toolCall),
+          );
+        }
+        return next;
+      },
+      transcriptStore,
+      isConversationVisible(),
+    );
+  }
+
+  function schedulePendingToolCallDeltaFlush() {
+    if (cancelPendingToolCallDeltaFlush !== null) return;
+    cancelPendingToolCallDeltaFlush = scheduleToolCallDeltaFlush(flushPendingToolCallDeltas);
+  }
+
+  function queueToolCallDelta(toolCall: ToolCall, round: number) {
+    if (!shouldShowToolEvent(toolCall)) return;
+    hookLifecycle.messageUpdated();
+    pendingToolCallDeltas.set(toolCallDeltaKey(round, toolCall.id), { round, toolCall });
+    schedulePendingToolCallDeltaFlush();
+  }
+
+  function discardPendingToolCallDelta(toolCall: ToolCall, round: number) {
+    pendingToolCallDeltas.delete(toolCallDeltaKey(round, toolCall.id));
+    if (pendingToolCallDeltas.size === 0) {
+      cancelPendingToolCallDeltaFlush?.();
+      cancelPendingToolCallDeltaFlush = null;
+    }
+  }
+
   while (!result) {
     let streamedAgentText = "";
     let protectionCheckChars = 0;
@@ -771,12 +883,13 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         },
         onToolCall: (toolCall, round) => {
           sawToolCallInRound = true;
+          discardPendingToolCallDelta(toolCall, round);
           if (!shouldShowToolEvent(toolCall)) return;
           gatewayBridgeEvents.queueEvent({
             type: "tool_call",
             id: toolCall.id,
             name: toolCall.name,
-            arguments: toolCall.arguments,
+            arguments: buildGatewayToolCallPreviewArguments(toolCall),
             round,
             conversation_id: conversationId,
           });
@@ -790,8 +903,13 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
             isConversationVisible(),
           );
         },
+        onToolCallDelta: (toolCall, round) => {
+          sawToolCallInRound = true;
+          queueToolCallDelta(toolCall, round);
+        },
         onToolExecutionStart: (toolCall, round) => {
           sawToolCallInRound = true;
+          discardPendingToolCallDelta(toolCall, round);
           if (!isDelegateAgentCardToolCall(toolCall)) {
             hookLifecycle.toolExecutionStarted();
           }
@@ -800,7 +918,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
             type: "tool_call",
             id: toolCall.id,
             name: toolCall.name,
-            arguments: toolCall.arguments,
+            arguments: buildGatewayToolCallPreviewArguments(toolCall),
             round,
             conversation_id: conversationId,
           });
@@ -823,6 +941,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         },
         onToolResult: (toolCall, toolResult, round) => {
           if (toolResult.role !== "toolResult") return;
+          discardPendingToolCallDelta(toolCall, round);
           if (!isDelegateAgentCardToolCall(toolCall)) {
             hookLifecycle.toolResultReceived(round);
           }
@@ -831,7 +950,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
             type: "tool_result",
             id: toolCall.id,
             name: toolCall.name,
-            arguments: toolCall.arguments,
+            arguments: buildGatewayToolCallPreviewArguments(toolCall),
             content: toolResult.content,
             details: toolResult.details,
             isError: toolResult.isError ?? false,

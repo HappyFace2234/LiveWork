@@ -313,7 +313,10 @@ export function summarizeToolCall(
                               path ? `path=${path}` : null,
                               "mode=rewrite",
                               typeof args.content === "string"
-                                ? `contentChars=${args.content.length}`
+                                ? `contentChars=${
+                                    streamingPreviewFieldChars(args, "content") ??
+                                    args.content.length
+                                  }`
                                 : null,
                             ]
                           : name === "Edit"
@@ -324,10 +327,16 @@ export function summarizeToolCall(
                                   : null,
                                 args.replace_all === true ? "replaceAll=true" : null,
                                 typeof args.old_string === "string"
-                                  ? `oldChars=${args.old_string.length}`
+                                  ? `oldChars=${
+                                      streamingPreviewFieldChars(args, "old_string") ??
+                                      args.old_string.length
+                                    }`
                                   : null,
                                 typeof args.new_string === "string"
-                                  ? `newChars=${args.new_string.length}`
+                                  ? `newChars=${
+                                      streamingPreviewFieldChars(args, "new_string") ??
+                                      args.new_string.length
+                                    }`
                                   : null,
                               ]
                             : name === "List"
@@ -434,15 +443,24 @@ export function toolCallArgsForDisplay(toolCall: ToolCall) {
       return {
         path: args.path,
         mode: "rewrite",
-        contentChars: typeof args.content === "string" ? args.content.length : undefined,
+        contentChars:
+          typeof args.content === "string"
+            ? (streamingPreviewFieldChars(args, "content") ?? args.content.length)
+            : undefined,
       };
     case "Edit":
       return {
         path: args.path,
         expected_replacements: args.expected_replacements,
         replace_all: args.replace_all,
-        oldChars: typeof args.old_string === "string" ? args.old_string.length : undefined,
-        newChars: typeof args.new_string === "string" ? args.new_string.length : undefined,
+        oldChars:
+          typeof args.old_string === "string"
+            ? (streamingPreviewFieldChars(args, "old_string") ?? args.old_string.length)
+            : undefined,
+        newChars:
+          typeof args.new_string === "string"
+            ? (streamingPreviewFieldChars(args, "new_string") ?? args.new_string.length)
+            : undefined,
       };
     case "Image": {
       const out: Record<string, unknown> = {};
@@ -542,6 +560,116 @@ export function previewText(input: string, maxChars = 1200) {
   const text = input || "";
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n...（已截断预览，len=${text.length}）...`;
+}
+
+export const LIVE_TOOL_PREVIEW_META_KEY = "__liveagent_stream_preview";
+
+type StreamingPreviewFieldMetrics = {
+  chars?: number;
+  lines?: number;
+  truncated?: boolean;
+};
+
+function asPlainRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readStreamingPreviewFieldMetrics(
+  args: Record<string, unknown>,
+  fieldName: string,
+): StreamingPreviewFieldMetrics | undefined {
+  const metadata = asPlainRecord(args[LIVE_TOOL_PREVIEW_META_KEY]);
+  const fields = asPlainRecord(metadata.fields);
+  const field = asPlainRecord(fields[fieldName]);
+  if (Object.keys(field).length === 0) return undefined;
+  return {
+    chars: finiteNumber(field.chars),
+    lines: finiteNumber(field.lines),
+    truncated: typeof field.truncated === "boolean" ? field.truncated : undefined,
+  };
+}
+
+function streamingPreviewFieldChars(args: Record<string, unknown>, fieldName: string) {
+  return readStreamingPreviewFieldMetrics(args, fieldName)?.chars;
+}
+
+export function countTextLines(input: string) {
+  if (input.length === 0) return 0;
+  let lines = 1;
+  for (let index = 0; index < input.length; index += 1) {
+    const code = input.charCodeAt(index);
+    if (code === 13) {
+      lines += 1;
+      if (input.charCodeAt(index + 1) === 10) {
+        index += 1;
+      }
+    } else if (code === 10) {
+      lines += 1;
+    }
+  }
+  return lines;
+}
+
+export function buildStreamingToolTextPreview(
+  input: string,
+  maxChars = 4000,
+  metrics?: StreamingPreviewFieldMetrics,
+) {
+  const text = input || "";
+  const renderedText = previewText(text, maxChars);
+  return {
+    text: renderedText,
+    chars: metrics?.chars ?? text.length,
+    lines: metrics?.lines ?? countTextLines(text),
+    truncated: metrics?.truncated ?? text.length > maxChars,
+  };
+}
+
+export function getStreamingWriteToolPreview(toolCall: {
+  name: string;
+  arguments?: Record<string, unknown>;
+}) {
+  if (toolCall.name !== "Write") return null;
+  const args = toolCall.arguments || {};
+  const hasContent = typeof args.content === "string";
+  const content = hasContent ? (args.content as string) : "";
+  const contentMetrics = readStreamingPreviewFieldMetrics(args, "content");
+  return {
+    path: typeof args.path === "string" ? (args.path as string) : "",
+    mode: "rewrite" as const,
+    hasContent,
+    content: buildStreamingToolTextPreview(content, 4000, contentMetrics),
+  };
+}
+
+export function getStreamingEditToolPreview(toolCall: {
+  name: string;
+  arguments?: Record<string, unknown>;
+}) {
+  if (toolCall.name !== "Edit") return null;
+  const args = toolCall.arguments || {};
+  const hasOldString = typeof args.old_string === "string";
+  const hasNewString = typeof args.new_string === "string";
+  const oldString = hasOldString ? (args.old_string as string) : "";
+  const newString = hasNewString ? (args.new_string as string) : "";
+  const oldStringMetrics = readStreamingPreviewFieldMetrics(args, "old_string");
+  const newStringMetrics = readStreamingPreviewFieldMetrics(args, "new_string");
+  return {
+    path: typeof args.path === "string" ? (args.path as string) : "",
+    hasOldString,
+    hasNewString,
+    oldString: buildStreamingToolTextPreview(oldString, 4000, oldStringMetrics),
+    newString: buildStreamingToolTextPreview(newString, 4000, newStringMetrics),
+    expectedReplacements:
+      typeof args.expected_replacements === "number" ? args.expected_replacements : undefined,
+    replaceAll: args.replace_all === true,
+  };
 }
 
 function appendTextLikeBlock(

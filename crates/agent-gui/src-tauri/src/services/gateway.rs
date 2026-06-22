@@ -4993,9 +4993,10 @@ fn build_chat_event_envelope(
                 "round": optional_number_field(object, "round"),
             }),
         ),
-        "tool_call" => (
+        "tool_call" | "tool_call_delta" => (
             proto::chat_event::ChatEventType::ToolCall as i32,
             json!({
+                "type": event_type,
                 "id": optional_string_field(object, "id"),
                 "name": optional_string_field(object, "name"),
                 "arguments": object.get("arguments").cloned().unwrap_or(Value::Null),

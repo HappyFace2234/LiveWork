@@ -886,7 +886,9 @@ func (m *Manager) MarkChatRunPayloads(
 			continue
 		}
 		broadcasts = append(broadcasts, broadcast)
-		persists = append(persists, chatRunEventAppendSnapshot(run, broadcast, now))
+		if !isEphemeralChatBroadcastEvent(broadcast) {
+			persists = append(persists, chatRunEventAppendSnapshot(run, broadcast, now))
+		}
 	}
 	runSubscribers := make([]*chatRunSubscriber, 0, len(run.subscribers))
 	for _, subscriber := range run.subscribers {
@@ -990,7 +992,9 @@ func (m *Manager) broadcastChatEvent(requestID string, event *gatewayv1.ChatEven
 			run.expiresAt = now.Add(chatRunDoneRetention)
 		}
 		run.appendEvent(broadcast)
-		persist = chatRunEventAppendSnapshot(run, broadcast, now)
+		if !isEphemeralChatBroadcastEvent(broadcast) {
+			persist = chatRunEventAppendSnapshot(run, broadcast, now)
+		}
 		if isFirstDeltaChatEvent(event) && !run.firstDeltaLogged {
 			run.firstDeltaLogged = true
 			firstDelta = cloneChatBroadcastEvent(broadcast)
@@ -1605,6 +1609,35 @@ func isFirstDeltaChatEvent(event *gatewayv1.ChatEvent) bool {
 	default:
 		return false
 	}
+}
+
+func isEphemeralChatPayload(payload map[string]any) bool {
+	if payload == nil {
+		return false
+	}
+	eventType, _ := payload["type"].(string)
+	return strings.TrimSpace(eventType) == "tool_call_delta"
+}
+
+func isEphemeralChatEvent(event *gatewayv1.ChatEvent) bool {
+	if event == nil || event.GetType() != gatewayv1.ChatEvent_TOOL_CALL {
+		return false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(event.GetData())), &payload); err != nil {
+		return false
+	}
+	return isEphemeralChatPayload(payload)
+}
+
+func isEphemeralChatBroadcastEvent(event *ChatBroadcastEvent) bool {
+	if event == nil {
+		return false
+	}
+	if len(event.Payload) > 0 {
+		return isEphemeralChatPayload(event.Payload)
+	}
+	return isEphemeralChatEvent(event.Event)
 }
 
 func chatControlSpanName(control *gatewayv1.ChatControlEvent) string {

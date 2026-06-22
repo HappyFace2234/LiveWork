@@ -172,6 +172,72 @@ function createStreamForAssistant(assistant) {
   };
 }
 
+function createQueuedStream(events, finalMessage) {
+  return {
+    __stream: true,
+    stream: {
+      async *[Symbol.asyncIterator]() {
+        for (const event of events) {
+          yield event;
+        }
+      },
+      async result() {
+        return finalMessage;
+      },
+    },
+  };
+}
+
+function createToolCallDeltaStream(finalToolCall, partialToolCalls, extra = {}) {
+  const assistant = createAssistant([finalToolCall], "toolUse", extra);
+  const startToolCall = partialToolCalls[0] ?? {
+    ...finalToolCall,
+    arguments: {},
+  };
+  const events = [
+    {
+      type: "start",
+      partial: {
+        ...assistant,
+        content: [],
+      },
+    },
+    {
+      type: "toolcall_start",
+      contentIndex: 0,
+      partial: {
+        ...assistant,
+        content: [startToolCall],
+      },
+    },
+    ...partialToolCalls.map((toolCall) => ({
+      type: "toolcall_delta",
+      contentIndex: 0,
+      delta: JSON.stringify(toolCall.arguments ?? {}),
+      partial: {
+        ...assistant,
+        content: [toolCall],
+      },
+    })),
+    {
+      type: "toolcall_end",
+      contentIndex: 0,
+      toolCall: finalToolCall,
+      partial: {
+        ...assistant,
+        content: [finalToolCall],
+      },
+    },
+    {
+      type: "done",
+      reason: "toolUse",
+      message: assistant,
+    },
+  ];
+
+  return createQueuedStream(events, assistant);
+}
+
 const llmMock = {
   buildProviderRequestMetadata(_providerId, sessionId) {
     return sessionId ? { sessionId } : undefined;
@@ -233,12 +299,12 @@ const llmMock = {
   },
   streamSimpleByApi(_model, context, options) {
     observedStreamContexts.push(context);
-    const assistant = streamQueue.shift();
-    if (!assistant) {
+    const queued = streamQueue.shift();
+    if (!queued) {
       throw new Error("No fake stream response queued");
     }
     const beforeStream = streamSideEffects.shift()?.(options);
-    const stream = createStreamForAssistant(assistant);
+    const stream = queued.__stream ? queued.stream : createStreamForAssistant(queued);
     return {
       async *[Symbol.asyncIterator]() {
         await beforeStream;
@@ -1008,6 +1074,59 @@ arguments: {"path": "report.html", "content": "<html></html>"}`,
   assert.deepEqual(
     assistantToolCalls.map((toolCall) => toolCall.id),
     [writeCall.id],
+  );
+});
+
+test("runAssistantWithTools emits streaming tool call argument deltas before final execution", async () => {
+  const finalWriteCall = createToolCall("call_00_streaming_write", "Write", {
+    path: "report.html",
+    content: "<html>\n<body>Done</body>\n</html>",
+  });
+  resetFakeStreams(
+    createToolCallDeltaStream(finalWriteCall, [
+      createToolCall(finalWriteCall.id, "Write", {}),
+      createToolCall(finalWriteCall.id, "Write", { path: "report.html" }),
+      createToolCall(finalWriteCall.id, "Write", {
+        path: "report.html",
+        content: "<html>\n<body>",
+      }),
+    ]),
+    createTextAssistant("after streaming write"),
+  );
+  const writeTool = {
+    name: "Write",
+    description: "Write files",
+    parameters: { type: "object", properties: {} },
+  };
+  const deltas = [];
+  const { params, executedToolCalls } = createBaseParams({
+    tools: [writeTool],
+    context: {
+      systemPrompt: "Base system prompt",
+      messages: [{ role: "user", content: "Start", timestamp: 1 }],
+      tools: [writeTool],
+    },
+    onToolCallDelta: (toolCall) => {
+      deltas.push({
+        id: toolCall.id,
+        name: toolCall.name,
+        arguments: { ...(toolCall.arguments ?? {}) },
+      });
+    },
+  });
+
+  const result = await runAssistantWithTools(params);
+
+  assert.deepEqual(
+    deltas.map((delta) => delta.arguments),
+    [{}, { path: "report.html" }, { path: "report.html", content: "<html>\n<body>" }],
+  );
+  assert.equal(executedToolCalls.length, 1);
+  assert.equal(executedToolCalls[0].id, finalWriteCall.id);
+  assert.deepEqual(executedToolCalls[0].arguments, finalWriteCall.arguments);
+  assert.deepEqual(
+    result.emittedMessages.map((message) => message.role),
+    ["assistant", "toolResult", "assistant"],
   );
 });
 

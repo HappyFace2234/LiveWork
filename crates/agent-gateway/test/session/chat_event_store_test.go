@@ -29,6 +29,31 @@ type staleReplayChatEventStore struct {
 	replay   []*session.ChatBroadcastEvent
 }
 
+func readChatBroadcastPayloadType(
+	t *testing.T,
+	ch <-chan *session.ChatBroadcastEvent,
+	label string,
+) string {
+	t.Helper()
+	select {
+	case event := <-ch:
+		if event.Payload != nil {
+			eventType, _ := event.Payload["type"].(string)
+			return eventType
+		}
+		if event.Control != nil {
+			return event.Control.GetType()
+		}
+		if event.Event != nil {
+			return event.Event.GetType().String()
+		}
+		return ""
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+	return ""
+}
+
 func (s *staleReplayChatEventStore) StartRun(input session.ChatRunStoreStart) (session.ChatRunSnapshot, bool, error) {
 	return session.ChatRunSnapshot{
 		RequestID:       input.RequestID,
@@ -148,6 +173,80 @@ func TestSQLiteChatEventStoreReplaysCompletedRunAndDedupesCommand(t *testing.T) 
 	for index := range want {
 		if gotTypes[index] != want[index] {
 			t.Fatalf("replayed event types = %#v, want %#v", gotTypes, want)
+		}
+	}
+}
+
+func TestSQLiteChatEventStoreDoesNotPersistToolCallDeltaPayloads(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "gateway-chat.sqlite3")
+	sm, store := newPersistentTestSessionManager(t, dbPath)
+	if _, created, err := sm.StartPendingChatCommandRun(
+		"request-1",
+		"conversation-1",
+		"client-submit-1",
+		"/workspace",
+	); err != nil || !created {
+		t.Fatalf("StartPendingChatCommandRun created=%v err=%v", created, err)
+	}
+
+	ch, _, cleanup, _, err := sm.SubscribeChatRun("request-1", "conversation-1", 0)
+	if err != nil {
+		t.Fatalf("SubscribeChatRun live: %v", err)
+	}
+	defer cleanup()
+
+	sm.MarkChatRunControl("request-1", "conversation-1", "accepted", "", "")
+	sm.MarkChatRunPayload("request-1", "conversation-1", map[string]any{
+		"type":      "tool_call_delta",
+		"id":        "call-write",
+		"name":      "Write",
+		"arguments": map[string]any{"path": "src/app.ts", "content": "con"},
+	})
+
+	if got := readChatBroadcastPayloadType(t, ch, "live accepted"); got != "accepted" {
+		t.Fatalf("live event type = %q, want accepted", got)
+	}
+	if got := readChatBroadcastPayloadType(t, ch, "live tool_call_delta"); got != "tool_call_delta" {
+		t.Fatalf("live event type = %q, want tool_call_delta", got)
+	}
+
+	sm.MarkChatRunPayload("request-1", "conversation-1", map[string]any{
+		"type":      "tool_call",
+		"id":        "call-write",
+		"name":      "Write",
+		"arguments": map[string]any{"path": "src/app.ts", "content": "console.log(1);\n"},
+	})
+	sm.MarkChatRunControl("request-1", "conversation-1", "completed", "", "")
+	if err := store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	next, nextStore := newPersistentTestSessionManager(t, dbPath)
+	defer nextStore.Close()
+	replayCh, _, replayCleanup, replaySnapshot, err := next.SubscribeChatRun(
+		"request-1",
+		"conversation-1",
+		0,
+	)
+	if err != nil {
+		t.Fatalf("SubscribeChatRun replay: %v", err)
+	}
+	defer replayCleanup()
+	if replaySnapshot.LatestSeq != 4 {
+		t.Fatalf("replay latest seq = %d, want 4", replaySnapshot.LatestSeq)
+	}
+
+	gotTypes := []string{
+		readChatBroadcastPayloadType(t, replayCh, "replayed accepted"),
+		readChatBroadcastPayloadType(t, replayCh, "replayed tool_call"),
+		readChatBroadcastPayloadType(t, replayCh, "replayed completed"),
+	}
+	wantTypes := []string{"accepted", "tool_call", "completed"}
+	for index := range wantTypes {
+		if gotTypes[index] != wantTypes[index] {
+			t.Fatalf("replayed event types = %#v, want %#v", gotTypes, wantTypes)
 		}
 	}
 }

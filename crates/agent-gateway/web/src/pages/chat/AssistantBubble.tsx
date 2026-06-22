@@ -28,6 +28,8 @@ import { ImagePreview, type ImagePreviewSlide } from "../../components/chat/Imag
 import { useLocale } from "../../i18n";
 import { cn } from "../../lib/shared/utils";
 import {
+  getStreamingEditToolPreview,
+  getStreamingWriteToolPreview,
   previewText,
   safeStringify,
   shouldDisplayToolTraceItem,
@@ -1032,21 +1034,70 @@ function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unk
 /** Inline meta tags */
 function MetaTags({ tags }: { tags: MetaTag[] }) {
   if (tags.length === 0) return null;
+  const labelCounts = new Map<string, number>();
   return (
     <div className="flex flex-wrap gap-1.5">
-      {tags.map((tag) => (
-        <span
-          key={`${tag.label}-${tag.value}`}
-          className="tool-arg-pill inline-flex min-h-6 items-center gap-1.5 rounded-full border border-black/[0.05] bg-white/[0.78] px-2 py-1 text-[10.5px] leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-none"
-        >
-          <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground/55">
-            {tag.label}
+      {tags.map((tag) => {
+        const seenCount = labelCounts.get(tag.label) ?? 0;
+        labelCounts.set(tag.label, seenCount + 1);
+        const stableKey = seenCount === 0 ? tag.label : `${tag.label}-${seenCount}`;
+        return (
+          <span
+            key={stableKey}
+            className="tool-arg-pill inline-flex min-h-6 items-center gap-1.5 rounded-full border border-black/[0.05] bg-white/[0.78] px-2 py-1 text-[10.5px] leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-none"
+          >
+            <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground/55">
+              {tag.label}
+            </span>
+            <span className="h-3 w-px bg-black/[0.06] dark:bg-white/[0.08]" />
+            <span className="font-mono tabular-nums text-foreground/75">{tag.value}</span>
           </span>
-          <span className="h-3 w-px bg-black/[0.06] dark:bg-white/[0.08]" />
-          <span className="font-mono text-foreground/75">{tag.value}</span>
-        </span>
-      ))}
+        );
+      })}
     </div>
+  );
+}
+
+function StreamingArgPlaceholder({ label }: { label: string }) {
+  return (
+    <ToolSurface>
+      <div className="text-[11.5px] leading-[1.6] text-muted-foreground/62">{label}</div>
+    </ToolSurface>
+  );
+}
+
+function StreamingTextPreviewSurface({
+  label,
+  hasValue,
+  emptyLabel,
+  preview,
+}: {
+  label: string;
+  hasValue: boolean;
+  emptyLabel: string;
+  preview: { text: string; chars: number; lines: number; truncated: boolean };
+}) {
+  return (
+    <ToolSurface className="overflow-hidden px-0 py-0">
+      <div className="px-2.5 pt-2">
+        <ToolSurfaceLabel label={label} />
+      </div>
+      {hasValue ? (
+        preview.text ? (
+          <ToolScrollablePre className="max-h-56 rounded-none bg-black/[0.02] dark:bg-white/[0.03]">
+            {preview.text}
+          </ToolScrollablePre>
+        ) : (
+          <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
+            {emptyLabel}
+          </div>
+        )
+      ) : (
+        <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
+          Waiting for {label}...
+        </div>
+      )}
+    </ToolSurface>
   );
 }
 
@@ -1054,6 +1105,97 @@ function MetaTags({ tags }: { tags: MetaTag[] }) {
 function ToolArgsDisplay({ item }: { item: ToolTraceItem }) {
   const toolCall = item.toolCall;
   const display = getToolDisplay(toolCall);
+
+  const writePreview = getStreamingWriteToolPreview(toolCall);
+  if (writePreview) {
+    const hasAnyArg = Boolean(writePreview.path || writePreview.hasContent);
+    if (!hasAnyArg) {
+      return <StreamingArgPlaceholder label="Waiting for file content..." />;
+    }
+    return (
+      <div className="tool-expand flex flex-col gap-2">
+        {writePreview.path ? (
+          <ToolSurface>
+            <ToolSurfaceLabel label="path" />
+            <PathDisplay
+              path={writePreview.path}
+              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
+            />
+          </ToolSurface>
+        ) : null}
+        {writePreview.hasContent ? (
+          <MetaTags
+            tags={[
+              { label: "mode", value: writePreview.mode },
+              { label: "chars", value: String(writePreview.content.chars) },
+              { label: "lines", value: String(writePreview.content.lines) },
+              ...(writePreview.content.truncated ? [{ label: "preview", value: "partial" }] : []),
+            ]}
+          />
+        ) : null}
+        <StreamingTextPreviewSurface
+          label="content"
+          hasValue={writePreview.hasContent}
+          emptyLabel="(empty content)"
+          preview={writePreview.content}
+        />
+      </div>
+    );
+  }
+
+  const editPreview = getStreamingEditToolPreview(toolCall);
+  if (editPreview) {
+    const hasAnyArg =
+      Boolean(editPreview.path) || editPreview.hasOldString || editPreview.hasNewString;
+    if (!hasAnyArg) {
+      return <StreamingArgPlaceholder label="Waiting for replacement strings..." />;
+    }
+    return (
+      <div className="tool-expand flex flex-col gap-2">
+        {editPreview.path ? (
+          <ToolSurface>
+            <ToolSurfaceLabel label="path" />
+            <PathDisplay
+              path={editPreview.path}
+              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
+            />
+          </ToolSurface>
+        ) : null}
+        <MetaTags
+          tags={[
+            ...(typeof editPreview.expectedReplacements === "number"
+              ? [{ label: "expected", value: String(editPreview.expectedReplacements) }]
+              : []),
+            ...(editPreview.replaceAll ? [{ label: "all", value: "true" }] : []),
+            ...(editPreview.hasOldString
+              ? [
+                  { label: "old", value: `${editPreview.oldString.chars} chars` },
+                  { label: "old lines", value: String(editPreview.oldString.lines) },
+                ]
+              : []),
+            ...(editPreview.hasNewString
+              ? [
+                  { label: "new", value: `${editPreview.newString.chars} chars` },
+                  { label: "new lines", value: String(editPreview.newString.lines) },
+                ]
+              : []),
+          ]}
+        />
+        <StreamingTextPreviewSurface
+          label="old string"
+          hasValue={editPreview.hasOldString}
+          emptyLabel="(empty old string)"
+          preview={editPreview.oldString}
+        />
+        <StreamingTextPreviewSurface
+          label="new string"
+          hasValue={editPreview.hasNewString}
+          emptyLabel="(empty replacement)"
+          preview={editPreview.newString}
+        />
+      </div>
+    );
+  }
 
   if (isDelegateAgentCardToolCall(toolCall)) {
     const args = toolCall.arguments || {};
@@ -2420,7 +2562,12 @@ function ToolCallItem({
   const [open, setOpen] = useState(readOnly || isRedactedToolContent ? false : shouldAutoOpen);
   const isDelegateAgentCard = isDelegateAgentCardToolCall(item.toolCall);
   const hasArgs = Object.keys(item.toolCall.arguments || {}).length > 0;
-  const shouldShowArgs = !isRedactedToolContent && hasArgs && (!isDelegateAgentCard || !result);
+  const isStreamingFilePreviewTool =
+    item.toolCall.name === "Write" || item.toolCall.name === "Edit";
+  const shouldShowArgs =
+    !isRedactedToolContent &&
+    (!isDelegateAgentCard || !result) &&
+    (isStreamingFilePreviewTool ? !result : hasArgs);
   const isBash = item.toolCall.name === "Bash";
   const bashCmd =
     !isRedactedToolContent && isBash && typeof item.toolCall.arguments?.command === "string"

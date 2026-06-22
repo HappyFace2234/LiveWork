@@ -1218,7 +1218,7 @@ export function pushChatEvent(entries: ChatEntry[], event: ChatEvent): ChatEntry
     ];
   }
 
-  if (event.type === "tool_call") {
+  if (event.type === "tool_call" || event.type === "tool_call_delta") {
     const round = readRound(event.round);
     const eventToolCall = normalizeToolCallLike(event);
     const mergedToolCall = mergeTailToolCallArguments(entries, {

@@ -611,6 +611,7 @@ export async function runAssistantWithTools(params: {
   onTextDelta: (delta: string, round: number) => void;
   onThinkingDelta?: (delta: string, round: number) => void;
   onToolCall?: (toolCall: ToolCall, round: number) => void;
+  onToolCallDelta?: (toolCall: ToolCall, round: number) => void;
   onHostedSearch?: (hostedSearch: HostedSearchBlock, round: number) => void;
   onToolExecutionStart?: (toolCall: ToolCall, round: number) => void;
   onToolResult?: (toolCall: ToolCall, toolResult: Message, round: number) => void;
@@ -1289,6 +1290,19 @@ export async function runAssistantWithTools(params: {
               toolCallsById.set(effectiveToolCall.id, effectiveToolCall);
               if (!shouldSilenceProviderNativeWebSearchToolCall(effectiveToolCall)) {
                 params.onToolCall?.(effectiveToolCall, currentRound);
+              }
+            }
+          } else if (streamEvent.type === "toolcall_delta") {
+            nativeWebSearchStatusController.pause();
+            const block = streamEvent.partial.content[streamEvent.contentIndex];
+            if (block && block.type === "toolCall") {
+              const effectiveToolCall = normalizeToolCallNameForExecution(block);
+              if (effectiveToolCall !== block) {
+                streamEvent.partial.content[streamEvent.contentIndex] = effectiveToolCall;
+              }
+              toolCallsById.set(effectiveToolCall.id, effectiveToolCall);
+              if (!shouldSilenceProviderNativeWebSearchToolCall(effectiveToolCall)) {
+                params.onToolCallDelta?.(effectiveToolCall, currentRound);
               }
             }
           } else if (streamEvent.type === "toolcall_end") {

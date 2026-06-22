@@ -34,6 +34,30 @@ func TestChatEventPayloadPreservesHostedSearch(t *testing.T) {
 	}
 }
 
+func TestChatEventPayloadPreservesToolCallDeltaType(t *testing.T) {
+	payload := chatEventPayload(&gatewayv1.ChatEvent{
+		Type:           gatewayv1.ChatEvent_TOOL_CALL,
+		ConversationId: "conversation-1",
+		Data:           `{"type":"tool_call_delta","id":"call-write","name":"Write","arguments":{"path":"src/app.ts","content":"con"},"round":1}`,
+	}, 8)
+
+	if payload["type"] != "tool_call_delta" {
+		t.Fatalf("expected tool_call_delta type, got %#v", payload["type"])
+	}
+	if payload["conversation_id"] != "conversation-1" {
+		t.Fatalf("expected conversation id, got %#v", payload["conversation_id"])
+	}
+	if payload["id"] != "call-write" {
+		t.Fatalf("expected tool call id, got %#v", payload["id"])
+	}
+	if payload["name"] != "Write" {
+		t.Fatalf("expected tool name, got %#v", payload["name"])
+	}
+	if payload["seq"] != int64(8) {
+		t.Fatalf("expected seq 8, got %#v", payload["seq"])
+	}
+}
+
 func TestActiveChatRunSummaryPayloadIncludesReplayCursor(t *testing.T) {
 	payload := websocketActiveChatRunSummariesPayload([]session.ActiveChatRunSummary{
 		{

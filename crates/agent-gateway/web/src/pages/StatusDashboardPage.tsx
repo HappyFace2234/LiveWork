@@ -362,6 +362,8 @@ function classifyChatEvent(event: ChatEvent) {
       return { tone: "violet" as const, title: "推理脉冲" };
     case "tool_call":
       return { tone: "amber" as const, title: "工具调用" };
+    case "tool_call_delta":
+      return { tone: "amber" as const, title: "工具参数" };
     case "tool_result": {
       const isError = "isError" in event && event.isError === true;
       return { tone: isError ? ("rose" as const) : ("emerald" as const), title: "工具回传" };
@@ -412,6 +414,8 @@ function summarizeChatEvent(event: ChatEvent): DashboardEvent | null {
     detail = text ? truncateMiddle(text.replace(/\s+/g, " "), 80) : "模型正在整理推理上下文。";
   } else if (type === "tool_call") {
     detail = `${getToolName(event)} 已发起调用。`;
+  } else if (type === "tool_call_delta") {
+    detail = `${getToolName(event)} 参数流式更新。`;
   } else if (type === "tool_result") {
     const isError = "isError" in event && event.isError === true;
     detail = `${getToolName(event)} ${isError ? "返回异常" : "返回结果"}。`;

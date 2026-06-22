@@ -688,6 +688,116 @@ test("pushChatEvent keeps streamed text after tool calls in event order", () => 
   assert.equal(blocks[2].text, "工具调用后的正文应该留在工具卡之后。");
 });
 
+test("pushChatEvent merges streamed Write deltas with final call and result", () => {
+  let entries = [];
+  entries = pushChatEvent(entries, {
+    type: "tool_call_delta",
+    id: "call-write",
+    name: "Write",
+    arguments: { path: "src/app.ts", content: "con" },
+    round: 1,
+  });
+  entries = pushChatEvent(entries, {
+    type: "tool_call_delta",
+    id: "call-write",
+    name: "Write",
+    arguments: { path: "src/app.ts", content: "console.log(1);\n" },
+    round: 1,
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].kind, "tool_call");
+  assert.equal(entries[0].toolCall.arguments.content, "console.log(1);\n");
+
+  entries = pushChatEvent(entries, {
+    type: "tool_call",
+    id: "call-write",
+    name: "Write",
+    arguments: { path: "src/app.ts", content: "console.log(1);\n" },
+    round: 1,
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].toolCall.arguments.content, "console.log(1);\n");
+
+  entries = pushChatEvent(entries, {
+    type: "tool_result",
+    id: "call-write",
+    name: "Write",
+    arguments: { path: "src/app.ts", content: "console.log(1);\n" },
+    content: [{ type: "text", text: "Wrote src/app.ts" }],
+    details: { kind: "write", path: "src/app.ts", bytes: 16, lines: 1 },
+    isError: false,
+    round: 1,
+  });
+
+  assert.equal(entries.length, 2);
+  assert.deepEqual(
+    entries.map((entry) => entry.kind),
+    ["tool_call", "tool_result"],
+  );
+
+  const items = buildTranscriptItems(entries);
+  assert.equal(items.length, 1);
+  const toolBlocks = items[0].rounds[0].blocks.filter((block) => block.kind === "tool");
+  assert.equal(toolBlocks.length, 1);
+  assert.equal(toolBlocks[0].item.toolCall.id, "call-write");
+  assert.equal(toolBlocks[0].item.toolCall.arguments.content, "console.log(1);\n");
+  assert.equal(toolBlocks[0].item.toolResult.toolCallId, "call-write");
+  assert.deepEqual(items[0].rounds[0].runningToolCallIds, []);
+});
+
+test("pushChatEvent preserves streaming preview metadata for Write metrics", () => {
+  const metadataKey = uiMessages.LIVE_TOOL_PREVIEW_META_KEY;
+  const previewContent = "head\n...[truncated 9000 chars]...\ntail";
+  const previewArgs = {
+    path: "src/large.ts",
+    content: previewContent,
+    [metadataKey]: {
+      version: 1,
+      fields: {
+        content: {
+          chars: 12000,
+          lines: 800,
+          previewChars: previewContent.length,
+          truncated: true,
+          strategy: "head-tail",
+        },
+      },
+    },
+  };
+
+  let entries = [];
+  entries = pushChatEvent(entries, {
+    type: "tool_call_delta",
+    id: "call-large-write",
+    name: "Write",
+    arguments: previewArgs,
+    round: 1,
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].toolCall.arguments.content, previewContent);
+  const deltaPreview = uiMessages.getStreamingWriteToolPreview(entries[0].toolCall);
+  assert.equal(deltaPreview.content.chars, 12000);
+  assert.equal(deltaPreview.content.lines, 800);
+  assert.equal(deltaPreview.content.truncated, true);
+
+  entries = pushChatEvent(entries, {
+    type: "tool_call",
+    id: "call-large-write",
+    name: "Write",
+    arguments: previewArgs,
+    round: 1,
+  });
+
+  assert.equal(entries.length, 1);
+  const finalPreview = uiMessages.getStreamingWriteToolPreview(entries[0].toolCall);
+  assert.equal(finalPreview.content.text, previewContent);
+  assert.equal(finalPreview.content.chars, 12000);
+  assert.equal(finalPreview.content.lines, 800);
+});
+
 test("buildTranscriptItems expands parent Agent aggregate results into Agent cards", () => {
   const entries = [
     {

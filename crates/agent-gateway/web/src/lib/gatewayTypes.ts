@@ -112,7 +112,7 @@ export type ChatEvent = (
     }
   | { type: "thinking"; text: string; round?: number; conversation_id?: string }
   | {
-      type: "tool_call";
+      type: "tool_call" | "tool_call_delta";
       id?: string;
       name?: string;
       arguments?: unknown;

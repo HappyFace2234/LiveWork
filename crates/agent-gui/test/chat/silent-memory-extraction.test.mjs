@@ -49,6 +49,104 @@ function createUser(text) {
   };
 }
 
+test("tool call delta flush uses a timer fallback when animation frames are paused", async () => {
+  const loader = createTsModuleLoader();
+  const { scheduleToolCallDeltaFlush } = loader.loadModule(
+    "src/pages/chat/turns/runAgentConversationTurn.ts",
+  );
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
+  const originalDocument = globalThis.document;
+  const cancelledFrames = [];
+  let requestedFrame = false;
+  let flushed = false;
+
+  try {
+    delete globalThis.document;
+    globalThis.requestAnimationFrame = () => {
+      requestedFrame = true;
+      return 42;
+    };
+    globalThis.cancelAnimationFrame = (frameId) => {
+      cancelledFrames.push(frameId);
+    };
+
+    scheduleToolCallDeltaFlush(() => {
+      flushed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 90));
+
+    assert.equal(requestedFrame, true);
+    assert.equal(flushed, true);
+    assert.deepEqual(cancelledFrames, [42]);
+  } finally {
+    if (originalRequestAnimationFrame === undefined) {
+      delete globalThis.requestAnimationFrame;
+    } else {
+      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+    if (originalCancelAnimationFrame === undefined) {
+      delete globalThis.cancelAnimationFrame;
+    } else {
+      globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
+    }
+    if (originalDocument === undefined) {
+      delete globalThis.document;
+    } else {
+      globalThis.document = originalDocument;
+    }
+  }
+});
+
+test("live transcript flush uses a timer fallback when animation frames are paused", async () => {
+  const loader = createTsModuleLoader();
+  const { scheduleLiveTranscriptFlush } = loader.loadModule(
+    "src/pages/chat/hooks/useLiveTranscriptController.ts",
+  );
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
+  const originalDocument = globalThis.document;
+  const cancelledFrames = [];
+  let requestedFrame = false;
+  let flushed = false;
+
+  try {
+    delete globalThis.document;
+    globalThis.requestAnimationFrame = () => {
+      requestedFrame = true;
+      return 77;
+    };
+    globalThis.cancelAnimationFrame = (frameId) => {
+      cancelledFrames.push(frameId);
+    };
+
+    scheduleLiveTranscriptFlush(() => {
+      flushed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 130));
+
+    assert.equal(requestedFrame, true);
+    assert.equal(flushed, true);
+    assert.deepEqual(cancelledFrames, [77]);
+  } finally {
+    if (originalRequestAnimationFrame === undefined) {
+      delete globalThis.requestAnimationFrame;
+    } else {
+      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+    }
+    if (originalCancelAnimationFrame === undefined) {
+      delete globalThis.cancelAnimationFrame;
+    } else {
+      globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
+    }
+    if (originalDocument === undefined) {
+      delete globalThis.document;
+    } else {
+      globalThis.document = originalDocument;
+    }
+  }
+});
+
 function validSilentMemoryPlanText() {
   return [
     "```json silent-memory-block-1-identify",
