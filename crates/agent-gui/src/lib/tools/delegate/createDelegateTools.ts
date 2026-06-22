@@ -29,6 +29,7 @@ import {
   createSubagentScheduler,
   type SubagentScheduler,
 } from "../../chat/subagent/subagentScheduler";
+import type { RuntimePlatform } from "../../runtimePlatform";
 import type { ProviderId } from "../../settings";
 import {
   type BuiltinToolBundle,
@@ -149,6 +150,7 @@ export function createDelegateTools(params: {
   providerId: ProviderId;
   model: string;
   runtime: DelegateRuntime;
+  runtimePlatform?: RuntimePlatform;
   workdir: string;
   parentConversationId?: string;
   sessionId?: string;
@@ -1013,6 +1015,7 @@ export function createDelegateTools(params: {
               providerId: params.providerId,
               model: params.model,
               runtime: params.runtime,
+              runtimePlatform: params.runtimePlatform,
               context: buildRequestContext(subagentState),
               workdir: childWorkdir,
               sessionId: subagentSessionId,

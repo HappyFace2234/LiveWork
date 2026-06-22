@@ -7,6 +7,7 @@ import {
 } from "../chat/subagent/subagentHistory";
 import type { SubagentRuntimeManager } from "../chat/subagent/subagentRuntimeManager";
 import type { SubagentScheduler } from "../chat/subagent/subagentScheduler";
+import type { RuntimePlatform } from "../runtimePlatform";
 import type {
   AgentPromptTemplate,
   CodexRequestFormat,
@@ -177,6 +178,7 @@ function createBuiltinToolRegistry(bundles: BuiltinToolBundle[]): BuiltinToolReg
 type BuildBuiltinBaseToolRegistryParams = {
   workdir: string;
   providerId: ProviderId;
+  runtimePlatform?: RuntimePlatform;
   fileState: FileToolState;
   skillsEnabled: boolean;
   skillsRootDir?: string;
@@ -238,6 +240,7 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
     createShellTools({
       workdir: params.workdir,
       providerId: params.providerId,
+      runtimePlatform: params.runtimePlatform,
       skillsRootEnabled: params.skillsEnabled,
       skillsRootDir: params.skillsRootDir,
       skillAccessPolicy: params.skillAccessPolicy,
@@ -364,6 +367,7 @@ export async function buildBuiltinToolRegistry(
       providerId: params.delegateRuntime.providerId,
       model: params.delegateRuntime.model,
       runtime: params.delegateRuntime.runtime,
+      runtimePlatform: params.runtimePlatform,
       workdir: params.workdir,
       parentConversationId: params.delegateRuntime.conversationId,
       sessionId: params.delegateRuntime.sessionId,

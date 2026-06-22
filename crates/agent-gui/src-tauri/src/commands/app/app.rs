@@ -15,6 +15,24 @@ pub struct MacOsTrafficLightMetrics {
     pub height: f64,
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimePlatformResponse {
+    pub platform: &'static str,
+}
+
+#[tauri::command]
+pub fn app_runtime_platform() -> RuntimePlatformResponse {
+    let platform = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    RuntimePlatformResponse { platform }
+}
+
 #[tauri::command]
 pub fn app_confirmed_exit(
     app: AppHandle,

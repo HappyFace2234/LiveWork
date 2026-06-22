@@ -14,7 +14,7 @@ function createBashCall(command = "echo ready") {
   };
 }
 
-test("Bash tool forwards provider_id to shell_run for Claude Code", async () => {
+test("Bash tool keeps one Bash entry and uses Windows-native policy for Claude Code", async () => {
   const calls = [];
   const loader = createTsModuleLoader({
     mocks: {
@@ -24,7 +24,10 @@ test("Bash tool forwards provider_id to shell_run for Claude Code", async () => 
           assert.equal(command, "shell_run");
           return {
             exit_code: 0,
-            shell: "git-bash",
+            shell: "pwsh",
+            platform: "windows",
+            profile: "windows-pwsh",
+            shell_family: "powershell",
             stdout: "ready\n",
             stderr: "",
             stdout_truncated: false,
@@ -43,9 +46,12 @@ test("Bash tool forwards provider_id to shell_run for Claude Code", async () => 
   const bundle = createShellTools({
     workdir: "/repo",
     providerId: "claude_code",
+    runtimePlatform: "windows",
   });
 
-  assert.match(bundle.tools[0].description, /Git Bash first/);
+  assert.match(bundle.tools[0].description, /Windows runs Bash commands/);
+  assert.match(bundle.tools[0].description, /pwsh first/);
+  assert.doesNotMatch(bundle.tools[0].description, /Git Bash first/);
 
   const result = await bundle.executeToolCall(createBashCall());
 
@@ -53,9 +59,11 @@ test("Bash tool forwards provider_id to shell_run for Claude Code", async () => 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].args.provider_id, "claude_code");
   assert.equal(calls[0].args.max_timeout_ms, 600_000);
+  assert.match(result.content[0].text, /platform: windows/);
+  assert.match(result.content[0].text, /profile: windows-pwsh/);
 });
 
-test("Bash tool forwards provider_id to shell_run for Codex", async () => {
+test("Bash tool uses the same Windows-native policy for Codex", async () => {
   const calls = [];
   const loader = createTsModuleLoader({
     mocks: {
@@ -66,6 +74,9 @@ test("Bash tool forwards provider_id to shell_run for Codex", async () => {
           return {
             exit_code: 0,
             shell: "pwsh",
+            platform: "windows",
+            profile: "windows-pwsh",
+            shell_family: "powershell",
             stdout: "ready\n",
             stderr: "",
             stdout_truncated: false,
@@ -84,10 +95,12 @@ test("Bash tool forwards provider_id to shell_run for Codex", async () => {
   const bundle = createShellTools({
     workdir: "/repo",
     providerId: "codex",
+    runtimePlatform: "windows",
   });
 
-  assert.match(bundle.tools[0].description, /Codex-style auto shell selection/);
-  assert.match(bundle.tools[0].description, /Git Bash is not used automatically/);
+  assert.match(bundle.tools[0].description, /Windows runs Bash commands/);
+  assert.match(bundle.tools[0].description, /PowerShell syntax/);
+  assert.doesNotMatch(bundle.tools[0].description, /Codex-style auto shell selection/);
 
   const result = await bundle.executeToolCall(createBashCall());
 
@@ -260,6 +273,47 @@ test("Bash tool rejects background commands with only stderr append redirected",
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /Background Bash commands must detach stdout and stderr/);
   assert.deepEqual(calls, []);
+});
+
+test("Bash tool does not apply POSIX ampersand background validation on Windows", async () => {
+  const calls = [];
+  const loader = createTsModuleLoader({
+    mocks: {
+      "@tauri-apps/api/core": {
+        async invoke(command, args) {
+          calls.push({ command, args });
+          assert.equal(command, "shell_run");
+          return {
+            exit_code: 0,
+            shell: "pwsh",
+            platform: "windows",
+            profile: "windows-pwsh",
+            shell_family: "powershell",
+            stdout: "ok\n",
+            stderr: "",
+            stdout_truncated: false,
+            stderr_truncated: false,
+            timed_out: false,
+            cancelled: false,
+            effective_timeout_ms: args.timeout_ms,
+            duration_ms: 12,
+          };
+        },
+      },
+    },
+  });
+
+  const { createShellTools } = loader.loadModule("src/lib/tools/shellTools.ts");
+  const bundle = createShellTools({
+    workdir: "/repo",
+    providerId: "codex",
+    runtimePlatform: "windows",
+  });
+
+  const result = await bundle.executeToolCall(createBashCall('& "C:/Program Files/App/app.exe"'));
+
+  assert.equal(result.isError, false);
+  assert.equal(calls.length, 1);
 });
 
 test("Bash tool allows background commands with detached stdio", async () => {

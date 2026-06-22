@@ -50,6 +50,7 @@ import type { SubagentRuntimeManager } from "../../../lib/chat/subagent/subagent
 import { createSubagentScheduler } from "../../../lib/chat/subagent/subagentScheduler";
 import type { StreamDebugLogger } from "../../../lib/debug/agentDebug";
 import { assistantMessageToText } from "../../../lib/providers/llm";
+import { resolveRuntimePlatform } from "../../../lib/runtimePlatform";
 import {
   type AppSettings,
   type ProviderId,
@@ -534,10 +535,12 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
   };
   const fileState = createFileToolState();
   const subagentScheduler = createSubagentScheduler();
+  const runtimePlatform = await resolveRuntimePlatform();
   const buildRegistryStartedAt = perfNowMs();
   const builtinRegistry = await buildBuiltinToolRegistry({
     workdir: effectiveWorkdir,
     providerId,
+    runtimePlatform,
     fileState,
     skillsEnabled: effectiveSkillsEnabled,
     skillsRootDir,
@@ -775,6 +778,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         providerId,
         model,
         runtime,
+        runtimePlatform,
         context: agentContext,
         workdir: effectiveWorkdir,
         sessionId,

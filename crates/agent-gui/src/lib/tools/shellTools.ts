@@ -1,6 +1,12 @@
 import type { Tool, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { invoke } from "@tauri-apps/api/core";
 import { Type } from "typebox";
+import {
+  inferRuntimePlatform,
+  normalizeRuntimePlatform,
+  type RuntimePlatform,
+  runtimePlatformLabel,
+} from "../runtimePlatform";
 import type { ProviderId } from "../settings";
 import {
   type BashTimeoutPolicy,
@@ -9,19 +15,16 @@ import {
   normalizeBashTimeoutMs,
   resolveBashTimeoutPolicy,
 } from "./bashTimeoutPolicy";
-import {
-  type BuiltinToolBundle,
-  createBuiltinMetadataMap,
-} from "./builtinTypes";
+import { type BuiltinToolBundle, createBuiltinMetadataMap } from "./builtinTypes";
 import { formatResolvedTarget, type ResolvedPath, ToolPathResolver } from "./pathUtils";
-import {
-  assertSkillPathAllowedByPolicy,
-  type SkillAccessPolicy,
-} from "./skillAccessPolicy";
+import { assertSkillPathAllowedByPolicy, type SkillAccessPolicy } from "./skillAccessPolicy";
 
 type ShellRunResponse = {
   exit_code: number;
   shell: string;
+  platform?: string;
+  profile?: string;
+  shell_family?: string;
   stdout: string;
   stderr: string;
   stdout_truncated: boolean;
@@ -311,12 +314,20 @@ function buildCancelledResult(params: {
   startedAt: number;
   effectiveTimeoutMs?: number;
   shell?: string;
+  runtimePlatform?: RuntimePlatform;
   timeoutPolicy: BashTimeoutPolicy;
 }): ToolResultMessage {
   const durationMs = Date.now() - params.startedAt;
   const details: ShellRunResponse = {
     exit_code: -1,
     shell: params.shell || "unknown",
+    platform: params.runtimePlatform,
+    profile: params.runtimePlatform === "windows" ? "windows-pwsh" : undefined,
+    shell_family: params.runtimePlatform
+      ? params.runtimePlatform === "windows"
+        ? "powershell"
+        : "posix"
+      : undefined,
     stdout: "",
     stderr: "Cancelled",
     stdout_truncated: false,
@@ -329,6 +340,9 @@ function buildCancelledResult(params: {
   const header = [
     "# Shell",
     `shell: ${details.shell}`,
+    details.platform ? `platform: ${details.platform}` : null,
+    details.profile ? `profile: ${details.profile}` : null,
+    details.shell_family ? `shell_family: ${details.shell_family}` : null,
     params.cwd ? `cwd: ${params.cwd}` : null,
     "exit_code: -1",
     "cancelled: true",
@@ -352,16 +366,26 @@ function buildCancelledResult(params: {
 export function createShellTools(params: {
   workdir: string;
   providerId: ProviderId;
+  runtimePlatform?: RuntimePlatform;
   skillsRootEnabled?: boolean;
   skillsRootDir?: string;
   skillAccessPolicy?: SkillAccessPolicy;
   managedProcessEnabled?: boolean;
 }): BuiltinToolBundle {
   const timeoutPolicy = resolveBashTimeoutPolicy(params.providerId);
-  const windowsShellPolicy =
-    params.providerId === "claude_code"
-      ? "Windows uses Claude Code-style auto shell selection: Git Bash first when it is installed or configured, then pwsh/PowerShell, then cmd."
-      : "Windows uses Codex-style auto shell selection: pwsh first, then Windows PowerShell, then cmd; Git Bash is not used automatically in Codex mode.";
+  const runtimePlatform =
+    normalizeRuntimePlatform(params.runtimePlatform) ?? inferRuntimePlatform();
+  const platformLabel = runtimePlatformLabel(runtimePlatform);
+  const shellPolicy =
+    runtimePlatform === "windows"
+      ? 'Windows runs Bash commands with the native Windows shell chain: pwsh first, then Windows PowerShell, then cmd. Use PowerShell syntax by default: `Write-Output`, `$env:NAME = "value"`, semicolon separators, and `Start-Process` when a process must be detached. Do not assume Git Bash, `export`, `nohup`, `/dev/null`, or POSIX background syntax.'
+      : runtimePlatform === "macos"
+        ? "macOS runs Bash commands with POSIX shell syntax: zsh first, then Bash, then sh."
+        : "Linux runs Bash commands with POSIX shell syntax: Bash first, then zsh, then sh.";
+  const backgroundPolicy =
+    runtimePlatform === "windows"
+      ? "For dev servers, watchers, or long-running commands on Windows, use ManagedProcess instead of detached shell syntax."
+      : "Background commands using `&` must detach stdout and stderr first, for example `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`; otherwise the tool rejects them because inherited pipes can keep Bash running forever.";
   const workdir = params.workdir;
   const allowSkillsRoot = params.skillsRootEnabled === true;
   const allowManagedProcess = params.managedProcessEnabled !== false;
@@ -549,6 +573,17 @@ export function createShellTools(params: {
     const hints: string[] = [];
 
     if (
+      runtimePlatform === "windows" &&
+      /(^|[\s;&|])(?:export|nohup)\b|\/dev\/null|not recognized as|不是内部或外部命令|无法将.*识别为/i.test(
+        combined,
+      )
+    ) {
+      hints.push(
+        'Hint: This Bash tool is running with Windows-native shells. Use PowerShell syntax such as `Write-Output`, `$env:NAME = "value"`, and `;`, or use ManagedProcess for long-running commands.',
+      );
+    }
+
+    if (
       params.cwd.scope !== "skill" &&
       /(\.liveagent\/skills|~\/\.liveagent\/skills|\bskills\/[^ \n;&|]+\/scripts\b)/.test(combined)
     ) {
@@ -592,7 +627,7 @@ export function createShellTools(params: {
 
   const toolBash: Tool = {
     name: "Bash",
-    description: `Execute a non-interactive shell command on the local machine for builds, tests, package managers, external CLIs, curl/API calls, running Skill scripts, or explicitly requested shell work. Reserve it for commands that truly require a shell — do NOT use Bash for file operations the dedicated tools handle: use Read/List/Glob/Grep instead of cat/ls/find/grep/rg for any workspace or Skill content; use Delete instead of rm/rmdir/unlink/find -delete; use Image instead of open/xdg-open/file paths to show pictures. Use curl with an explicit timeout such as \`--max-time 30\` for endpoint tests. Background commands using \`&\` must detach stdout and stderr first, for example \`nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &\`; otherwise the tool rejects them because inherited pipes can keep Bash running forever. Running a Skill script: set cwd to \`skill://<enabled-skill>/scripts\` and run a relative command, or execute the absolute script path directly when that Skill is enabled. Use / as the path separator; Windows \\ is auto-normalized. ${windowsShellPolicy} macOS prefers zsh, then Bash/sh; Linux prefers Bash. Returns stdout, stderr, and exit_code. For ${timeoutPolicy.providerLabel}, timeout defaults to ${timeoutPolicy.defaultTimeoutMs}ms and is capped at ${timeoutPolicy.maxTimeoutMs}ms; larger timeout_ms values are accepted by the schema but clamped before execution. High risk: use carefully.`,
+    description: `Execute a non-interactive shell command on the local machine for builds, tests, package managers, external CLIs, curl/API calls, running Skill scripts, or explicitly requested shell work. Runtime platform: ${platformLabel}. ${shellPolicy} Reserve it for commands that truly require a shell — do NOT use Bash for file operations the dedicated tools handle: use Read/List/Glob/Grep instead of cat/ls/find/grep/rg for any workspace or Skill content; use Delete instead of rm/rmdir/unlink/find -delete; use Image instead of open/xdg-open/file paths to show pictures. Use curl with an explicit timeout such as \`--max-time 30\` for endpoint tests. ${backgroundPolicy} Running a Skill script: set cwd to \`skill://<enabled-skill>/scripts\` and run a relative command, or execute the absolute script path directly when that Skill is enabled. Use / as the path separator; Windows \\ is auto-normalized. Returns stdout, stderr, exit_code, platform, profile, and shell_family. For ${timeoutPolicy.providerLabel}, timeout defaults to ${timeoutPolicy.defaultTimeoutMs}ms and is capped at ${timeoutPolicy.maxTimeoutMs}ms; larger timeout_ms values are accepted by the schema but clamped before execution. High risk: use carefully.`,
     parameters: strictToolParameters({
       command: Type.String({
         description: "Shell command to execute (prefer non-interactive, idempotent commands).",
@@ -600,7 +635,7 @@ export function createShellTools(params: {
       cwd: Type.Optional(
         Type.String({
           description:
-            'Optional working directory. Omit to use the workspace root. Accepts workspace-relative paths, absolute paths, ~/..., file://, pathRef values, and skill://<enabled-skill>/... paths.',
+            "Optional working directory. Omit to use the workspace root. Accepts workspace-relative paths, absolute paths, ~/..., file://, pathRef values, and skill://<enabled-skill>/... paths.",
         }),
       ),
       timeout_ms: Type.Optional(
@@ -615,8 +650,7 @@ export function createShellTools(params: {
 
   const toolManagedProcess: Tool = {
     name: "ManagedProcess",
-    description:
-      'Start, inspect, read logs for, or stop a long-running local process such as a dev server, watcher, or preview server. Use this instead of `Bash ... &`. action="start" runs a foreground command under LiveAgent process management, redirects stdout/stderr to a log file, and returns immediately with process_id, pid, and log_path. Use action="status" to list or inspect processes, action="read_log" to read recent log output, and action="stop" to terminate the process tree.',
+    description: `Start, inspect, read logs for, or stop a long-running local process such as a dev server, watcher, or preview server. Runtime platform: ${platformLabel}; commands use the same platform shell policy as Bash. Use this instead of detached shell/background syntax. action="start" runs a foreground command under LiveAgent process management, redirects stdout/stderr to a log file, and returns immediately with process_id, pid, and log_path. Use action="status" to list or inspect processes, action="read_log" to read recent log output, and action="stop" to terminate the process tree.`,
     parameters: strictToolParameters({
       action: Type.Union(
         [
@@ -638,7 +672,7 @@ export function createShellTools(params: {
       cwd: Type.Optional(
         Type.String({
           description:
-            "Optional working directory for action=\"start\". Omit to use the workspace root. Accepts workspace-relative paths, absolute paths, ~/..., file://, pathRef values, and skill://<enabled-skill>/... paths.",
+            'Optional working directory for action="start". Omit to use the workspace root. Accepts workspace-relative paths, absolute paths, ~/..., file://, pathRef values, and skill://<enabled-skill>/... paths.',
         }),
       ),
       label: Type.Optional(
@@ -891,6 +925,7 @@ export function createShellTools(params: {
         toolCall,
         command,
         startedAt: now,
+        runtimePlatform,
         timeoutPolicy,
       });
     }
@@ -948,18 +983,20 @@ export function createShellTools(params: {
       };
     }
 
-    try {
-      validateBashBackgroundStdio(command);
-    } catch (err) {
-      return {
-        role: "toolResult",
-        toolCallId: toolCall.id,
-        toolName: toolCall.name,
-        content: [{ type: "text", text: asErrorMessage(err) }],
-        details: {},
-        isError: true,
-        timestamp: now,
-      };
+    if (runtimePlatform !== "windows") {
+      try {
+        validateBashBackgroundStdio(command);
+      } catch (err) {
+        return {
+          role: "toolResult",
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          content: [{ type: "text", text: asErrorMessage(err) }],
+          details: {},
+          isError: true,
+          timestamp: now,
+        };
+      }
     }
 
     const timeoutRaw = toolCall.arguments?.timeout_ms;
@@ -989,6 +1026,9 @@ export function createShellTools(params: {
       const header = [
         `# Shell`,
         `shell: ${res.shell || "unknown"}`,
+        res.platform ? `platform: ${res.platform}` : null,
+        res.profile ? `profile: ${res.profile}` : null,
+        res.shell_family ? `shell_family: ${res.shell_family}` : null,
         `cwd: ${formatResolvedTarget(cwdResolved)}`,
         `exit_code: ${res.exit_code}`,
         res.timed_out ? `timed_out: true` : null,
@@ -1045,6 +1085,7 @@ export function createShellTools(params: {
           cwd: formatResolvedTarget(cwdResolved),
           startedAt: now,
           effectiveTimeoutMs: timeout_ms,
+          runtimePlatform,
           timeoutPolicy,
         });
       }

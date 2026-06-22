@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import { runAssistantWithTools } from "../../lib/chat/runner/agentRunner";
 import { createStreamDebugLogger } from "../../lib/debug/agentDebug";
 import { assistantMessageToText } from "../../lib/providers/llm";
+import { resolveRuntimePlatform } from "../../lib/runtimePlatform";
 import {
   type AppSettings,
   DEFAULT_CHAT_RUNTIME_CONTROLS,
@@ -186,9 +187,11 @@ async function executeCronPromptRun(
   const skillsPrompt = skillsContext.prompt;
   const activeAgentPrompt = getActiveAgentPrompt(settings);
   const { selectableMcpServers, enabledMcpServerIds } = resolveEnabledMcpServers(settings);
+  const runtimePlatform = await resolveRuntimePlatform();
   const builtinRegistry = await buildBuiltinToolRegistry({
     workdir,
     providerId: provider.type,
+    runtimePlatform,
     fileState: createFileToolState(),
     skillsEnabled: skillsContext.enabled,
     skillsRootDir: skillsContext.rootDir,
@@ -246,6 +249,7 @@ async function executeCronPromptRun(
       nativeWebSearchEnabled: DEFAULT_CHAT_RUNTIME_CONTROLS.nativeWebSearchEnabled,
       modelConfig: findProviderModelConfig(provider, request.model),
     },
+    runtimePlatform,
     context,
     workdir,
     sessionId: request.executionId,

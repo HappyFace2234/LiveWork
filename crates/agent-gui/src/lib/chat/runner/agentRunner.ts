@@ -31,6 +31,12 @@ import {
   isProviderNativeWebSearchToolName,
 } from "../../providers/nativeWebSearch";
 import { prepareProxyRequest } from "../../providers/proxy";
+import {
+  inferRuntimePlatform,
+  normalizeRuntimePlatform,
+  type RuntimePlatform,
+  runtimePlatformLabel,
+} from "../../runtimePlatform";
 import type {
   CodexRequestFormat,
   ProviderId,
@@ -118,7 +124,13 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-export function buildToolsSuffix(workdir: string, availableToolNames?: readonly string[]) {
+export function buildToolsSuffix(
+  workdir: string,
+  availableToolNames?: readonly string[],
+  runtimePlatformInput?: RuntimePlatform,
+) {
+  const runtimePlatform = normalizeRuntimePlatform(runtimePlatformInput) ?? inferRuntimePlatform();
+  const platformLabel = runtimePlatformLabel(runtimePlatform);
   const allowAll = availableToolNames === undefined;
   const toolNames = new Set(availableToolNames ?? []);
   const has = (name: string) => allowAll || toolNames.has(name);
@@ -220,7 +232,7 @@ export function buildToolsSuffix(workdir: string, availableToolNames?: readonly 
     }
     if (has("SkillsManager") && hasReadFamily) {
       lines.push(
-        '- For files inside a Skill, call file tools with a path like `skill://<baseDir>/references/guide.md` or a pathRef returned by a tool.',
+        "- For files inside a Skill, call file tools with a path like `skill://<baseDir>/references/guide.md` or a pathRef returned by a tool.",
       );
     }
     if (has("Bash")) {
@@ -268,14 +280,30 @@ export function buildToolsSuffix(workdir: string, availableToolNames?: readonly 
   }
 
   if (has("Bash")) {
+    const bashPlatformLines =
+      runtimePlatform === "windows"
+        ? [
+            `- Current platform: ${platformLabel}. Bash runs through Windows-native shells: pwsh, then Windows PowerShell, then cmd.`,
+            '- Use PowerShell syntax by default: `Write-Output`, `$env:NAME = "value"`, semicolon separators, and PowerShell quoting.',
+            "- Do not assume Git Bash or POSIX syntax on Windows: avoid `export`, `nohup`, `/dev/null`, and POSIX background detachment.",
+            "- For long-running Windows commands, dev servers, watchers, or detached processes, use ManagedProcess instead of background shell syntax.",
+          ]
+        : [
+            `- Current platform: ${platformLabel}. Bash runs through POSIX shells.`,
+            runtimePlatform === "macos"
+              ? "- macOS prefers zsh, then Bash, then sh. Use POSIX/zsh-compatible commands."
+              : "- Linux prefers Bash, then zsh, then sh. Use POSIX/bash-compatible commands.",
+            "- Background commands using `&` must redirect stdout and stderr before detaching, for example `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`.",
+          ];
     sections.push(
       [
         "## Bash",
         "- Bash.cwd follows the path rules in **Workspace & Paths**.",
+        ...bashPlatformLines,
         '- To run installed Skill scripts, use cwd="skill://<enabled-skill>/scripts" plus a relative command.',
         "- Passing an absolute Skill script path inside the command is also accepted as long as the referenced Skill is enabled in this conversation.",
         "- For endpoint tests with curl, include an explicit timeout such as `--max-time 30` so a stalled local server or upstream request cannot hold the whole turn indefinitely.",
-        "- Background commands using `&` must redirect stdout and stderr to a log file before detaching, for example `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`; otherwise use a dedicated terminal or managed process workflow for dev servers/watchers.",
+        "- Use ManagedProcess instead of Bash for dev servers, watchers, preview servers, or anything that should keep running.",
         "- For reading, listing, or searching Skill content, always use Read/List/Glob/Grep with skill:// paths — Bash cat/ls/find/grep/rg/sed/awk against ~/.liveagent/skills is still routed back to the file tools.",
         "- Do not guess `skills/` paths inside the workspace; if a Skill is needed, enable it in the chat Skills selector first.",
         "- Do not cd into ~/.liveagent/skills or workspace skills/ guesses.",
@@ -309,13 +337,17 @@ export function buildToolsSuffix(workdir: string, availableToolNames?: readonly 
   }
 
   if (has("ManagedProcess")) {
+    const managedProcessPreference =
+      runtimePlatform === "windows"
+        ? "- Prefer ManagedProcess over Bash for `pnpm dev`, `deno run main.ts`, `vite`, file watchers, local web servers, or commands that otherwise require detached Windows process syntax."
+        : "- Prefer ManagedProcess over Bash for `pnpm dev`, `deno run main.ts`, `vite`, file watchers, local web servers, or commands that otherwise require `nohup` and log redirection.";
     sections.push(
       [
         "## ManagedProcess",
         '- Use ManagedProcess(action="start") for dev servers, preview servers, watchers, or other long-running foreground commands that should continue while you run tests.',
         "- Do not append `&` to ManagedProcess.command. It starts the process in the background, redirects stdout/stderr to a log file, and returns process_id/pid/log_path.",
         '- Use ManagedProcess(action="status") to inspect running processes, action="read_log" to inspect recent output, and action="stop" to terminate the process tree.',
-        "- Prefer ManagedProcess over Bash for `pnpm dev`, `deno run main.ts`, `vite`, file watchers, local web servers, or commands that otherwise require `nohup` and log redirection.",
+        managedProcessPreference,
       ].join("\n"),
     );
   }
@@ -597,6 +629,7 @@ export async function runAssistantWithTools(params: {
     nativeWebSearchEnabled?: boolean;
     modelConfig?: ProviderModelConfig;
   };
+  runtimePlatform?: RuntimePlatform;
   context: Context;
   workdir: string;
   sessionId?: string;
@@ -821,6 +854,7 @@ export async function runAssistantWithTools(params: {
     const toolsSuffix = buildToolsSuffix(
       params.workdir,
       llmTools.map((tool) => tool.name),
+      params.runtimePlatform,
     );
     let currentSystemPrompt = params.context.systemPrompt;
     let pendingTurnOverridePromise: Promise<TurnContextOverride> | null = null;

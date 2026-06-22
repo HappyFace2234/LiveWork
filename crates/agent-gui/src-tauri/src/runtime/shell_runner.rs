@@ -68,6 +68,9 @@ impl ShellRunRegistry {
 pub struct ShellRunResponse {
     pub exit_code: i32,
     pub shell: String,
+    pub platform: String,
+    pub profile: String,
+    pub shell_family: String,
     pub stdout: String,
     pub stderr: String,
     pub stdout_truncated: bool,
@@ -86,29 +89,6 @@ enum ShellError {
     OutOfBounds(String),
     Io(io::Error),
     Other(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ShellProvider {
-    ClaudeCode,
-    Codex,
-    Platform,
-}
-
-fn normalize_shell_provider(provider_id: Option<&str>) -> ShellProvider {
-    let Some(provider_id) = provider_id else {
-        return ShellProvider::Platform;
-    };
-    match provider_id
-        .trim()
-        .to_ascii_lowercase()
-        .replace('-', "_")
-        .as_str()
-    {
-        "claude_code" => ShellProvider::ClaudeCode,
-        "codex" | "gemini" => ShellProvider::Codex,
-        _ => ShellProvider::Platform,
-    }
 }
 
 impl std::fmt::Display for ShellError {
@@ -357,6 +337,7 @@ fn is_probable_git_bash_path(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)]
 fn find_windows_git_bash() -> Option<PathBuf> {
     let mut paths = Vec::new();
 
@@ -387,13 +368,235 @@ fn find_windows_git_bash() -> Option<PathBuf> {
     paths.into_iter().next()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShellExecutionProfile {
+    pub platform: &'static str,
+    pub profile: &'static str,
+    pub shell_family: &'static str,
+    pub display_shell: &'static str,
+}
+
+struct ShellCandidate {
+    profile: ShellExecutionProfile,
+    program: PathBuf,
+    args: Vec<String>,
+    augment_macos_path: bool,
+}
+
+pub(crate) struct SpawnedPlatformShell {
+    pub child: std::process::Child,
+    pub profile: ShellExecutionProfile,
+}
+
+fn platform_shell_candidates(cmd: &str) -> Vec<ShellCandidate> {
+    #[cfg(windows)]
+    {
+        let powershell_command = windows_powershell_command(cmd);
+        return vec![
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "windows",
+                    profile: "windows-pwsh",
+                    shell_family: "powershell",
+                    display_shell: "pwsh",
+                },
+                program: PathBuf::from("pwsh"),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-Command".to_string(),
+                    powershell_command.clone(),
+                ],
+                augment_macos_path: false,
+            },
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "windows",
+                    profile: "windows-powershell",
+                    shell_family: "powershell",
+                    display_shell: "powershell",
+                },
+                program: PathBuf::from("powershell.exe"),
+                args: vec![
+                    "-NoLogo".to_string(),
+                    "-NoProfile".to_string(),
+                    "-NonInteractive".to_string(),
+                    "-ExecutionPolicy".to_string(),
+                    "Bypass".to_string(),
+                    "-Command".to_string(),
+                    powershell_command,
+                ],
+                augment_macos_path: false,
+            },
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "windows",
+                    profile: "windows-cmd",
+                    shell_family: "cmd",
+                    display_shell: "cmd",
+                },
+                program: PathBuf::from("cmd.exe"),
+                args: vec![
+                    "/D".to_string(),
+                    "/S".to_string(),
+                    "/C".to_string(),
+                    windows_cmd_command(cmd),
+                ],
+                augment_macos_path: false,
+            },
+        ];
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "macos",
+                    profile: "posix-zsh",
+                    shell_family: "posix",
+                    display_shell: "zsh",
+                },
+                program: PathBuf::from("zsh"),
+                args: vec!["-lc".to_string(), cmd.to_string()],
+                augment_macos_path: true,
+            },
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "macos",
+                    profile: "posix-bash",
+                    shell_family: "posix",
+                    display_shell: "bash",
+                },
+                program: PathBuf::from("bash"),
+                args: vec!["-lc".to_string(), cmd.to_string()],
+                augment_macos_path: true,
+            },
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "macos",
+                    profile: "posix-sh",
+                    shell_family: "posix",
+                    display_shell: "sh",
+                },
+                program: PathBuf::from("sh"),
+                args: vec!["-c".to_string(), cmd.to_string()],
+                augment_macos_path: true,
+            },
+        ]
+    }
+
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        vec![
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "linux",
+                    profile: "posix-bash",
+                    shell_family: "posix",
+                    display_shell: "bash",
+                },
+                program: PathBuf::from("bash"),
+                args: vec!["-lc".to_string(), cmd.to_string()],
+                augment_macos_path: false,
+            },
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "linux",
+                    profile: "posix-zsh",
+                    shell_family: "posix",
+                    display_shell: "zsh",
+                },
+                program: PathBuf::from("zsh"),
+                args: vec!["-lc".to_string(), cmd.to_string()],
+                augment_macos_path: false,
+            },
+            ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "linux",
+                    profile: "posix-sh",
+                    shell_family: "posix",
+                    display_shell: "sh",
+                },
+                program: PathBuf::from("sh"),
+                args: vec!["-c".to_string(), cmd.to_string()],
+                augment_macos_path: false,
+            },
+        ]
+    }
+}
+
+#[cfg(test)]
+fn default_platform_shell_profile() -> ShellExecutionProfile {
+    platform_shell_candidates("")
+        .into_iter()
+        .next()
+        .map(|candidate| candidate.profile)
+        .unwrap_or(ShellExecutionProfile {
+            platform: "linux",
+            profile: "posix-sh",
+            shell_family: "posix",
+            display_shell: "sh",
+        })
+}
+
+pub(crate) fn spawn_platform_shell_command<F>(
+    command: &str,
+    cwd: &Path,
+    mut stdio_factory: F,
+) -> Result<SpawnedPlatformShell, String>
+where
+    F: FnMut() -> io::Result<(Stdio, Stdio)>,
+{
+    let mut errors: Vec<String> = Vec::new();
+
+    for candidate in platform_shell_candidates(command) {
+        let (stdout, stderr) = stdio_factory()
+            .map_err(|err| format!("Failed to prepare shell stdio: {err}"))?;
+        let mut c = Command::new(&candidate.program);
+        c.args(&candidate.args);
+        if candidate.augment_macos_path {
+            maybe_augment_macos_path(&mut c);
+        }
+        configure_child_process_group(&mut c);
+        let spawn_result = c
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn();
+
+        match spawn_result {
+            Ok(child) => {
+                return Ok(SpawnedPlatformShell {
+                    child,
+                    profile: candidate.profile,
+                });
+            }
+            Err(err) => errors.push(format!(
+                "{} ({}) failed: {err}",
+                candidate.profile.profile,
+                candidate.profile.display_shell
+            )),
+        }
+    }
+
+    let detail = if errors.is_empty() {
+        "no shell candidates were available".to_string()
+    } else {
+        errors.join("; ")
+    };
+    Err(ShellError::Other(format!("Failed to start command: {detail}")).to_string())
+}
+
 pub(crate) fn run_shell_script(
     workdir: String,
     command: String,
     cwd: Option<String>,
     timeout_ms: Option<u64>,
     max_timeout_ms: Option<u64>,
-    provider_id: Option<String>,
+    _provider_id: Option<String>,
     cancel_token: Option<ShellCancelToken>,
 ) -> Result<ShellRunResponse, String> {
     let wd = canonicalize_workdir(&workdir).map_err(|e| e.to_string())?;
@@ -426,189 +629,12 @@ pub(crate) fn run_shell_script(
     let timeout = Duration::from_millis(effective_timeout_ms);
     let start = Instant::now();
 
-    // The command string is executed by a platform shell:
-    // - Windows Claude Code: prefer Git Bash, then PowerShell, then cmd
-    // - Windows Codex: prefer PowerShell, then cmd
-    // - Windows generic scripts: prefer PowerShell, then Git Bash, then cmd
-    // - macOS: prefer zsh, then Bash, then sh
-    // - Linux/other Unix: prefer Bash, then zsh, then sh
-    let spawn_pwsh = || {
-        let mut c = Command::new("pwsh");
-        #[cfg(windows)]
-        let shell_cmd = windows_powershell_command(cmd);
-        #[cfg(not(windows))]
-        let shell_cmd = cmd;
-        c.arg("-NoLogo")
-            .arg("-NoProfile")
-            .arg("-NonInteractive")
-            .arg("-Command")
-            .arg(shell_cmd);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_git_bash = || {
-        #[cfg(windows)]
-        let program = find_windows_git_bash().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "Git Bash executable was not found")
-        })?;
-        #[cfg(not(windows))]
-        let program = PathBuf::from("bash");
-
-        let mut c = Command::new(program);
-        c.arg("-lc").arg(cmd);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_bash = || {
-        let mut c = Command::new("bash");
-        c.arg("-lc").arg(cmd);
-        maybe_augment_macos_path(&mut c);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_zsh = || {
-        let mut c = Command::new("zsh");
-        c.arg("-lc").arg(cmd);
-        maybe_augment_macos_path(&mut c);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_sh = || {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(cmd);
-        maybe_augment_macos_path(&mut c);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_powershell = || {
-        let mut c = Command::new("powershell.exe");
-        #[cfg(windows)]
-        let shell_cmd = windows_powershell_command(cmd);
-        #[cfg(not(windows))]
-        let shell_cmd = cmd;
-        c.arg("-NoLogo")
-            .arg("-NoProfile")
-            .arg("-NonInteractive")
-            .arg("-ExecutionPolicy")
-            .arg("Bypass")
-            .arg("-Command")
-            .arg(shell_cmd);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_cmd = || {
-        let mut c = Command::new("cmd.exe");
-        #[cfg(windows)]
-        let shell_cmd = windows_cmd_command(cmd);
-        #[cfg(not(windows))]
-        let shell_cmd = cmd;
-        c.arg("/D").arg("/S").arg("/C").arg(shell_cmd);
-        configure_child_process_group(&mut c);
-        c.current_dir(&actual_cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-    };
-
-    let spawn_windows_powershell_then_cmd = || -> Result<(std::process::Child, String), String> {
-        match spawn_pwsh() {
-            Ok(ch) => Ok((ch, "pwsh".to_string())),
-            Err(_) => match spawn_powershell() {
-                Ok(ch) => Ok((ch, "powershell".to_string())),
-                Err(_) => Ok((
-                    spawn_cmd().map_err(|e| {
-                        ShellError::Other(format!("Failed to start command: {e}")).to_string()
-                    })?,
-                    "cmd".to_string(),
-                )),
-            },
-        }
-    };
-
-    let (mut child, shell_name) = if cfg!(windows) {
-        match normalize_shell_provider(provider_id.as_deref()) {
-            ShellProvider::ClaudeCode => match spawn_git_bash() {
-                Ok(ch) => (ch, "git-bash".to_string()),
-                Err(_) => spawn_windows_powershell_then_cmd()?,
-            },
-            ShellProvider::Codex => spawn_windows_powershell_then_cmd()?,
-            ShellProvider::Platform => match spawn_pwsh() {
-                Ok(ch) => (ch, "pwsh".to_string()),
-                Err(_) => match spawn_powershell() {
-                    Ok(ch) => (ch, "powershell".to_string()),
-                    Err(_) => match spawn_git_bash() {
-                        Ok(ch) => (ch, "git-bash".to_string()),
-                        Err(_) => (
-                            spawn_cmd().map_err(|e| {
-                                ShellError::Other(format!("Failed to start command: {e}"))
-                                    .to_string()
-                            })?,
-                            "cmd".to_string(),
-                        ),
-                    },
-                },
-            },
-        }
-    } else if cfg!(target_os = "macos") {
-        match spawn_zsh() {
-            Ok(ch) => (ch, "zsh".to_string()),
-            Err(_) => match spawn_bash() {
-                Ok(ch) => (ch, "bash".to_string()),
-                Err(_) => (
-                    spawn_sh().map_err(|e| {
-                        ShellError::Other(format!("Failed to start command: {e}")).to_string()
-                    })?,
-                    "sh".to_string(),
-                ),
-            },
-        }
-    } else {
-        match spawn_bash() {
-            Ok(ch) => (ch, "bash".to_string()),
-            Err(_) => match spawn_zsh() {
-                Ok(ch) => (ch, "zsh".to_string()),
-                Err(_) => (
-                    spawn_sh().map_err(|e| {
-                        ShellError::Other(format!("Failed to start command: {e}")).to_string()
-                    })?,
-                    "sh".to_string(),
-                ),
-            },
-        }
-    };
-
-    let shell_name = shell_basename(&shell_name);
+    let spawned = spawn_platform_shell_command(cmd, &actual_cwd, || {
+        Ok((Stdio::piped(), Stdio::piped()))
+    })?;
+    let mut child = spawned.child;
+    let shell_profile = spawned.profile;
+    let shell_name = shell_basename(shell_profile.display_shell);
 
     let stdout = child
         .stdout
@@ -669,16 +695,27 @@ pub(crate) fn run_shell_script(
         if !stderr_str.is_empty() && !stderr_str.ends_with('\n') {
             stderr_str.push('\n');
         }
-        stderr_str.push_str(
-            "LiveAgent warning: command exited, but stdout/stderr remained open after exit. \
+        if shell_profile.platform == "windows" {
+            stderr_str.push_str(
+                "LiveAgent warning: command exited, but stdout/stderr remained open after exit. \
+This usually means a background process inherited the tool pipes. Use ManagedProcess for \
+long-running Windows commands so LiveAgent can capture logs and stop the process tree.",
+            );
+        } else {
+            stderr_str.push_str(
+                "LiveAgent warning: command exited, but stdout/stderr remained open after exit. \
 This usually means a background process inherited the tool pipes. Redirect long-running \
 process output to a log file, for example: `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`.",
-        );
+            );
+        }
     }
 
     Ok(ShellRunResponse {
         exit_code: status.code().unwrap_or(-1),
         shell: shell_name,
+        platform: shell_profile.platform.to_string(),
+        profile: shell_profile.profile.to_string(),
+        shell_family: shell_profile.shell_family.to_string(),
         stdout: stdout_str,
         stderr: stderr_str,
         stdout_truncated,
@@ -694,8 +731,8 @@ process output to a log file, for example: `nohup command > /tmp/liveagent-task.
 #[cfg(test)]
 mod tests {
     use super::{
-        normalize_shell_provider, normalize_timeout_ms, run_shell_script, sanitize_rel_path_core,
-        ShellProvider, ShellRunRegistry, DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS,
+        default_platform_shell_profile, normalize_timeout_ms, run_shell_script,
+        sanitize_rel_path_core, ShellRunRegistry, DEFAULT_SHELL_TIMEOUT_MS, MAX_SHELL_TIMEOUT_MS,
         MIN_SHELL_TIMEOUT_MS,
     };
     use std::fs;
@@ -736,28 +773,21 @@ mod tests {
     }
 
     #[test]
-    fn normalize_shell_provider_maps_known_providers() {
-        assert_eq!(
-            normalize_shell_provider(Some("claude_code")),
-            ShellProvider::ClaudeCode
-        );
-        assert_eq!(
-            normalize_shell_provider(Some("claude-code")),
-            ShellProvider::ClaudeCode
-        );
-        assert_eq!(
-            normalize_shell_provider(Some("codex")),
-            ShellProvider::Codex
-        );
-        assert_eq!(
-            normalize_shell_provider(Some("gemini")),
-            ShellProvider::Codex
-        );
-        assert_eq!(normalize_shell_provider(None), ShellProvider::Platform);
-        assert_eq!(
-            normalize_shell_provider(Some("custom-provider")),
-            ShellProvider::Platform
-        );
+    fn default_platform_shell_profile_matches_current_os() {
+        let profile = default_platform_shell_profile();
+        if cfg!(windows) {
+            assert_eq!(profile.platform, "windows");
+            assert_eq!(profile.profile, "windows-pwsh");
+            assert_eq!(profile.shell_family, "powershell");
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(profile.platform, "macos");
+            assert_eq!(profile.profile, "posix-zsh");
+            assert_eq!(profile.shell_family, "posix");
+        } else {
+            assert_eq!(profile.platform, "linux");
+            assert_eq!(profile.profile, "posix-bash");
+            assert_eq!(profile.shell_family, "posix");
+        }
     }
 
     #[test]

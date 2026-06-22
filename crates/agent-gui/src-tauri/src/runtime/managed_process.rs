@@ -3,15 +3,15 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::runtime::platform::{expand_tilde_path, maybe_augment_macos_path, shell_basename};
+use crate::runtime::platform::expand_tilde_path;
 use crate::runtime::process::{
-    configure_child_process_group, kill_child_process_tree_best_effort,
-    terminate_child_process_tree,
+    kill_child_process_tree_best_effort, terminate_child_process_tree,
 };
+use crate::runtime::shell_runner::spawn_platform_shell_command;
 
 const PROCESS_LOG_DIR: &str = "process-logs";
 const DEFAULT_LOG_BYTES: u64 = 64 * 1024;
@@ -175,71 +175,13 @@ fn spawn_shell_command(command: &str, cwd: &Path, log: File) -> Result<(Child, S
         .try_clone()
         .map_err(|err| format!("Failed to clone process log: {err}"))?;
 
-    let spawn = |program: &str,
-                 args: &[&str],
-                 shell_name: &str|
-     -> Result<(Child, String), std::io::Error> {
-        let mut cmd = Command::new(program);
-        cmd.args(args);
-        configure_child_process_group(&mut cmd);
-        maybe_augment_macos_path(&mut cmd);
-        let child = cmd
-            .current_dir(cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(log.try_clone()?))
-            .stderr(Stdio::from(stderr.try_clone()?))
-            .spawn()?;
-        Ok((child, shell_basename(shell_name)))
-    };
-
-    if cfg!(windows) {
-        let pwsh_args = [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            command,
-        ];
-        if let Ok(result) = spawn("pwsh", &pwsh_args, "pwsh") {
-            return Ok(result);
-        }
-        let powershell_args = [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            command,
-        ];
-        if let Ok(result) = spawn("powershell.exe", &powershell_args, "powershell") {
-            return Ok(result);
-        }
-        let cmd_args = ["/D", "/S", "/C", command];
-        spawn("cmd.exe", &cmd_args, "cmd").map_err(|err| format!("Failed to start process: {err}"))
-    } else if cfg!(target_os = "macos") {
-        let zsh_args = ["-lc", command];
-        if let Ok(result) = spawn("zsh", &zsh_args, "zsh") {
-            return Ok(result);
-        }
-        let bash_args = ["-lc", command];
-        if let Ok(result) = spawn("bash", &bash_args, "bash") {
-            return Ok(result);
-        }
-        let sh_args = ["-c", command];
-        spawn("sh", &sh_args, "sh").map_err(|err| format!("Failed to start process: {err}"))
-    } else {
-        let bash_args = ["-lc", command];
-        if let Ok(result) = spawn("bash", &bash_args, "bash") {
-            return Ok(result);
-        }
-        let zsh_args = ["-lc", command];
-        if let Ok(result) = spawn("zsh", &zsh_args, "zsh") {
-            return Ok(result);
-        }
-        let sh_args = ["-c", command];
-        spawn("sh", &sh_args, "sh").map_err(|err| format!("Failed to start process: {err}"))
-    }
+    let spawned = spawn_platform_shell_command(command, cwd, || {
+        Ok((
+            Stdio::from(log.try_clone()?),
+            Stdio::from(stderr.try_clone()?),
+        ))
+    })?;
+    Ok((spawned.child, spawned.profile.display_shell.to_string()))
 }
 
 fn refresh_entry(entry: &mut ManagedProcessEntry) -> Result<(), String> {
