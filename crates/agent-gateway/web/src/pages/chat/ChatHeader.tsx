@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ClaudeIcon,
   GeminiIcon,
+  MonitorSmartphone,
   Moon,
   OpenaiChatgptIcon,
   PanelLeft,
@@ -24,9 +25,11 @@ import { useLocale } from "../../i18n";
 import { cn } from "../../lib/shared/utils";
 import { parseModelValue, type ModelOption } from "../../lib/providers/llm";
 import {
+  getNextTheme,
   setSelectedModel,
   type AppSettings,
   type ProviderId,
+  type Theme,
 } from "../../lib/settings";
 import type { SectionId } from "../settings/types";
 
@@ -41,6 +44,12 @@ function ProviderBrandIcon({
   if (type === "claude_code") return <ClaudeIcon className={cls} />;
   if (type === "gemini") return <GeminiIcon className={cls} />;
   return <OpenaiChatgptIcon className={cn(cls, "fill-current dark:text-white")} />;
+}
+
+function ThemeToggleIcon(props: { theme: Theme }) {
+  if (props.theme === "light") return <Sun className="h-4.5 w-4.5" />;
+  if (props.theme === "dark") return <Moon className="h-4.5 w-4.5" />;
+  return <MonitorSmartphone className="h-4.5 w-4.5" />;
 }
 
 export const ChatHeader = memo(function ChatHeader(props: {
@@ -72,6 +81,13 @@ export const ChatHeader = memo(function ChatHeader(props: {
     trailingActions,
   } = props;
   const { t } = useLocale();
+  const nextTheme = getNextTheme(settings.theme);
+  const themeToggleTitle =
+    nextTheme === "light"
+      ? t("tooltip.switchToLight")
+      : nextTheme === "dark"
+        ? t("tooltip.switchToDark")
+        : t("tooltip.switchToAuto");
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const groups = useMemo(() => {
     const nextGroups: { name: string; providerType: ProviderId; opts: ModelOption[] }[] = [];
@@ -207,18 +223,11 @@ export const ChatHeader = memo(function ChatHeader(props: {
           variant="ghost"
           size="icon"
           onClick={onToggleTheme}
-          title={
-            settings.theme === "dark"
-              ? t("tooltip.switchToLight")
-              : t("tooltip.switchToDark")
-          }
+          title={themeToggleTitle}
+          aria-label={themeToggleTitle}
           className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
         >
-          {settings.theme === "dark" ? (
-            <Sun className="h-4.5 w-4.5" />
-          ) : (
-            <Moon className="h-4.5 w-4.5" />
-          )}
+          <ThemeToggleIcon theme={nextTheme} />
         </Button>
         <Button
           variant="ghost"

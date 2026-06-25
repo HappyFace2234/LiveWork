@@ -138,6 +138,7 @@ import {
   normalizeSystemToolSelection,
   openRightDockSingletonTab,
   removeRightDockProjectState,
+  resolveEffectiveTheme,
   resolveWorkspaceProjects,
   type SelectedModel,
   type SystemToolId,
@@ -591,6 +592,7 @@ export function ChatPage(props: ChatPageProps) {
     props;
   // Monaco reads NLS globals while the lazy editor module imports monaco-editor.
   setPreferredMonacoNlsLocale(settings.locale);
+  const effectiveTheme = resolveEffectiveTheme(settings.theme);
   const { t } = useLocale();
   const initialConversationRef = useRef(createConversationIdentity());
   const initialConversationStateRef = useRef(createConversationStateFromContext(context));
@@ -5746,7 +5748,7 @@ export function ChatPage(props: ChatPageProps) {
               closeRequestId={workspaceEditorCloseRequestId}
               isOpen={workspaceEditorOpen}
               finalCloseRequested={workspaceEditorCleanupPending}
-              theme={settings.theme}
+              theme={effectiveTheme}
               onPreviewFile={(request) => openWorkspaceFilePreview(request)}
               onHide={() => setWorkspaceEditorOpen(false)}
               onClose={() => {
@@ -5796,7 +5798,7 @@ export function ChatPage(props: ChatPageProps) {
               sessions={terminalSessions}
               client={tauriTerminalClient}
               sftpClient={tauriSftpClient}
-              theme={settings.theme}
+              theme={effectiveTheme}
               isOpen={workspaceSshTerminalOpen}
               onHide={() => setWorkspaceSshTerminalOpen(false)}
             />
@@ -5810,7 +5812,7 @@ export function ChatPage(props: ChatPageProps) {
         cwd={terminalProjectPath}
         sessions={terminalSessions}
         width={settings.customSettings.rightDock.width}
-        theme={settings.theme}
+        theme={effectiveTheme}
         disabledMessage={terminalDisabledMessage}
         projectState={rightDockProjectState}
         fileTreeState={getRightDockFileTreeState(settings.customSettings, terminalProjectPathKey)}

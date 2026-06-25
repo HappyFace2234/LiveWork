@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { GatewayWebSocketClientLike } from "@/lib/gatewaySocket";
 import {
   normalizeSettings,
+  resolveEffectiveTheme,
+  subscribeToSystemThemePreference,
   type AppSettings,
 } from "@/lib/settings";
 import {
@@ -34,14 +36,22 @@ export function useGatewaySettingsSync(params: {
   });
   const settingsSaveSequenceRef = useRef(0);
   const settingsSaveChainRef = useRef<Promise<unknown>>(Promise.resolve());
+  const [systemThemeVersion, setSystemThemeVersion] = useState(0);
 
   // Monaco reads NLS globals while the lazy editor module imports monaco-editor.
   setPreferredMonacoNlsLocale(settings.locale);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.classList.toggle("dark", settings.theme === "dark");
+    if (settings.theme !== "system") return;
+    return subscribeToSystemThemePreference(() => {
+      setSystemThemeVersion((version) => version + 1);
+    });
   }, [settings.theme]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle("dark", resolveEffectiveTheme(settings.theme) === "dark");
+  }, [settings.theme, systemThemeVersion]);
 
   useEffect(() => {
     setSettingsState((prev) =>

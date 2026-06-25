@@ -46,11 +46,13 @@ import {
   getRightDockFileTreeState,
   getRightDockProjectState,
   getSshProjectHostIds,
+  getNextTheme,
   isAgentDevMode,
   isRightDockSingletonTabOpen,
   normalizeChatRuntimeControlsForProvider,
   openRightDockSingletonTab,
   removeRightDockProjectState,
+  resolveEffectiveTheme,
   resolveWorkspaceProjects,
   workspaceProjectPathKey,
   updateChatRuntimeControlsForProvider,
@@ -291,6 +293,7 @@ export default function GatewayApp() {
     settingsSyncError,
     settingsSaveState,
   } = useGatewaySettingsSync({ token, api });
+  const effectiveTheme = resolveEffectiveTheme(settings.theme);
   const isAgentMode = settings.system.executionMode !== "text";
   const workspaceProjects = useMemo(
     () => mergeWorkspaceProjectsWithHistory(settings.system, historyWorkdirs),
@@ -6246,7 +6249,7 @@ export default function GatewayApp() {
                   onToggleTheme={() =>
                     setSettings((prev) => ({
                       ...prev,
-                      theme: prev.theme === "dark" ? "light" : "dark",
+                      theme: getNextTheme(prev.theme),
                     }))
                   }
                   onOpenSidebar={() => setSidebarOpen(true)}
@@ -6527,7 +6530,7 @@ export default function GatewayApp() {
           </main>
           <WorkspaceOverlayHost
             locale={settings.locale}
-            theme={settings.theme}
+            theme={effectiveTheme}
             workspaceEditorMounted={workspaceEditorMounted}
             workspaceEditorOpenRequest={workspaceEditorOpenRequest}
             workspaceEditorCloseRequestId={workspaceEditorCloseRequestId}
@@ -6561,7 +6564,7 @@ export default function GatewayApp() {
             cwd={terminalProjectPath}
             sessions={terminalSessions}
             width={settings.customSettings.rightDock.width}
-            theme={settings.theme}
+            theme={effectiveTheme}
             disabledMessage={projectToolsDisabledMessage}
             terminalDisabledMessage={terminalDisabledMessage}
             projectState={rightDockProjectState}

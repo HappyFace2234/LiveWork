@@ -2,6 +2,7 @@ import {
   CheckCircle2,
   Cpu,
   MessageSquare,
+  MonitorSmartphone,
   Moon,
   Sun,
   Terminal,
@@ -10,6 +11,7 @@ import {
 
 import { SUPPORTED_LOCALES, useLocale } from "../../i18n";
 import {
+  THEME_OPTIONS,
   type ExecutionMode,
   type Theme,
   updateSystem,
@@ -25,6 +27,26 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
   const selectedSystemTools = settings.system.selectedSystemTools;
   const isClassicAgentMode = executionMode === "tools";
   const isAgentDevMode = executionMode === "agent-dev";
+  const appearanceIcon =
+    settings.theme === "system" ? (
+      <MonitorSmartphone className="h-4 w-4 text-muted-foreground" />
+    ) : settings.theme === "dark" ? (
+      <Moon className="h-4 w-4 text-muted-foreground" />
+    ) : (
+      <Sun className="h-4 w-4 text-muted-foreground" />
+    );
+
+  function getThemeLabel(theme: Theme) {
+    if (theme === "light") return t("settings.light");
+    if (theme === "dark") return t("settings.dark");
+    return t("settings.auto");
+  }
+
+  function renderThemeIcon(theme: Theme) {
+    if (theme === "light") return <Sun className="h-4.5 w-4.5" />;
+    if (theme === "dark") return <Moon className="h-4.5 w-4.5" />;
+    return <MonitorSmartphone className="h-4.5 w-4.5" />;
+  }
 
   return (
     <div className="settings-system-section space-y-6">
@@ -152,18 +174,14 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
           <div className="flex items-start gap-3">
             <div className="space-y-1">
               <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-                {settings.theme === "dark" ? (
-                  <Moon className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <Sun className="h-4 w-4 text-muted-foreground" />
-                )}
+                {appearanceIcon}
                 {t("settings.appearance")}
               </div>
             </div>
           </div>
 
-          <div className="settings-choice-grid settings-appearance-grid grid gap-2 sm:grid-cols-2">
-            {(["light", "dark"] as Theme[]).map((theme) => {
+          <div className="settings-choice-grid settings-appearance-grid grid gap-2 sm:grid-cols-3">
+            {THEME_OPTIONS.map((theme) => {
               const selected = settings.theme === theme;
               return (
                 <button
@@ -183,16 +201,10 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
                         : "bg-muted text-muted-foreground group-hover:bg-accent/80"
                     }`}
                   >
-                    {theme === "light" ? (
-                      <Sun className="h-4.5 w-4.5" />
-                    ) : (
-                      <Moon className="h-4.5 w-4.5" />
-                    )}
+                    {renderThemeIcon(theme)}
                   </div>
                   <div className="min-w-0 pr-6">
-                    <div className="text-sm font-semibold">
-                      {theme === "light" ? t("settings.light") : t("settings.dark")}
-                    </div>
+                    <div className="text-sm font-semibold">{getThemeLabel(theme)}</div>
                   </div>
                   {selected ? (
                     <div className="absolute right-3 top-3">

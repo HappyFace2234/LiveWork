@@ -8,9 +8,12 @@ import { LocaleContext, t as translate } from "./i18n";
 import { type AppUpdateController, useAppUpdateController } from "./lib/appUpdates";
 import {
   type AppSettings,
+  getNextTheme,
   getDefaultSettings,
   normalizeSettings,
+  resolveEffectiveTheme,
   resolveWorkspaceProjects,
+  subscribeToSystemThemePreference,
 } from "./lib/settings";
 import {
   loadPersistedSettingsWithDefaults,
@@ -132,16 +135,24 @@ export default function App() {
   const saveSequenceRef = useRef(0);
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const defaultWorkdirRef = useRef("");
+  const [systemThemeVersion, setSystemThemeVersion] = useState(0);
+  const effectiveTheme = useMemo(
+    () => resolveEffectiveTheme(settings.theme),
+    [settings.theme, systemThemeVersion],
+  );
+
+  useEffect(() => {
+    if (settings.theme !== "system") return;
+    return subscribeToSystemThemePreference(() => {
+      setSystemThemeVersion((version) => version + 1);
+    });
+  }, [settings.theme]);
 
   // 同步主题 class 到 <html> 根节点
   useEffect(() => {
     const root = document.documentElement;
-    if (settings.theme === "dark") {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
-    }
-  }, [settings.theme]);
+    root.classList.toggle("dark", effectiveTheme === "dark");
+  }, [effectiveTheme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -259,7 +270,7 @@ export default function App() {
   const toggleTheme = useCallback(() => {
     setSettings((prev) => ({
       ...prev,
-      theme: prev.theme === "dark" ? "light" : "dark",
+      theme: getNextTheme(prev.theme),
     }));
   }, [setSettings]);
 
