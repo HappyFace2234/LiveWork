@@ -77,6 +77,33 @@ export type UiMessage = {
   messageIndex?: number;
 };
 
+function cloneToolArgumentValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneToolArgumentValue(item));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = cloneToolArgumentValue(nestedValue);
+    }
+    return out;
+  }
+  return value;
+}
+
+function snapshotToolCallForTrace(toolCall: ToolCall): ToolCall {
+  const args =
+    toolCall.arguments &&
+    typeof toolCall.arguments === "object" &&
+    !Array.isArray(toolCall.arguments)
+      ? (cloneToolArgumentValue(toolCall.arguments) as Record<string, unknown>)
+      : {};
+  return {
+    ...toolCall,
+    arguments: args,
+  } as ToolCall;
+}
+
 export function getMessageText(message: Message) {
   if (message.role === "user") {
     return getUserMessageDisplayText(message as Message & Record<string, unknown>);
@@ -1323,13 +1350,16 @@ function upsertToolBlock(
   options?: { contentHasHostedSearch?: boolean },
 ): UiRoundContentBlock[] {
   if (isParentDelegateAgentToolCall(toolCall)) return blocks;
+  const toolCallSnapshot = snapshotToolCallForTrace(toolCall);
 
   const existingIdx = blocks.findIndex(
-    (block) => block.kind === "tool" && block.item.toolCall.id === toolCall.id,
+    (block) => block.kind === "tool" && block.item.toolCall.id === toolCallSnapshot.id,
   );
-  if (!shouldDisplayToolBlock(toolCall, toolResult, blocks, options)) {
+  if (!shouldDisplayToolBlock(toolCallSnapshot, toolResult, blocks, options)) {
     return existingIdx >= 0
-      ? blocks.filter((block) => !(block.kind === "tool" && block.item.toolCall.id === toolCall.id))
+      ? blocks.filter(
+          (block) => !(block.kind === "tool" && block.item.toolCall.id === toolCallSnapshot.id),
+        )
       : blocks;
   }
   if (existingIdx >= 0) {
@@ -1340,7 +1370,7 @@ function upsertToolBlock(
       kind: "tool",
       item: {
         ...existing.item,
-        toolCall,
+        toolCall: toolCallSnapshot,
         toolResult: toolResult ?? existing.item.toolResult,
       },
     };
@@ -1349,7 +1379,7 @@ function upsertToolBlock(
 
   const nextBlock: UiRoundContentBlock = {
     kind: "tool",
-    item: toolResult ? { toolCall, toolResult } : { toolCall },
+    item: toolResult ? { toolCall: toolCallSnapshot, toolResult } : { toolCall: toolCallSnapshot },
   };
   return [...blocks, nextBlock];
 }

@@ -338,6 +338,24 @@ function recordHasEntries(value: Record<string, unknown>) {
   return Object.keys(value).length > 0;
 }
 
+function cloneJsonLikeValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => cloneJsonLikeValue(item));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = cloneJsonLikeValue(nestedValue);
+    }
+    return out;
+  }
+  return value;
+}
+
+function cloneRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return cloneJsonLikeValue(value) as Record<string, unknown>;
+}
+
 function parseJsonRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "string" || value.trim() === "") {
     return {};
@@ -353,11 +371,11 @@ function normalizeToolArguments(...candidates: unknown[]): Record<string, unknow
   for (const candidate of candidates) {
     const direct = asNonArrayRecord(candidate);
     if (recordHasEntries(direct)) {
-      return direct;
+      return cloneRecord(direct);
     }
     const parsed = parseJsonRecord(candidate);
     if (recordHasEntries(parsed)) {
-      return parsed;
+      return cloneRecord(parsed);
     }
   }
   return {};

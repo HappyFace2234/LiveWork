@@ -798,6 +798,30 @@ test("pushChatEvent preserves streaming preview metadata for Write metrics", () 
   assert.equal(finalPreview.content.lines, 800);
 });
 
+test("pushChatEvent snapshots mutable streamed Write arguments", () => {
+  const args = { path: "src/app.ts", content: "first" };
+  let entries = [];
+  entries = pushChatEvent(entries, {
+    type: "tool_call_delta",
+    id: "call-write-mutable",
+    name: "Write",
+    arguments: args,
+    round: 1,
+  });
+
+  args.content = "first\nsecond";
+  assert.equal(entries[0].toolCall.arguments.content, "first");
+
+  entries = pushChatEvent(entries, {
+    type: "tool_call_delta",
+    id: "call-write-mutable",
+    name: "Write",
+    arguments: args,
+    round: 1,
+  });
+  assert.equal(entries[0].toolCall.arguments.content, "first\nsecond");
+});
+
 test("buildTranscriptItems expands parent Agent aggregate results into Agent cards", () => {
   const entries = [
     {

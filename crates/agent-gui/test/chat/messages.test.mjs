@@ -1709,6 +1709,32 @@ test("streaming Write and Edit tool previews expose bounded live argument previe
   assert.equal(editPreview.replaceAll, true);
 });
 
+test("live tool call upserts snapshot mutable streaming arguments", () => {
+  const round = {
+    round: 1,
+    blocks: [],
+    runningToolCallIds: [],
+    thinkingOpen: false,
+  };
+  const streamingToolCall = {
+    type: "toolCall",
+    id: "write-live",
+    name: "Write",
+    arguments: { path: "report.md", content: "first" },
+  };
+
+  const first = uiMessages.upsertToolCallToRound(round, streamingToolCall);
+  streamingToolCall.arguments.content = "first\nsecond";
+  const second = uiMessages.upsertToolCallToRound(first, streamingToolCall);
+
+  const firstToolCall = uiMessages.getRoundToolTrace(first)[0].toolCall;
+  const secondToolCall = uiMessages.getRoundToolTrace(second)[0].toolCall;
+  assert.equal(firstToolCall.arguments.content, "first");
+  assert.equal(secondToolCall.arguments.content, "first\nsecond");
+  assert.notEqual(firstToolCall, secondToolCall);
+  assert.notEqual(firstToolCall.arguments, secondToolCall.arguments);
+});
+
 test("visible live tool calls are marked running as soon as their cards appear", () => {
   const round = {
     round: 1,
