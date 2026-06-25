@@ -230,7 +230,6 @@ export type ConversationSummary = {
 export type HistoryList = {
   conversations: ConversationSummary[];
   total_count: number;
-  running_conversation_ids?: string[];
   running_conversations?: RunningConversationSummary[];
 };
 

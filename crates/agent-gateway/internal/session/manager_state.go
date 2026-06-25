@@ -76,7 +76,6 @@ type chatRunStore struct {
 	chatRuns               map[string]*chatRun
 	chatRunByConversation  map[string]string
 	chatRunByClientRequest map[string]string
-	historyActiveRuns      map[string]activeHistoryRun
 }
 
 func newChatRunStore() *chatRunStore {
@@ -84,6 +83,5 @@ func newChatRunStore() *chatRunStore {
 		chatRuns:               make(map[string]*chatRun),
 		chatRunByConversation:  make(map[string]string),
 		chatRunByClientRequest: make(map[string]string),
-		historyActiveRuns:      make(map[string]activeHistoryRun),
 	}
 }

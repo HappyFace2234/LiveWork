@@ -128,12 +128,6 @@ type chatRun struct {
 	subscribers      map[int]*chatRunSubscriber
 }
 
-type activeHistoryRun struct {
-	conversationID string
-	workdir        string
-	updatedAt      time.Time
-}
-
 type chatRunSubscriber struct {
 	ch        chan *ChatBroadcastEvent
 	done      chan struct{}

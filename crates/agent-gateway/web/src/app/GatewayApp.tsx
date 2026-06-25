@@ -214,15 +214,9 @@ import { usePendingUploads } from "./hooks/usePendingUploads";
 import { useProjectToolsRuntime } from "./hooks/useProjectToolsRuntime";
 
 function resolveRunningConversationRunKey(
-  runtime: Pick<RunningConversationRuntime, "runId" | "runEpoch"> | null | undefined,
+  runtime: Pick<RunningConversationRuntime, "runId"> | null | undefined,
 ) {
-  const runId = runtime?.runId?.trim() ?? "";
-  if (runId) {
-    return runId;
-  }
-  return typeof runtime?.runEpoch === "number" && Number.isFinite(runtime.runEpoch)
-    ? `epoch:${Math.floor(runtime.runEpoch)}`
-    : "";
+  return runtime?.runId?.trim() ?? "";
 }
 
 function readGatewayChatEventRunId(event: ChatEvent) {
@@ -1931,6 +1925,9 @@ export default function GatewayApp() {
       const hasConversation = current.has(conversationIdValue);
       const existingRuntime = remoteRunningConversationRuntimeRef.current.get(conversationIdValue);
       const runtimeRunId = runtime?.runId?.trim() || existingRuntime?.runId || "";
+      if (isRunning && !runtimeRunId) {
+        return;
+      }
       const runtimeWorkdir = runtime?.workdir?.trim() || existingRuntime?.workdir || "";
       const runtimeFirstSeq =
         typeof runtime?.firstSeq === "number" &&
@@ -1953,7 +1950,6 @@ export default function GatewayApp() {
       const nextRunKey = isRunning
         ? resolveRunningConversationRunKey({
             runId: runtimeRunId || undefined,
-            runEpoch: runtimeRunEpoch,
           })
         : "";
       const previousRunKey =
@@ -2285,6 +2281,9 @@ export default function GatewayApp() {
 
       const runtime = remoteRunningConversationRuntimeRef.current.get(conversationIdValue);
       const nextRunKey = resolveRunningConversationRunKey(runtime);
+      if (!nextRunKey) {
+        return;
+      }
       const existingController =
         conversationEventStreamControllersRef.current.get(conversationIdValue);
       if (existingController) {
@@ -2446,11 +2445,13 @@ export default function GatewayApp() {
       }
 
       if (event.kind === "running" || event.kind === "idle") {
+        if (event.kind === "running" && !event.run_id?.trim()) {
+          return;
+        }
         const eventRunKey =
           event.kind === "running"
             ? resolveRunningConversationRunKey({
                 runId: event.run_id,
-                runEpoch: event.run_epoch,
               })
             : "";
         if (event.kind === "idle" && !eventRunKey) {
@@ -2857,10 +2858,7 @@ export default function GatewayApp() {
       if (requestScopeKey !== historyScopeKeyRef.current) {
         return;
       }
-      const runningConversations = normalizeRunningConversations(
-        response.running_conversations,
-        response.running_conversation_ids,
-      );
+      const runningConversations = normalizeRunningConversations(response.running_conversations);
       for (const runningConversation of runningConversations) {
         setRemoteConversationRunningState(runningConversation.conversation_id, true, {
           runId: runningConversation.run_id,
@@ -3092,10 +3090,7 @@ export default function GatewayApp() {
       if (requestScopeKey !== historyScopeKeyRef.current) {
         return;
       }
-      const runningConversations = normalizeRunningConversations(
-        response.running_conversations,
-        response.running_conversation_ids,
-      );
+      const runningConversations = normalizeRunningConversations(response.running_conversations);
       for (const runningConversation of runningConversations) {
         setRemoteConversationRunningState(runningConversation.conversation_id, true, {
           runId: runningConversation.run_id,

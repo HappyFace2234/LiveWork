@@ -271,20 +271,9 @@ function buildRunningConversations(history: HistoryList | null) {
     return [];
   }
   const byId = new Map(history.conversations.map((item) => [item.id, item]));
-  const runningIds = new Set<string>();
-  for (const id of history.running_conversation_ids ?? []) {
-    if (id.trim()) {
-      runningIds.add(id.trim());
-    }
-  }
-  for (const item of history.running_conversations ?? []) {
-    if (item.conversation_id.trim()) {
-      runningIds.add(item.conversation_id.trim());
-    }
-  }
-  return Array.from(runningIds).map((id) => {
+  return (history.running_conversations ?? []).map((runtime) => {
+    const id = runtime.conversation_id.trim();
     const conversation = byId.get(id);
-    const runtime = history.running_conversations?.find((item) => item.conversation_id === id);
     return {
       id,
       title: getConversationTitle(conversation, `会话 ${truncateMiddle(id, 12)}`),
@@ -311,7 +300,6 @@ function updateHistoryListWithEvent(history: HistoryList | null, event: any): Hi
       ...history,
       total_count: Math.max(0, history.total_count - 1),
       conversations: history.conversations.filter((item) => item.id !== conversationId),
-      running_conversation_ids: (history.running_conversation_ids ?? []).filter((id) => id !== conversationId),
       running_conversations: (history.running_conversations ?? []).filter(
         (item) => item.conversation_id !== conversationId,
       ),
@@ -319,21 +307,23 @@ function updateHistoryListWithEvent(history: HistoryList | null, event: any): Hi
   }
 
   if (event.kind === "running" || event.kind === "idle") {
-    const currentIds = new Set(history.running_conversation_ids ?? []);
-    if (event.kind === "running") {
-      currentIds.add(conversationId);
-    } else {
-      currentIds.delete(conversationId);
+    const runId = typeof event.run_id === "string" ? event.run_id.trim() : "";
+    const runningConversations = (history.running_conversations ?? []).filter(
+      (item) => item.conversation_id !== conversationId,
+    );
+    if (event.kind === "running" && runId) {
+      runningConversations.push({
+        conversation_id: conversationId,
+        run_id: runId,
+        cwd: typeof event.conversation?.cwd === "string" ? event.conversation.cwd : undefined,
+        first_seq: typeof event.first_seq === "number" ? event.first_seq : undefined,
+        run_epoch: typeof event.run_epoch === "number" ? event.run_epoch : undefined,
+        updated_at: typeof event.updated_at === "number" ? event.updated_at : undefined,
+      });
     }
     return {
       ...history,
-      running_conversation_ids: Array.from(currentIds),
-      running_conversations: (history.running_conversations ?? []).filter((item) => {
-        if (item.conversation_id !== conversationId) {
-          return true;
-        }
-        return event.kind === "running";
-      }),
+      running_conversations: runningConversations,
     };
   }
 

@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -177,7 +178,7 @@ func TestSQLiteChatEventStoreReplaysCompletedRunAndDedupesCommand(t *testing.T) 
 	}
 }
 
-func TestSQLiteHistoryRunningCreatesAndReopensAttachableConversationRun(t *testing.T) {
+func TestSQLiteHistoryRunningDoesNotCreateAttachableConversationRun(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "gateway-chat.sqlite3")
@@ -201,25 +202,18 @@ func TestSQLiteHistoryRunningCreatesAndReopensAttachableConversationRun(t *testi
 	}
 
 	dispatchRunning()
-	ch, done, cleanup, snapshot, err := sm.SubscribeChatRun("", "conversation-1", 0)
-	if err != nil {
-		t.Fatalf("SubscribeChatRun first running: %v", err)
-	}
-	if snapshot.RequestID != "conversation-live-conversation-1" ||
-		snapshot.State != session.ChatRunStateRunning ||
-		snapshot.Workdir != "/workspace" {
-		t.Fatalf("first running snapshot = %#v", snapshot)
-	}
-	assertDoneOpen(t, done)
-	select {
-	case event := <-ch:
-		t.Fatalf("unexpected first replay before token: %#v", event)
-	default:
-	}
+	_, done, cleanup, _, err := sm.SubscribeChatRun("", "conversation-1", 0)
 	cleanup()
+	assertDoneClosed(t, done)
+	if !errors.Is(err, session.ErrChatRunNotFound) {
+		t.Fatalf("SubscribeChatRun first running = %v, want ErrChatRunNotFound", err)
+	}
+	if summaries := sm.ActiveChatRunSummaries(); len(summaries) != 0 {
+		t.Fatalf("active summaries after history running = %#v, want empty", summaries)
+	}
 
 	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
-		RequestId: "conversation-live-conversation-1",
+		RequestId: "request-1",
 		Payload: &gatewayv1.AgentEnvelope_ChatEvent{
 			ChatEvent: &gatewayv1.ChatEvent{
 				Type:           gatewayv1.ChatEvent_DONE,
@@ -230,50 +224,12 @@ func TestSQLiteHistoryRunningCreatesAndReopensAttachableConversationRun(t *testi
 	})
 
 	dispatchRunning()
-	summaries := sm.ActiveChatRunSummaries()
-	if len(summaries) != 1 ||
-		summaries[0].RequestID != "conversation-live-conversation-1" ||
-		summaries[0].FirstSeq != 2 ||
-		summaries[0].LatestSeq != 1 {
-		t.Fatalf("second active summaries = %#v", summaries)
+	snapshot, ok := sm.ChatRunSnapshot("request-1", "conversation-1")
+	if !ok || snapshot.State != session.ChatRunStateCompleted || !snapshot.Done {
+		t.Fatalf("completed snapshot after history running = %#v ok=%v", snapshot, ok)
 	}
-
-	replayCh, replayDone, replayCleanup, replaySnapshot, err := sm.SubscribeChatRun(
-		"",
-		"conversation-1",
-		summaries[0].FirstSeq-1,
-	)
-	if err != nil {
-		t.Fatalf("SubscribeChatRun second running: %v", err)
-	}
-	defer replayCleanup()
-	assertDoneOpen(t, replayDone)
-	if replaySnapshot.State != session.ChatRunStateRunning || replaySnapshot.LatestSeq != 1 {
-		t.Fatalf("second running snapshot = %#v", replaySnapshot)
-	}
-	select {
-	case event := <-replayCh:
-		t.Fatalf("unexpected replay from previous turn: %#v", event)
-	default:
-	}
-
-	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
-		RequestId: "conversation-live-conversation-1",
-		Payload: &gatewayv1.AgentEnvelope_ChatEvent{
-			ChatEvent: &gatewayv1.ChatEvent{
-				Type:           gatewayv1.ChatEvent_TOKEN,
-				ConversationId: "conversation-1",
-				Data:           `{"text":"next"}`,
-			},
-		},
-	})
-	select {
-	case event := <-replayCh:
-		if event.Seq != 2 || event.Event.GetType() != gatewayv1.ChatEvent_TOKEN {
-			t.Fatalf("second live event = %#v, want token seq 2", event)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for second live token")
+	if summaries := sm.ActiveChatRunSummaries(); len(summaries) != 0 {
+		t.Fatalf("active summaries after completed history running = %#v, want empty", summaries)
 	}
 }
 

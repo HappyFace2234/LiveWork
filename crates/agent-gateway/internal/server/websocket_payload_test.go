@@ -92,14 +92,14 @@ func TestHistoryRunningPayloadIncludesReplayCursor(t *testing.T) {
 		},
 	}, session.ActiveChatRunSummary{
 		ConversationID: "conversation-1",
-		RequestID:      "conversation-live-conversation-1",
+		RequestID:      "run-1",
 		FirstSeq:       2,
 		LatestSeq:      1,
 		RunEpoch:       5,
 		UpdatedAt:      123,
 	})
 
-	if payload["run_id"] != "conversation-live-conversation-1" ||
+	if payload["run_id"] != "run-1" ||
 		payload["first_seq"] != int64(2) ||
 		payload["latest_seq"] != int64(1) ||
 		payload["run_epoch"] != int64(5) ||

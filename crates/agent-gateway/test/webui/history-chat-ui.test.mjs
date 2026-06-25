@@ -361,45 +361,27 @@ test("reconcileConversationSummaries retains running local rows missing from a l
   assert.equal(refreshed[0], existing[0]);
 });
 
-test("normalizeRunningConversationIds trims drops invalid entries and dedupes in order", () => {
+test("normalizeRunningConversations requires run ids and preserves replay cursors", () => {
   assert.deepEqual(
-    historySync.normalizeRunningConversationIds([
-      " conversation-1 ",
-      "",
-      "conversation-2",
-      "conversation-1",
-      null,
-      42,
-      " conversation-3 ",
+    historySync.normalizeRunningConversations([
+      {
+        conversation_id: " conversation-1 ",
+        run_id: " run-1 ",
+        cwd: " /workspace ",
+        first_seq: 42.9,
+        run_epoch: 3.2,
+        updated_at: 123,
+      },
+      {
+        conversation_id: "conversation-1",
+        run_id: "run-duplicate",
+        first_seq: 7,
+      },
+      {
+        conversation_id: "conversation-2",
+        first_seq: 0,
+      },
     ]),
-    ["conversation-1", "conversation-2", "conversation-3"],
-  );
-  assert.deepEqual(historySync.normalizeRunningConversationIds(undefined), []);
-});
-
-test("normalizeRunningConversations preserves replay cursors and merges fallback ids", () => {
-  assert.deepEqual(
-    historySync.normalizeRunningConversations(
-      [
-        {
-          conversation_id: " conversation-1 ",
-          run_id: " run-1 ",
-          cwd: " /workspace ",
-          first_seq: 42.9,
-          run_epoch: 3.2,
-          updated_at: 123,
-        },
-        {
-          conversation_id: "conversation-1",
-          first_seq: 7,
-        },
-        {
-          conversation_id: "conversation-2",
-          first_seq: 0,
-        },
-      ],
-      ["conversation-2", " conversation-3 "],
-    ),
     [
       {
         conversation_id: "conversation-1",
@@ -408,17 +390,6 @@ test("normalizeRunningConversations preserves replay cursors and merges fallback
         first_seq: 42,
         run_epoch: 3,
         updated_at: 123,
-      },
-      {
-        conversation_id: "conversation-2",
-        run_id: undefined,
-        cwd: undefined,
-        first_seq: undefined,
-        run_epoch: undefined,
-        updated_at: undefined,
-      },
-      {
-        conversation_id: "conversation-3",
       },
     ],
   );

@@ -2023,10 +2023,10 @@ test("GatewayWebSocketClient sends history list requests", async () => {
     payload: {
       conversations: [],
       total_count: 0,
-      running_conversation_ids: ["conversation-running"],
       running_conversations: [
         {
           conversation_id: "conversation-running",
+          run_id: "run-running",
           cwd: "/tmp/project-a",
           updated_at: 123,
         },
@@ -2036,10 +2036,10 @@ test("GatewayWebSocketClient sends history list requests", async () => {
   assert.deepEqual(await listPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: ["conversation-running"],
     running_conversations: [
       {
         conversation_id: "conversation-running",
+        run_id: "run-running",
         cwd: "/tmp/project-a",
         updated_at: 123,
       },
@@ -2079,12 +2079,12 @@ test("GatewayWebSocketClient sends project-aware history and fs requests", async
   socket.receive({
     id: socket.sent[1].id,
     type: "response",
-    payload: { conversations: [], total_count: 0, running_conversation_ids: [] },
+    payload: { conversations: [], total_count: 0, running_conversations: [] },
   });
   assert.deepEqual(await filteredListPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: [],
+    running_conversations: [],
   });
 
   const chatModeListPromise = client.listHistory(1, 80, { cwdEmpty: true });
@@ -2098,12 +2098,12 @@ test("GatewayWebSocketClient sends project-aware history and fs requests", async
   socket.receive({
     id: socket.sent[2].id,
     type: "response",
-    payload: { conversations: [], total_count: 0, running_conversation_ids: [] },
+    payload: { conversations: [], total_count: 0, running_conversations: [] },
   });
   assert.deepEqual(await chatModeListPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: [],
+    running_conversations: [],
   });
 
   const workdirsPromise = client.listHistoryWorkdirs();
@@ -2154,12 +2154,12 @@ test("GatewayWebSocketClient defaults invalid history pagination", async () => {
   socket.receive({
     id: socket.sent[1].id,
     type: "response",
-    payload: { conversations: [], total_count: 0, running_conversation_ids: [] },
+    payload: { conversations: [], total_count: 0, running_conversations: [] },
   });
   assert.deepEqual(await listPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: [],
+    running_conversations: [],
   });
 
   const sharedListPromise = client.listSharedHistory(Number.NaN, 500);

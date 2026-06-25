@@ -145,23 +145,6 @@ export function sortConversationSummaries(
   });
 }
 
-export function normalizeRunningConversationIds(ids: readonly unknown[] | undefined) {
-  if (!ids || ids.length === 0) {
-    return [];
-  }
-  const seen = new Set<string>();
-  const normalized: string[] = [];
-  for (const id of ids) {
-    const value = typeof id === "string" ? id.trim() : "";
-    if (!value || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    normalized.push(value);
-  }
-  return normalized;
-}
-
 function normalizeRunningConversationSummary(
   value: unknown,
 ): RunningConversationSummary | null {
@@ -176,6 +159,9 @@ function normalizeRunningConversationSummary(
   }
   const cwd = typeof source.cwd === "string" ? source.cwd.trim() : "";
   const runId = typeof source.run_id === "string" ? source.run_id.trim() : "";
+  if (!runId) {
+    return null;
+  }
   const firstSeq =
     typeof source.first_seq === "number" &&
     Number.isFinite(source.first_seq) &&
@@ -204,7 +190,6 @@ function normalizeRunningConversationSummary(
 
 export function normalizeRunningConversations(
   conversations: readonly unknown[] | undefined,
-  fallbackIds?: readonly unknown[],
 ) {
   const seen = new Set<string>();
   const normalized: RunningConversationSummary[] = [];
@@ -215,13 +200,6 @@ export function normalizeRunningConversations(
     }
     seen.add(summary.conversation_id);
     normalized.push(summary);
-  }
-  for (const id of normalizeRunningConversationIds(fallbackIds)) {
-    if (seen.has(id)) {
-      continue;
-    }
-    seen.add(id);
-    normalized.push({ conversation_id: id });
   }
   return normalized;
 }
