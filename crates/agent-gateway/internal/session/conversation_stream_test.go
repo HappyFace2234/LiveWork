@@ -611,3 +611,76 @@ func TestSubscriberOverflowClosesAndResumes(t *testing.T) {
 		t.Fatalf("lost events across overflow: saw %d", total)
 	}
 }
+
+func TestReaperSparesSilentRunsWhileRuntimeReportsBusy(t *testing.T) {
+	m := NewManager()
+	m.convStreams.staleRunTimeout = 10 * time.Millisecond
+	m.SetSession(&AgentSession{
+		toAgent: make(chan *OutboundEnvelope, 1),
+		done:    make(chan struct{}),
+		streams: make(map[string]*agentStream),
+	})
+
+	m.ingestChatControl("run-1", startedControl("run-1", "conv-1"))
+	time.Sleep(20 * time.Millisecond)
+
+	// A silent long tool call: no events, but the runtime heartbeat says busy.
+	m.convStreams.onRuntimeStatus(1, time.Now())
+	m.convStreams.reap(time.Now())
+	if activities := m.ActiveConversationActivities(); len(activities) != 1 {
+		t.Fatalf("busy runtime must spare the silent run, activities=%d", len(activities))
+	}
+
+	// Once the runtime stops vouching for it, the run is reaped after the
+	// timeout elapses again.
+	time.Sleep(20 * time.Millisecond)
+	m.convStreams.reap(time.Now())
+	if activities := m.ActiveConversationActivities(); len(activities) != 0 {
+		t.Fatalf("stale run must be reaped once the runtime goes idle, activities=%d", len(activities))
+	}
+}
+
+func TestSupersessionKeepsSeededUserMessageReplayable(t *testing.T) {
+	m := NewManager()
+	m.convStreams.eventRetention = time.Millisecond
+
+	// Run A streams while a webui command for the same conversation is
+	// accepted and seeded; B later starts via supersession.
+	m.ingestChatControl("run-a", startedControl("run-a", "conv-1"))
+	m.StartChatCommand("run-b", "conv-1", "", "client-b", []map[string]any{
+		{"type": "user_message", "message": "seeded prompt"},
+	})
+	m.ingestChatEvent("run-a", tokenEvent("conv-1", "working"))
+	m.ingestChatControl("run-b", startedControl("run-b", "conv-1"))
+
+	// Age everything past retention, then trigger eviction: run B's activity
+	// window must still protect the seeded user_message.
+	time.Sleep(5 * time.Millisecond)
+	m.ingestChatEvent("run-b", tokenEvent("conv-1", "reply"))
+
+	sub := m.SubscribeConversationStream("conv-1", 0, "")
+	defer sub.Cleanup()
+	hasSeed := false
+	for _, event := range sub.Events {
+		if event.Type == "user_message" && event.RunID == "run-b" {
+			hasSeed = true
+		}
+	}
+	if !hasSeed {
+		t.Fatalf("seeded user_message evicted despite active run: %v", eventTypes(sub.Events))
+	}
+}
+
+func TestWatchChatCommandCleanupClosesChannel(t *testing.T) {
+	m := NewManager()
+	updates, cleanup := m.WatchChatCommand("run-1")
+	cleanup()
+	select {
+	case _, ok := <-updates:
+		if ok {
+			t.Fatalf("expected closed channel, got value")
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("watch channel not closed by cleanup")
+	}
+}

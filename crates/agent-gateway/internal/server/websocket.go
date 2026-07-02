@@ -213,6 +213,16 @@ func (c *websocketConnection) serve() {
 			continue
 		}
 
+		// Subscription lifecycle must keep the client's frame order: a
+		// re-subscribe emits [unsubscribe, subscribe] back to back, and
+		// concurrent dispatch could let the stale unsubscribe cancel the fresh
+		// subscription. Both handlers are lock-only and non-blocking, so they
+		// run inline on the read loop.
+		if req.Type == "chat.subscribe" || req.Type == "chat.unsubscribe" {
+			c.dispatch(req)
+			continue
+		}
+
 		go c.dispatch(req)
 	}
 }

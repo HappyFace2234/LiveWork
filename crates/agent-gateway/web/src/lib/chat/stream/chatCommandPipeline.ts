@@ -14,6 +14,9 @@ export type ChatCommandRequest = {
     Parameters<TranscriptStore["addOptimisticUserEntry"]>[0]["attachments"],
     unknown
   >;
+  // edit_resend commands seed an optimistic `rebased` truncation; compensation
+  // paths (queued_in_gui / failed) need to know to restore the transcript.
+  isEditResend?: boolean;
   submit: () => Promise<ChatCommandAccepted>;
 };
 
@@ -21,6 +24,7 @@ export type PendingChatCommand = {
   runId: string | null;
   clientRequestId: string;
   conversationId: string;
+  isEditResend: boolean;
   submittedAt: number;
 };
 
@@ -66,6 +70,7 @@ export class ChatCommandPipeline {
       runId: null,
       clientRequestId: request.clientRequestId,
       conversationId: request.conversationId,
+      isEditResend: request.isEditResend === true,
       submittedAt: Date.now(),
     };
     this.setPending(request.conversationId, pending);
@@ -73,7 +78,12 @@ export class ChatCommandPipeline {
     try {
       const accepted = await request.submit();
       pending.runId = accepted.runId;
-      this.byRunId.set(accepted.runId, pending);
+      if (this.pending.get(pending.conversationId) === pending) {
+        // Only register while the pending is still live: an own run signal
+        // (matched by client_request_id) may have settled it before the
+        // accept response landed, and a dead registration would leak.
+        this.byRunId.set(accepted.runId, pending);
+      }
       return { kind: "accepted", accepted };
     } catch (error) {
       const message = error instanceof Error ? error.message : "chat command failed";
@@ -119,11 +129,23 @@ export class ChatCommandPipeline {
     }
   }
 
-  // Stream signals that settle the pending command: the run started (tokens
-  // will flow), finished (failed fast), or was queued.
-  handleRunSignal(conversationId: string, runId: string): void {
+  // Stream/activity signals that settle the pending command: the run started
+  // (tokens will flow), finished (failed fast), or was queued. Identity is
+  // strict — a null-runId pending (accept response still in flight) settles
+  // only on a signal carrying its own client_request_id; foreign runs (GUI
+  // queue auto-sends, another client's commands) never disarm the watchdog.
+  handleRunSignal(conversationId: string, runId: string, clientRequestId?: string): void {
     const pending = this.pending.get(conversationId);
-    if (pending && (pending.runId === runId || pending.runId === null)) {
+    if (!pending) {
+      return;
+    }
+    const matchesRunId = runId !== "" && pending.runId === runId;
+    const matchesClientRequest =
+      pending.runId === null &&
+      typeof clientRequestId === "string" &&
+      clientRequestId !== "" &&
+      clientRequestId === pending.clientRequestId;
+    if (matchesRunId || matchesClientRequest) {
       this.clearPending(pending);
     }
   }

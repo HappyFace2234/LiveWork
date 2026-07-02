@@ -63,7 +63,7 @@ test("activity events drive the running map with run identity", () => {
   assert.equal(notifications, 2);
 });
 
-test("hydration replaces the map from history.list", () => {
+test("hydration drops stale entries and adopts the snapshot", () => {
   const store = createActivityStore();
   store.applyActivityEvent({
     conversationId: "conv-stale",
@@ -71,6 +71,7 @@ test("hydration replaces the map from history.list", () => {
     running: true,
     state: "running",
     workdir: null,
+    clientRequestId: null,
     updatedAt: 1,
   });
 
@@ -79,7 +80,63 @@ test("hydration replaces the map from history.list", () => {
     { conversationId: "conv-2", runId: "run-2", state: "cancelling", updatedAt: 3 },
   ]);
 
-  assert.equal(store.isRunning("conv-stale"), false, "hydration is authoritative");
+  assert.equal(
+    store.isRunning("conv-stale"),
+    false,
+    "entry older than the snapshot batch is dropped",
+  );
   assert.equal(store.get("conv-1")?.runId, "run-1");
   assert.equal(store.get("conv-2")?.state, "cancelling");
+});
+
+test("hydration is an ordered merge: pushes newer than the snapshot win", () => {
+  const store = createActivityStore();
+  // A chat.activity push arrived after the history.list response was built.
+  store.applyActivityEvent({
+    conversationId: "conv-1",
+    runId: "run-2",
+    running: true,
+    state: "running",
+    workdir: "/w",
+    clientRequestId: null,
+    updatedAt: 30,
+  });
+  store.applyActivityEvent({
+    conversationId: "conv-live",
+    runId: "run-live",
+    running: true,
+    state: "running",
+    workdir: null,
+    clientRequestId: null,
+    updatedAt: 50,
+  });
+
+  store.hydrate([
+    // Stale row for conv-1 (the snapshot predates the run-2 handoff).
+    { conversationId: "conv-1", runId: "run-1", state: "running", workdir: "/w", updatedAt: 10 },
+    { conversationId: "conv-other", runId: "run-9", state: "running", updatedAt: 40 },
+  ]);
+
+  assert.equal(store.get("conv-1")?.runId, "run-2", "newer push beats the stale snapshot row");
+  assert.equal(
+    store.isRunning("conv-live"),
+    true,
+    "entry newer than the whole batch survives despite being absent from it",
+  );
+  assert.equal(store.get("conv-other")?.runId, "run-9");
+});
+
+test("an empty hydration snapshot means idle everywhere", () => {
+  const store = createActivityStore();
+  store.applyActivityEvent({
+    conversationId: "conv-1",
+    runId: "run-1",
+    running: true,
+    state: "running",
+    workdir: null,
+    clientRequestId: null,
+    updatedAt: 100,
+  });
+  store.hydrate([]);
+  assert.equal(store.isRunning("conv-1"), false);
 });

@@ -102,25 +102,68 @@ export function createActivityStore(): ActivityStore {
     },
 
     hydrate: (items) => {
-      const next = new Map<string, ConversationActivity>();
+      const incoming = new Map<string, ConversationActivity>();
+      let newestBatchUpdatedAt = 0;
       for (const item of items) {
         const conversationId = item.conversationId.trim();
         const runId = item.runId.trim();
         if (!conversationId || !runId) {
           continue;
         }
-        next.set(conversationId, {
+        const updatedAt = item.updatedAt ?? 0;
+        newestBatchUpdatedAt = Math.max(newestBatchUpdatedAt, updatedAt);
+        incoming.set(conversationId, {
           runId,
           state: normalizeState(item.state),
           workdir: item.workdir?.trim() || null,
-          updatedAt: item.updatedAt ?? 0,
+          updatedAt,
         });
       }
-      let changed = next.size !== activities.size;
+
+      // An empty authoritative snapshot means idle everywhere.
+      if (incoming.size === 0) {
+        if (activities.size === 0) {
+          return;
+        }
+        activities = new Map();
+        emit();
+        return;
+      }
+
+      // The snapshot races the chat.activity pushes: merge per entry with
+      // newer-wins (all timestamps come from the gateway clock) so a stale
+      // list response cannot resurrect a run we already saw finish, and only
+      // drop absent entries that are older than the batch itself.
+      const merged = new Map<string, ConversationActivity>();
+      for (const [conversationId, activity] of incoming) {
+        const current = activities.get(conversationId);
+        merged.set(
+          conversationId,
+          current && current.updatedAt > activity.updatedAt ? current : activity,
+        );
+      }
+      for (const [conversationId, current] of activities) {
+        if (merged.has(conversationId)) {
+          continue;
+        }
+        if (current.updatedAt >= newestBatchUpdatedAt) {
+          // Newer than the snapshot: a push that arrived after the list
+          // response was built. Keep it.
+          merged.set(conversationId, current);
+        }
+      }
+
+      let changed = merged.size !== activities.size;
       if (!changed) {
-        for (const [conversationId, activity] of next) {
+        for (const [conversationId, activity] of merged) {
           const current = activities.get(conversationId);
-          if (!current || current.runId !== activity.runId || current.state !== activity.state) {
+          if (
+            !current ||
+            current.runId !== activity.runId ||
+            current.state !== activity.state ||
+            current.workdir !== activity.workdir ||
+            current.updatedAt !== activity.updatedAt
+          ) {
             changed = true;
             break;
           }
@@ -129,7 +172,7 @@ export function createActivityStore(): ActivityStore {
       if (!changed) {
         return;
       }
-      activities = next;
+      activities = merged;
       emit();
     },
 

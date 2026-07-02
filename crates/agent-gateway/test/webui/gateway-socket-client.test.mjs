@@ -1239,6 +1239,7 @@ test("GatewayWebSocketClient fans chat.activity and chat.command_update out to l
       running: true,
       state: "running",
       workdir: "/workspace/project",
+      client_request_id: "req-42",
       updated_at: 1234,
     },
   });
@@ -1253,6 +1254,7 @@ test("GatewayWebSocketClient fans chat.activity and chat.command_update out to l
     running: true,
     state: "running",
     workdir: "/workspace/project",
+    clientRequestId: "req-42",
     updatedAt: 1234,
   });
 

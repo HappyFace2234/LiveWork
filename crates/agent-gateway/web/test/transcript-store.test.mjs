@@ -278,3 +278,266 @@ test("tool status mirrors into the snapshot and clears on run end", () => {
   store.flush();
   assert.equal(store.getSnapshot().toolStatus, null);
 });
+
+test("replay idempotency: a resubscribe replaying applied events changes nothing", () => {
+  const store = createTranscriptStore();
+  const events = [
+    userMessage("run-1", 1, "hello", { client_request_id: "client-1" }),
+    runStarted("run-1", 2),
+    token("run-1", 3, "answer "),
+    token("run-1", 4, "text"),
+  ];
+  for (const event of events) {
+    store.applyEvent(event);
+  }
+  store.flush();
+  const before = store.getSnapshot();
+  assert.equal(before.tail.length, 2);
+  assert.equal(before.tail[1].text, "answer text");
+
+  // Conversation switch-back: the transport re-subscribes from after_seq=0
+  // and the gateway replays the whole buffered log plus one new event.
+  store.applySync({
+    conversationId: "conv-1",
+    streamEpoch: "epoch-1",
+    latestSeq: 5,
+    reset: false,
+    activity: {
+      runId: "run-1",
+      state: "running",
+      startedSeq: 2,
+      toolStatus: null,
+      toolStatusIsCompaction: false,
+      updatedAt: 1,
+    },
+    snapshot: null,
+    events: [...events, token("run-1", 5, "!")],
+  });
+  store.flush();
+
+  const snapshot = store.getSnapshot();
+  const userBubbles = snapshot.tail.filter((entry) => entry.kind === "user");
+  const assistants = snapshot.tail.filter((entry) => entry.kind === "assistant");
+  assert.equal(userBubbles.length, 1, "exactly one user bubble after replay");
+  assert.equal(assistants.length, 1, "exactly one assistant entry after replay");
+  assert.equal(assistants[0].text, "answer text!", "only the new token applied");
+  const ids = [...snapshot.committed, ...snapshot.tail].map((entry) => entry.id);
+  assert.equal(new Set(ids).size, ids.length, `duplicate ids: ${ids.join(", ")}`);
+});
+
+test("snapshot as_of_seq is a replay barrier: overlapping events are dropped", () => {
+  const store = createTranscriptStore();
+  // Late join mid-run: the subscribe response carries a runtime snapshot
+  // covering the log through seq 4, plus a replay that overlaps it.
+  store.applySync({
+    conversationId: "conv-1",
+    streamEpoch: "epoch-1",
+    latestSeq: 5,
+    reset: false,
+    activity: {
+      runId: "run-1",
+      state: "running",
+      startedSeq: 2,
+      toolStatus: null,
+      toolStatusIsCompaction: false,
+      updatedAt: 1,
+    },
+    snapshot: {
+      runId: "run-1",
+      revision: 3,
+      entriesJson: JSON.stringify([
+        { id: "snap-assistant", kind: "assistant", text: "answer text", round: 0 },
+      ]),
+      toolStatus: null,
+      toolStatusIsCompaction: false,
+      asOfSeq: 4,
+    },
+    events: [
+      token("run-1", 3, "answer "),
+      token("run-1", 4, "text"),
+      token("run-1", 5, "!"),
+    ],
+  });
+  store.flush();
+  const snapshot = store.getSnapshot();
+  const text = snapshot.tail.map((entry) => entry.text ?? "").join("");
+  assert.equal(text, "answer text!", "snapshot content is not double-applied");
+});
+
+test("inline snapshot events carry as_of_seq and drop the overlapping tail", () => {
+  const store = createTranscriptStore();
+  store.applyEvent(runStarted("run-1", 1));
+  store.applyEvent({
+    type: "snapshot",
+    conversation_id: "conv-1",
+    run_id: "run-1",
+    revision: 7,
+    entries_json: JSON.stringify([
+      { id: "snap-assistant", kind: "assistant", text: "full text so far", round: 0 },
+    ]),
+    as_of_seq: 6,
+  });
+  // Events at or below the snapshot's coverage must be ignored; newer ones apply.
+  store.applyEvent(token("run-1", 5, "stale "));
+  store.applyEvent(token("run-1", 6, "stale"));
+  store.applyEvent(token("run-1", 7, " and more"));
+  store.flush();
+  const text = store.getSnapshot().tail.map((entry) => entry.text ?? "").join("");
+  assert.equal(text, "full text so far and more");
+});
+
+test("stray run_finished for a non-active run never settles the streaming tail", () => {
+  const store = createTranscriptStore();
+  store.applyEvent(runStarted("run-b", 1));
+  store.applyEvent(token("run-b", 2, "streaming"));
+  store.applyEvent({
+    type: "tool_status",
+    conversation_id: "conv-1",
+    run_id: "run-b",
+    seq: 3,
+    status: "Vibing",
+  });
+  store.flush();
+
+  // The gateway deliberately appends terminals for non-active runs (e.g.
+  // failing a superseded queued run). The active segment must not settle.
+  store.applyEvent(runFinished("run-a", 4, "failed", { message: "queued run failed" }));
+  store.flush();
+  const snapshot = store.getSnapshot();
+  assert.equal(snapshot.activeRun?.runId, "run-b", "active run unchanged");
+  assert.equal(snapshot.toolStatus, "Vibing", "tool status unchanged");
+  assert.equal(
+    snapshot.tail.some((entry) => entry.text === "streaming"),
+    true,
+    "streaming entry still live",
+  );
+
+  // The active run's own terminal still settles normally afterwards.
+  store.applyEvent(runFinished("run-b", 5));
+  store.flush();
+  assert.equal(store.getSnapshot().activeRun, null);
+});
+
+test("run_finished settles only entries owned by the finished run", () => {
+  const store = createTranscriptStore();
+  store.applyEvent(runStarted("run-a", 1));
+  store.applyEvent(token("run-a", 2, "reply a"));
+  // A queued command's seeded user message (run-b) plus a not-yet-adopted
+  // optimistic echo arrive while run-a is still streaming.
+  store.applyEvent(userMessage("run-b", 3, "queued prompt"));
+  store.addOptimisticUserEntry({ clientRequestId: "client-c", text: "pending echo" });
+  store.applyEvent(runFinished("run-a", 4));
+  store.flush();
+
+  let snapshot = store.getSnapshot();
+  assert.equal(snapshot.activeRun, null);
+  // run-a's reply settled; run-b's seeded user message and the optimistic
+  // echo stay live for their own runs.
+  store.applyEvent(runStarted("run-b", 5));
+  store.applyEvent(token("run-b", 6, "reply b"));
+  store.flush();
+  snapshot = store.getSnapshot();
+  assert.deepEqual(
+    snapshot.committed.map((entry) => entry.text),
+    ["reply a"],
+    "fold took only run-a's settled entries",
+  );
+  assert.deepEqual(
+    snapshot.tail.map((entry) => entry.text),
+    ["queued prompt", "pending echo", "reply b"],
+    "foreign entries stayed in the live region",
+  );
+  const ids = [...snapshot.committed, ...snapshot.tail].map((entry) => entry.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test("interleaved run_queued compensation still removes the adopted bubble", () => {
+  const store = createTranscriptStore();
+  store.applyEvent(runStarted("run-a", 1));
+  store.addOptimisticUserEntry({ clientRequestId: "client-b", text: "park me" });
+  store.applyEvent(userMessage("run-b", 2, "park me", { client_request_id: "client-b" }));
+  store.applyEvent(runFinished("run-a", 3));
+  store.applyEvent(runStarted("run-x", 4));
+  store.applyEvent({
+    type: "run_queued",
+    conversation_id: "conv-1",
+    run_id: "run-b",
+    seq: 5,
+    client_request_id: "client-b",
+  });
+  store.flush();
+  const snapshot = store.getSnapshot();
+  assert.equal(
+    [...snapshot.committed, ...snapshot.tail].some((entry) => entry.text === "park me"),
+    false,
+    "queued prompt left the transcript entirely",
+  );
+});
+
+test("reset folds the settled tail into committed instead of dropping the last reply", () => {
+  const store = createTranscriptStore();
+  store.applyEvent(userMessage("run-1", 1, "question"));
+  store.applyEvent(runStarted("run-1", 2));
+  store.applyEvent(token("run-1", 3, "the reply"));
+  store.applyEvent(runFinished("run-1", 4));
+  store.flush();
+  const settledIds = store.getSnapshot().tail.map((entry) => entry.id);
+  assert.equal(settledIds.length, 2);
+
+  // Gateway restart while idle: epoch reset with nothing to replay.
+  store.applySync({
+    conversationId: "conv-1",
+    streamEpoch: "epoch-2",
+    latestSeq: 0,
+    reset: true,
+    activity: null,
+    snapshot: null,
+    events: [],
+  });
+  store.flush();
+  const snapshot = store.getSnapshot();
+  assert.deepEqual(
+    snapshot.committed.map((entry) => entry.id),
+    settledIds,
+    "settled reply folded into committed with stable ids",
+  );
+  assert.equal(snapshot.tail.length, 0);
+});
+
+test("history snapshot upgrades matching tail entries in place (messageRef arrives)", () => {
+  const store = createTranscriptStore();
+  store.addOptimisticUserEntry({ clientRequestId: "client-1", text: "edit me" });
+  store.applyEvent(userMessage("run-1", 1, "edit me", { client_request_id: "client-1" }));
+  store.applyEvent(runStarted("run-1", 2));
+  store.applyEvent(token("run-1", 3, "reply"));
+  store.applyEvent(runFinished("run-1", 4));
+  store.flush();
+  const before = store.getSnapshot();
+  const userId = before.tail.find((entry) => entry.kind === "user")?.id;
+  assert.ok(userId);
+  assert.equal(before.tail.find((entry) => entry.kind === "user")?.messageRef, undefined);
+
+  const messageRef = {
+    segmentIndex: 0,
+    messageIndex: 0,
+    segmentId: "segment-1",
+    messageId: "message-1",
+    role: "user",
+    contentHash: "hash-1",
+  };
+  store.applyHistorySnapshot([
+    { id: "hist-user", kind: "user", text: "edit me", attachments: [], messageRef },
+    { id: "hist-assistant", kind: "assistant", text: "reply", round: 0 },
+  ]);
+  store.flush();
+  const snapshot = store.getSnapshot();
+  const tailUser = snapshot.tail.find((entry) => entry.kind === "user");
+  assert.equal(tailUser?.id, userId, "tail entry keeps its rendered id");
+  assert.deepEqual(tailUser?.messageRef, messageRef, "history payload upgraded in place");
+  assert.equal(
+    snapshot.committed.some((entry) => entry.kind === "user" && entry.text === "edit me"),
+    false,
+    "still excluded from committed",
+  );
+});
+

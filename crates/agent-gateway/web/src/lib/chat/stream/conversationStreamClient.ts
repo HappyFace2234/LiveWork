@@ -96,6 +96,10 @@ export class ConversationStreamClient {
     this.connected = false;
     for (const registration of this.registrations.values()) {
       registration.synced = false;
+      // Events buffered on the dead connection belong to its stream epoch;
+      // the resume protocol re-fetches everything after lastSeq on
+      // reconnect, so draining them later could only corrupt the transcript.
+      registration.pendingEvents = [];
     }
   }
 

@@ -45,6 +45,9 @@ export type RunLifecycleEvent =
       entries_json?: string;
       tool_status?: string | null;
       tool_status_is_compaction?: boolean;
+      // The conversation log seq this snapshot represents through: events
+      // with seq <= as_of_seq are already folded into entries_json.
+      as_of_seq?: number;
     };
 
 export type ConversationStreamEvent = (ChatEvent | RunLifecycleEvent) & {
@@ -71,6 +74,9 @@ export type StreamRunSnapshot = {
   entriesJson: string;
   toolStatus: string | null;
   toolStatusIsCompaction: boolean;
+  // The log seq the snapshot content covers through (dedup barrier for the
+  // overlapping event replay).
+  asOfSeq: number;
 };
 
 // Parsed chat.subscribe response.
@@ -92,6 +98,7 @@ export type ConversationActivityEvent = {
   running: boolean;
   state: RunActivityState | null;
   workdir: string | null;
+  clientRequestId: string | null;
   updatedAt: number;
 };
 
@@ -165,6 +172,7 @@ export function normalizeRunSnapshot(raw: unknown): StreamRunSnapshot | null {
     entriesJson: readString(value.entries_json),
     toolStatus: readString(value.tool_status).trim() || null,
     toolStatusIsCompaction: value.tool_status_is_compaction === true,
+    asOfSeq: readNumber(value.as_of_seq),
   };
 }
 
@@ -205,6 +213,7 @@ export function normalizeActivityEvent(raw: unknown): ConversationActivityEvent 
     running: value.running === true,
     state: state === "queued" || state === "running" || state === "cancelling" ? state : null,
     workdir: readString(value.workdir).trim() || null,
+    clientRequestId: readString(value.client_request_id).trim() || null,
     updatedAt: readNumber(value.updated_at),
   };
 }

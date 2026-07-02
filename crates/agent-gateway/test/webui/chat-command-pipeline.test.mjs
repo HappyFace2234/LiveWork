@@ -145,3 +145,70 @@ test("failed update surfaces the gateway error", async () => {
   const texts = tailTexts(stores.get("conv-1"));
   assert.equal(texts.some((text) => /did not start/.test(text)), true);
 });
+
+test("run signals settle only on strict identity (runId or own clientRequestId)", async () => {
+  const { pipeline } = createHarness();
+  let releaseAccept;
+  const acceptGate = new Promise((resolve) => {
+    releaseAccept = resolve;
+  });
+  const submitPromise = pipeline.submit({
+    conversationId: "conv-1",
+    clientRequestId: "client-1",
+    message: "hello",
+    submit: async () => {
+      await acceptGate;
+      return { runId: "run-1", conversationId: "conv-1", acceptedSeq: 2 };
+    },
+  });
+
+  // Accept response still in flight (pending.runId === null): a foreign run
+  // signal without our client_request_id must NOT settle the pending —
+  // otherwise a GUI queue auto-send would disarm the startup watchdog.
+  pipeline.handleRunSignal("conv-1", "run-foreign");
+  assert.equal(pipeline.hasPending("conv-1"), true, "foreign signal ignored");
+  pipeline.handleRunSignal("conv-1", "run-foreign", "client-other");
+  assert.equal(pipeline.hasPending("conv-1"), true, "foreign clientRequestId ignored");
+
+  // Our own run signal, matched by client_request_id, settles before the
+  // accept response lands.
+  pipeline.handleRunSignal("conv-1", "run-1", "client-1");
+  assert.equal(pipeline.hasPending("conv-1"), false, "own clientRequestId settles");
+
+  releaseAccept();
+  const outcome = await submitPromise;
+  assert.equal(outcome.kind, "accepted");
+  // The late accept response must not resurrect a byRunId registration for
+  // the already-settled pending: a later command_update for that run id is a
+  // no-op instead of firing hooks against a dead pending.
+  pipeline.handleCommandUpdate({
+    runId: "run-1",
+    clientRequestId: "client-1",
+    conversationId: "conv-other",
+    phase: "bound",
+    errorCode: null,
+    message: null,
+  });
+  assert.equal(pipeline.hasPending("conv-other"), false);
+});
+
+test("run signals with a known runId settle regardless of clientRequestId", async () => {
+  const { pipeline } = createHarness();
+  await pipeline.submit({
+    conversationId: "conv-1",
+    clientRequestId: "client-1",
+    message: "hello",
+    submit: async () => ({ runId: "run-1", conversationId: "conv-1", acceptedSeq: 2 }),
+  });
+  assert.equal(pipeline.hasPending("conv-1"), true);
+
+  // Foreign run id: ignored even though the conversation matches.
+  pipeline.handleRunSignal("conv-1", "run-9");
+  assert.equal(pipeline.hasPending("conv-1"), true);
+
+  // Matching run id (e.g. an activity event while the conversation is not
+  // displayed) settles without any clientRequestId.
+  pipeline.handleRunSignal("conv-1", "run-1");
+  assert.equal(pipeline.hasPending("conv-1"), false);
+});
+

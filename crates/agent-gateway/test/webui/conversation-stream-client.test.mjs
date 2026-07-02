@@ -191,3 +191,33 @@ test("subscription_reset resumes from the cursor; cleanup unsubscribes", async (
     1,
   );
 });
+
+test("disconnect clears events buffered before the subscribe response", async () => {
+  const transport = createTransport();
+  const client = new ConversationStreamClient(transport);
+  const { seen, handlers } = collectHandlers();
+
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  transport.setResponder(() => gate.then(() => subscribeResponse({ latest_seq: 1 })));
+  client.subscribe("conv-1", handlers);
+  client.handleConnected();
+
+  // Events buffered while the subscribe response is in flight belong to the
+  // dying connection; after a disconnect the resume protocol re-fetches
+  // everything, so draining them later would corrupt the transcript.
+  client.handleChatEvent({ type: "token", conversation_id: "conv-1", seq: 2, text: "stale" });
+  client.handleDisconnected();
+
+  transport.setResponder(() => subscribeResponse({ latest_seq: 3 }));
+  client.handleConnected();
+  release();
+  await flushMicrotasks();
+
+  assert.equal(seen.events.length, 0, "stale buffered events were dropped");
+  assert.ok(seen.syncs.length >= 1);
+  assert.equal(seen.syncs.at(-1).latestSeq, 3);
+});
+

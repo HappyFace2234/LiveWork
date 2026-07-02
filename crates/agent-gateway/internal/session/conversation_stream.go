@@ -29,7 +29,6 @@ const (
 	conversationMaxEventBytes     = 8 << 20
 	conversationIdleRetention     = 30 * time.Minute
 	conversationStaleRunTimeout   = 10 * time.Minute
-	conversationRuntimeIdleGrace  = 30 * time.Second
 	conversationReaperInterval    = time.Minute
 	conversationFinishedRunMemory = 8
 	conversationSubscriberBuffer  = 256
@@ -74,7 +73,12 @@ type RunSnapshot struct {
 	ToolStatus             string
 	ToolStatusIsCompaction bool
 	Workdir                string
-	UpdatedAt              time.Time
+	// AsOfSeq is the conversation's last log seq when this snapshot was
+	// ingested: the snapshot already represents every event up to and
+	// including it, so clients rebuilding from the snapshot must only apply
+	// replayed events with a higher seq.
+	AsOfSeq   int64
+	UpdatedAt time.Time
 }
 
 // ConversationEvent is one entry of a conversation log. Payload is the final
@@ -93,12 +97,13 @@ type ConversationEvent struct {
 
 // ConversationActivityEvent is the broadcast shape for the chat.activity hub.
 type ConversationActivityEvent struct {
-	ConversationID string
-	RunID          string
-	Running        bool
-	State          string
-	Workdir        string
-	UpdatedAt      time.Time
+	ConversationID  string
+	RunID           string
+	ClientRequestID string
+	Running         bool
+	State           string
+	Workdir         string
+	UpdatedAt       time.Time
 }
 
 // ChatCommandUpdate notifies the connection that issued a chat command about
@@ -148,6 +153,10 @@ type chatRunRecord struct {
 	// accept time; the agent's later USER_MESSAGE echo is swallowed so the
 	// message appears exactly once.
 	userMessageSeeded bool
+	// firstSeededSeq is the seq of the run's first gateway-seeded event so a
+	// run started via supersession still protects its seeded user_message
+	// from retention eviction.
+	firstSeededSeq int64
 	// queuedInGUI marks commands the desktop app parked in its prompt queue;
 	// the startup watchdog must leave them alone.
 	queuedInGUI bool
@@ -171,19 +180,20 @@ type conversationStreamStore struct {
 
 	activityHub *chatActivityHub
 
-	runtimeIdleSince time.Time
+	// lastRuntimeBusyAt is the last time the agent reported a non-zero
+	// active-run count; while it stays fresh, silent runs are never reaped.
+	lastRuntimeBusyAt time.Time
 
 	reaperOnce sync.Once
 	isOnline   func() bool
 
 	// tunable in tests
-	eventRetention   time.Duration
-	maxEvents        int
-	maxEventBytes    int
-	idleRetention    time.Duration
-	staleRunTimeout  time.Duration
-	runtimeIdleGrace time.Duration
-	reaperInterval   time.Duration
+	eventRetention  time.Duration
+	maxEvents       int
+	maxEventBytes   int
+	idleRetention   time.Duration
+	staleRunTimeout time.Duration
+	reaperInterval  time.Duration
 }
 
 func newConversationStreamStore(isOnline func() bool) *conversationStreamStore {
@@ -192,15 +202,14 @@ func newConversationStreamStore(isOnline func() bool) *conversationStreamStore {
 		pendingRuns:      make(map[string]*pendingChatRun),
 		runs:             make(map[string]*chatRunRecord),
 		commandWatchers:  make(map[string][]chan ChatCommandUpdate),
-		activityHub:      newChatActivityHub(),
-		isOnline:         isOnline,
-		eventRetention:   conversationEventRetention,
-		maxEvents:        conversationMaxEvents,
-		maxEventBytes:    conversationMaxEventBytes,
-		idleRetention:    conversationIdleRetention,
-		staleRunTimeout:  conversationStaleRunTimeout,
-		runtimeIdleGrace: conversationRuntimeIdleGrace,
-		reaperInterval:   conversationReaperInterval,
+		activityHub:     newChatActivityHub(),
+		isOnline:        isOnline,
+		eventRetention:  conversationEventRetention,
+		maxEvents:       conversationMaxEvents,
+		maxEventBytes:   conversationMaxEventBytes,
+		idleRetention:   conversationIdleRetention,
+		staleRunTimeout: conversationStaleRunTimeout,
+		reaperInterval:  conversationReaperInterval,
 	}
 }
 
@@ -536,12 +545,19 @@ func (s *conversationStreamStore) runStartedLocked(
 		payload["workdir"] = stream.workdir
 	}
 	startEvent := s.appendEventLocked(stream, runID, StreamEventRunStarted, payload, now)
+	startedSeq := startEvent.Seq
+	if record.firstSeededSeq > 0 && record.firstSeededSeq < startedSeq {
+		// The run's user_message was seeded before it started (e.g. it
+		// started through supersession while another run was active); the
+		// eviction guard must cover the seed too.
+		startedSeq = record.firstSeededSeq
+	}
 	stream.activity = &RunActivity{
 		ConversationID:  stream.conversationID,
 		RunID:           runID,
 		ClientRequestID: record.clientRequestID,
 		State:           RunActivityRunning,
-		StartedSeq:      startEvent.Seq,
+		StartedSeq:      startedSeq,
 		Workdir:         stream.workdir,
 		UpdatedAt:       now,
 	}
@@ -651,6 +667,7 @@ func (s *conversationStreamStore) publishActivityLocked(stream *conversationStre
 	}
 	if stream.activity != nil {
 		event.RunID = stream.activity.RunID
+		event.ClientRequestID = stream.activity.ClientRequestID
 		event.Running = true
 		event.State = stream.activity.State
 		if stream.activity.Workdir != "" {
@@ -680,6 +697,9 @@ func (m *Manager) WatchChatCommand(runID string) (<-chan ChatCommandUpdate, func
 		for i, watcher := range watchers {
 			if watcher == ch {
 				s.commandWatchers[runID] = append(watchers[:i], watchers[i+1:]...)
+				// All sends happen under s.mu after a registration check, so
+				// closing here is safe and releases the forwarder goroutine.
+				close(ch)
 				break
 			}
 		}
@@ -782,6 +802,9 @@ func (s *conversationStreamStore) appendSeededPayloadsLocked(
 		}
 		event := s.appendEventLocked(stream, runID, eventType, cloned, now)
 		acceptedSeq = event.Seq
+		if record := s.runs[runID]; record != nil && record.firstSeededSeq == 0 {
+			record.firstSeededSeq = event.Seq
+		}
 	}
 	return acceptedSeq
 }
@@ -905,17 +928,13 @@ func (m *Manager) ForceFinishRun(runID string, status string, errorCode string, 
 // --- maintenance -----------------------------------------------------------
 
 // onRuntimeStatus feeds the agent's reported active-run count into staleness
-// tracking: a runtime that keeps reporting zero active runs while a stream
-// still shows one means the run died without a terminal signal.
+// tracking: while the runtime keeps reporting busy, silent runs (a long tool
+// call producing no events) must never be reaped.
 func (s *conversationStreamStore) onRuntimeStatus(activeRunCount uint32, now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if activeRunCount > 0 {
-		s.runtimeIdleSince = time.Time{}
-		return
-	}
-	if s.runtimeIdleSince.IsZero() {
-		s.runtimeIdleSince = now
+		s.lastRuntimeBusyAt = now
 	}
 }
 
@@ -940,23 +959,23 @@ func (s *conversationStreamStore) reap(now time.Time) {
 	defer s.mu.Unlock()
 
 	online := s.isOnline != nil && s.isOnline()
-	runtimeIdleLongEnough := online &&
-		!s.runtimeIdleSince.IsZero() &&
-		now.Sub(s.runtimeIdleSince) > s.runtimeIdleGrace
 
 	for conversationID, stream := range s.streams {
 		s.evictStreamLocked(stream, now)
 
 		if stream.activity != nil && online {
-			staleBySilence := !stream.lastEventAt.IsZero() &&
-				now.Sub(stream.lastEventAt) > s.staleRunTimeout
-			activityIsLive := stream.activity.State == RunActivityRunning ||
-				stream.activity.State == RunActivityCancelling
-			staleByRuntimeIdle := runtimeIdleLongEnough &&
-				activityIsLive &&
-				stream.activity.UpdatedAt.Before(s.runtimeIdleSince) &&
-				stream.lastEventAt.Before(s.runtimeIdleSince)
-			if staleBySilence || staleByRuntimeIdle {
+			// A run is stale only when NOTHING vouches for it: no stream
+			// events, no runtime-busy heartbeat, and no activity transition
+			// within the timeout. A silent long tool call keeps the runtime
+			// busy heartbeat fresh and is never reaped.
+			lastAlive := stream.lastEventAt
+			if s.lastRuntimeBusyAt.After(lastAlive) {
+				lastAlive = s.lastRuntimeBusyAt
+			}
+			if stream.activity.UpdatedAt.After(lastAlive) {
+				lastAlive = stream.activity.UpdatedAt
+			}
+			if !lastAlive.IsZero() && now.Sub(lastAlive) > s.staleRunTimeout {
 				s.runFinishedLocked(stream, stream.activity.RunID, "failed", "stale_run",
 					"The desktop runtime stopped reporting this run.", nil, now)
 			}

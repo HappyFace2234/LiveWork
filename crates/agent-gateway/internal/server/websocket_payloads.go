@@ -129,6 +129,9 @@ func websocketChatActivityPayload(event session.ConversationActivityEvent) map[s
 	if event.RunID != "" {
 		payload["run_id"] = event.RunID
 	}
+	if event.ClientRequestID != "" {
+		payload["client_request_id"] = event.ClientRequestID
+	}
 	if event.State != "" {
 		payload["state"] = event.State
 	}
@@ -168,6 +171,7 @@ func websocketRunSnapshotPayload(snapshot *session.RunSnapshot) map[string]any {
 		"entries_json":              snapshot.EntriesJSON,
 		"tool_status":               snapshot.ToolStatus,
 		"tool_status_is_compaction": snapshot.ToolStatusIsCompaction,
+		"as_of_seq":                 snapshot.AsOfSeq,
 	}
 }
 

@@ -32,6 +32,9 @@ func (m *Manager) ingestChatEvent(requestID string, event *gatewayv1.ChatEvent) 
 	if conversationID == "" {
 		return
 	}
+	existingStream := s.streams[conversationID]
+	streamWasUnknown := existingStream == nil ||
+		(existingStream.lastSeq == 0 && existingStream.activity == nil)
 	stream := s.streamLocked(conversationID, now)
 	s.noteAgentEpochLocked(stream, epoch)
 
@@ -73,6 +76,12 @@ func (m *Manager) ingestChatEvent(requestID string, event *gatewayv1.ChatEvent) 
 		// runStartedLocked declined (e.g. the run finished during
 		// supersession bookkeeping); do not attribute events to another run.
 		return
+	}
+	if streamWasUnknown && event.GetType() != gatewayv1.ChatEvent_USER_MESSAGE {
+		// A mid-run delta recreated this stream (gateway restarted while the
+		// run was streaming): the run's earlier events are unrecoverable from
+		// the log, so late joiners must hydrate from the runtime snapshot.
+		stream.runNeedsSnapshot = true
 	}
 
 	if event.GetType() == gatewayv1.ChatEvent_TOOL_STATUS {
@@ -209,6 +218,7 @@ func (m *Manager) ingestRuntimeSnapshot(snapshot *gatewayv1.ChatRuntimeSnapshot)
 		ToolStatus:             strings.TrimSpace(snapshot.GetToolStatus()),
 		ToolStatusIsCompaction: snapshot.GetToolStatusIsCompaction(),
 		Workdir:                strings.TrimSpace(snapshot.GetCwd()),
+		AsOfSeq:                stream.lastSeq,
 		UpdatedAt:              now,
 	}
 	if current := stream.latestSnapshot; current != nil &&
@@ -261,6 +271,7 @@ func (s *conversationStreamStore) publishSnapshotLocked(
 		"entries_json":              snapshot.EntriesJSON,
 		"tool_status":               snapshot.ToolStatus,
 		"tool_status_is_compaction": snapshot.ToolStatusIsCompaction,
+		"as_of_seq":                 snapshot.AsOfSeq,
 	}
 	event := &ConversationEvent{
 		ConversationID: stream.conversationID,

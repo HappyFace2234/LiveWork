@@ -798,7 +798,11 @@ export default function GatewayApp() {
   // Only runs while the conversation is idle; a run started mid-fetch aborts
   // the merge so a stale snapshot can never truncate freshly folded entries.
   const refreshDisplayedConversationHistorySnapshot = useCallback(
-    async (targetConversationId: string, currentApi = api) => {
+    async (
+      targetConversationId: string,
+      currentApi = api,
+      options?: { forceFull?: boolean },
+    ) => {
       const conversationIdValue = targetConversationId.trim();
       if (!currentApi || !conversationIdValue || isLocalDraftConversationId(conversationIdValue)) {
         return;
@@ -814,8 +818,9 @@ export default function GatewayApp() {
       // If the full history is already loaded, refresh the full transcript so
       // the merge cannot truncate it back to the most recent page.
       const hasFullHistoryLoaded =
-        selectedHistoryRef.current?.conversation_id === conversationIdValue &&
-        selectedHistoryRef.current.has_more === false;
+        options?.forceFull === true ||
+        (selectedHistoryRef.current?.conversation_id === conversationIdValue &&
+          selectedHistoryRef.current.has_more === false);
 
       let detail: HistoryDetail;
       let entries: ChatEntry[];
@@ -825,6 +830,15 @@ export default function GatewayApp() {
           hasFullHistoryLoaded ? undefined : { maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES },
         );
         entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
+        if (
+          detail.has_more === true &&
+          entries.length < getConversationTranscriptEntryCount(conversationIdValue)
+        ) {
+          // Partial window smaller than what is currently rendered: merging
+          // it would truncate the top of a longer transcript. Refetch full.
+          detail = await currentApi.getHistory(conversationIdValue);
+          entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
+        }
       } catch {
         return;
       }
@@ -842,7 +856,7 @@ export default function GatewayApp() {
       }
       transcriptStoreRegistry.get(conversationIdValue).applyHistorySnapshot(entries);
     },
-    [api, isConversationBusy, transcriptStoreRegistry],
+    [api, getConversationTranscriptEntryCount, isConversationBusy, transcriptStoreRegistry],
   );
 
 
@@ -1382,10 +1396,25 @@ export default function GatewayApp() {
   pipelineOnQueuedInGuiRef.current = (update, pending) => {
     draftClientRequestsRef.current.delete(pending.clientRequestId);
     refreshChatQueueSnapshot(update.conversationId?.trim() || pending.conversationId);
+    if (pending.isEditResend) {
+      // The seeded `rebased` already truncated committed optimistically, but
+      // the command was parked — server-side history is unchanged; a full
+      // quiet refresh restores the truncated suffix.
+      void refreshDisplayedConversationHistorySnapshot(
+        update.conversationId?.trim() || pending.conversationId,
+        api,
+        { forceFull: true },
+      );
+    }
   };
   pipelineOnFailedRef.current = (pending, _errorCode, message) => {
     draftClientRequestsRef.current.delete(pending.clientRequestId);
     const conversationIdValue = pending.conversationId.trim();
+    if (pending.isEditResend) {
+      void refreshDisplayedConversationHistorySnapshot(conversationIdValue, api, {
+        forceFull: true,
+      });
+    }
     if (isLocalDraftConversationId(conversationIdValue)) {
       // The draft never materialized: drop its optimistic sidebar row. The
       // transcript keeps the pipeline's error entry.
@@ -1408,6 +1437,18 @@ export default function GatewayApp() {
     const unsubscribe = api.subscribeChatActivity((event: ConversationActivityEvent) => {
       const previous = activityStore.get(event.conversationId);
       activityStore.applyActivityEvent(event);
+      // Settle pending commands from the always-on hub too: the run may
+      // start (or finish) while its conversation is not the displayed one,
+      // and without this the 60s startup watchdog would fire spuriously.
+      // The `queued` state stays armed — the gateway watchdog plus
+      // command_update failed cover that phase.
+      if (event.runId && (event.running ? event.state !== "queued" : true)) {
+        chatCommandPipeline.handleRunSignal(
+          event.conversationId,
+          event.runId,
+          event.clientRequestId ?? undefined,
+        );
+      }
       const workdir =
         event.workdir?.trim() ||
         previous?.workdir?.trim() ||
@@ -1419,7 +1460,7 @@ export default function GatewayApp() {
       }
     });
     return unsubscribe;
-  }, [activityStore, api, recordProjectActivity, refreshHistoryWorkdirs]);
+  }, [activityStore, api, chatCommandPipeline, recordProjectActivity, refreshHistoryWorkdirs]);
 
   useEffect(() => {
     if (!api) {
@@ -1450,9 +1491,17 @@ export default function GatewayApp() {
       options?: { replay?: boolean },
     ) => {
       const isReplay = options?.replay === true;
+      const eventClientRequestId =
+        typeof (event as { client_request_id?: unknown }).client_request_id === "string"
+          ? ((event as { client_request_id: string }).client_request_id ?? "").trim()
+          : "";
       switch (event.type) {
         case "run_started": {
-          chatCommandPipeline.handleRunSignal(targetConversationId, readEventRunId(event));
+          chatCommandPipeline.handleRunSignal(
+            targetConversationId,
+            readEventRunId(event),
+            eventClientRequestId || undefined,
+          );
           if (!isReplay && isDisplayedConversation(targetConversationId)) {
             // The transcript store folded the settled tail into committed
             // when it applied this event. Commit that fold to the DOM in one
@@ -1477,7 +1526,11 @@ export default function GatewayApp() {
           return;
         }
         case "run_finished": {
-          chatCommandPipeline.handleRunSignal(targetConversationId, readEventRunId(event));
+          chatCommandPipeline.handleRunSignal(
+            targetConversationId,
+            readEventRunId(event),
+            eventClientRequestId || undefined,
+          );
           const finishedTitle =
             typeof (event as { title?: unknown }).title === "string"
               ? ((event as { title: string }).title ?? "").trim()
@@ -1488,7 +1541,11 @@ export default function GatewayApp() {
           return;
         }
         case "run_queued": {
-          chatCommandPipeline.handleRunSignal(targetConversationId, readEventRunId(event));
+          chatCommandPipeline.handleRunSignal(
+            targetConversationId,
+            readEventRunId(event),
+            eventClientRequestId || undefined,
+          );
           if (!isReplay) {
             refreshChatQueueSnapshot(targetConversationId);
           }
@@ -1521,7 +1578,11 @@ export default function GatewayApp() {
   const handleConversationStreamSync = useCallback(
     (targetConversationId: string, result: ConversationSubscribeResult) => {
       if (result.activity) {
-        chatCommandPipeline.handleRunSignal(targetConversationId, result.activity.runId);
+        chatCommandPipeline.handleRunSignal(
+          targetConversationId,
+          result.activity.runId,
+          result.activity.clientRequestId,
+        );
       }
       for (const event of result.events) {
         observeConversationStreamEvent(targetConversationId, event, { replay: true });
@@ -2036,6 +2097,20 @@ export default function GatewayApp() {
     });
   }, [api, historyScopeKey, status?.online]);
 
+  // Reconnect reconciliation: a run that finished while the socket was down
+  // never produced an idle activity event; re-hydrate the activity registry
+  // from history.list so no phantom running dot survives an outage.
+  const previousOnlineRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    const wasOnline = previousOnlineRef.current;
+    const isOnline = status?.online === true;
+    previousOnlineRef.current = isOnline;
+    if (!api || !isOnline || wasOnline !== false) {
+      return;
+    }
+    void reloadHistory(api, { silent: true, skipSelectionSync: true });
+  }, [api, status?.online]);
+
   // Foreground nudge: waking the page just pings the runtime keep-warm; the
   // socket's own wakeup/reconnect plus per-conversation subscription resume
   // replaces the old page-restore recovery machinery.
@@ -2203,6 +2278,7 @@ export default function GatewayApp() {
       clientRequestId,
       message,
       attachments: uploadedFiles,
+      isEditResend: Boolean(options?.editMessageRef),
       submit: () => api.chatCommand(commandInput),
     });
 
@@ -2326,6 +2402,27 @@ export default function GatewayApp() {
       }
       clearCurrentComposerDraftForQueuedTurn(conversationIdValue);
       clearedComposer = true;
+      if (chatCommandPipeline.hasPending(conversationIdValue)) {
+        // A command is already in flight for this conversation: park this one
+        // straight into the GUI queue. The pipeline slot (pre-first-token
+        // spinner + watchdog) belongs to the first command; the queue panel
+        // updates via command_update/run_queued and chat_queue events.
+        await api.chatCommand({
+          type: "chat.submit",
+          message: materialized.text,
+          conversationId: isLocalDraftConversationId(conversationIdValue)
+            ? undefined
+            : conversationIdValue,
+          selectedModel: buildGatewaySelectedModel(settings.selectedModel, activeProviders),
+          systemSettings: buildGatewaySystemSettings(settings, workdirForTurn),
+          uploadedFiles: materialized.uploadedFiles,
+          clientRequestId: crypto.randomUUID(),
+          runtimeControls: chatRuntimeControlsForCurrentProvider,
+          queuePolicy,
+        });
+        refreshChatQueueSnapshot(conversationIdValue);
+        return true;
+      }
       // Same pipeline path as a normal send: `command_update queued_in_gui`
       // (or the stream's run_queued event) refreshes the queue snapshot; a
       // direct start settles through run_started.
@@ -2336,10 +2433,21 @@ export default function GatewayApp() {
         workdir: workdirForTurn,
         queuePolicy,
       });
-      if (!outcome || outcome.kind === "failed") {
-        throw new Error(
-          outcome && outcome.kind === "failed" ? outcome.message : "queue request failed",
-        );
+      if (!outcome) {
+        // Benign no-op (client not ready): restore the composer without
+        // surfacing an error.
+        if (getDisplayedConversationId() === conversationIdValue) {
+          if (!composerRef.current?.hasContent()) {
+            composerRef.current?.setDraft(draft);
+          }
+          if ((pendingUploadsByConversationRef.current.get(conversationIdValue) ?? []).length === 0) {
+            setPendingUploadsForConversation(conversationIdValue, uploadedFiles);
+          }
+        }
+        return false;
+      }
+      if (outcome.kind === "failed") {
+        throw new Error(outcome.message);
       }
       return true;
     } catch (error) {

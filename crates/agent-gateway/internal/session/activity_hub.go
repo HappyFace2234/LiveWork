@@ -24,10 +24,11 @@ func newChatActivityHub() *chatActivityHub {
 // no separate hydration round-trip.
 func (m *Manager) SubscribeChatActivity() (<-chan ConversationActivityEvent, func()) {
 	hub := m.convStreams.activityHub
-	ch := make(chan ConversationActivityEvent, 64)
 
 	// Replay current activities before registering so a concurrent transition
-	// is delivered after its predecessor state, never before.
+	// is delivered after its predecessor state, never before. The channel is
+	// sized to hold the whole replay: nothing reads it until this returns, so
+	// a blocking send here would wedge both mutexes.
 	m.convStreams.mu.Lock()
 	replay := make([]ConversationActivityEvent, 0, len(m.convStreams.streams))
 	for _, stream := range m.convStreams.streams {
@@ -35,18 +36,20 @@ func (m *Manager) SubscribeChatActivity() (<-chan ConversationActivityEvent, fun
 			continue
 		}
 		event := ConversationActivityEvent{
-			ConversationID: stream.conversationID,
-			RunID:          stream.activity.RunID,
-			Running:        true,
-			State:          stream.activity.State,
-			Workdir:        stream.activity.Workdir,
-			UpdatedAt:      stream.activity.UpdatedAt,
+			ConversationID:  stream.conversationID,
+			RunID:           stream.activity.RunID,
+			ClientRequestID: stream.activity.ClientRequestID,
+			Running:         true,
+			State:           stream.activity.State,
+			Workdir:         stream.activity.Workdir,
+			UpdatedAt:       stream.activity.UpdatedAt,
 		}
 		if event.Workdir == "" {
 			event.Workdir = stream.workdir
 		}
 		replay = append(replay, event)
 	}
+	ch := make(chan ConversationActivityEvent, len(replay)+64)
 	hub.mu.Lock()
 	subID := hub.nextSubID
 	hub.nextSubID++

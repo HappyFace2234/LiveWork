@@ -90,6 +90,11 @@ export function createTranscriptStore(): TranscriptStore {
   let toolStatus: string | null = null;
   let toolStatusIsCompaction = false;
   let foldRevision = 0;
+  // Idempotency cursor: the highest log seq already applied. Re-subscribes
+  // replay the buffered log into a store that persists across conversation
+  // switches; without the cursor every replayed event would duplicate its
+  // entry (or double-append token text).
+  let lastSeq = 0;
 
   let snapshot = EMPTY_SNAPSHOT;
   let dirty = false;
@@ -201,7 +206,42 @@ export function createTranscriptStore(): TranscriptStore {
     }
   };
 
+  // True when the entry belongs to another run than `runId`: prefixed with a
+  // foreign run id, adopted by a foreign run, or a not-yet-adopted optimistic
+  // echo. Such entries must survive the finishing run's settle sweep.
+  const isForeignOwnedEntry = (entry: ChatEntry, runId: string): boolean => {
+    const prefix = runIdPrefix(runId);
+    if (prefix !== "" && entry.id.startsWith(prefix)) {
+      return false;
+    }
+    if (adoptedEntryIds.get(runId)?.includes(entry.id)) {
+      return false;
+    }
+    if (pendingOptimistic.size > 0) {
+      for (const optimisticId of pendingOptimistic.values()) {
+        if (optimisticId === entry.id) {
+          return true;
+        }
+      }
+    }
+    for (const [otherRunId, ownedIds] of adoptedEntryIds) {
+      if (otherRunId !== runId && ownedIds.includes(entry.id)) {
+        return true;
+      }
+    }
+    const slashIndex = entry.id.indexOf("/");
+    return slashIndex > 0 && !entry.id.startsWith("local/");
+  };
+
   const applyRunFinished = (event: ConversationStreamEvent) => {
+    const runId = readEventRunId(event);
+    if (activeRun && runId !== "" && runId !== activeRun.runId) {
+      // Stray terminal for a non-active run (the gateway appends these
+      // deliberately, e.g. failing a superseded queued run). Never settle the
+      // active segment; just drop the stray run's provisional entries.
+      removeRunEntries(runId);
+      return;
+    }
     const payload = event as {
       status?: string;
       message?: string;
@@ -211,11 +251,17 @@ export function createTranscriptStore(): TranscriptStore {
       live = pushChatEvent(
         live,
         { type: "error", message: payload.message } as ChatEvent,
-        { entryIdPrefix: runIdPrefix(readEventRunId(event)) },
+        { entryIdPrefix: runIdPrefix(runId) },
       );
     }
-    settled = live.length === 0 ? settled : [...settled, ...live];
-    live = [];
+    // Settle only entries owned by the finished run (or unowned, e.g. local/
+    // errors); foreign-owned entries — seeded user_messages and optimistic
+    // echoes of not-yet-started runs — stay live for their own run.
+    const settling = live.filter((entry) => !isForeignOwnedEntry(entry, runId));
+    const remaining = live.filter((entry) => isForeignOwnedEntry(entry, runId));
+    adoptedEntryIds.delete(runId);
+    settled = settling.length === 0 ? settled : [...settled, ...settling];
+    live = remaining;
     activeRun = null;
     setToolStatus(null, false);
     schedule(true);
@@ -260,18 +306,28 @@ export function createTranscriptStore(): TranscriptStore {
     applySync: (result) => {
       if (result.reset) {
         // Seq continuity broke (gateway restart / buffer gap). Committed
-        // history is still valid; rebuild the tail from scratch.
-        settled = [];
+        // history stays valid; the settled tail is finished-run content with
+        // stable ids, so fold it into committed instead of dropping the last
+        // reply, then rebuild the live segment from scratch. The replay after
+        // a reset only carries events the tail was not built from (gap
+        // resets replay past the evicted prefix; epoch resets replay
+        // new-epoch runs with disjoint id prefixes), so zero the cursor.
+        lastSeq = 0;
+        foldSettled(false);
         live = [];
         activeRun = null;
         toolStatus = null;
         toolStatusIsCompaction = false;
         if (result.snapshot) {
           rebuildLiveFromSnapshot(result.snapshot.entriesJson, result.snapshot.runId);
+          lastSeq = Math.max(lastSeq, result.snapshot.asOfSeq);
         }
       } else if (result.snapshot && live.length === 0) {
-        // Late join mid-run where the buffer cannot cover the run start.
+        // Late join mid-run where the buffer cannot cover the run start. The
+        // snapshot folds every event through asOfSeq into its entries;
+        // advancing the cursor drops the overlapping replay below.
         rebuildLiveFromSnapshot(result.snapshot.entriesJson, result.snapshot.runId);
+        lastSeq = Math.max(lastSeq, result.snapshot.asOfSeq);
       }
       activeRun = result.activity;
       if (result.activity) {
@@ -282,6 +338,7 @@ export function createTranscriptStore(): TranscriptStore {
       for (const event of result.events) {
         applyOne(event);
       }
+      lastSeq = Math.max(lastSeq, result.latestSeq);
       schedule(true);
     },
 
@@ -333,20 +390,49 @@ export function createTranscriptStore(): TranscriptStore {
       for (const entry of committed) {
         existingByKey.set(chatEntryDedupKey(entry), entry);
       }
-      const tailKeys = new Set<string>();
-      for (const entry of settled) {
-        tailKeys.add(chatEntryDedupKey(entry));
-      }
-      for (const entry of live) {
-        tailKeys.add(chatEntryDedupKey(entry));
-      }
+      const settledIndexByKey = new Map<string, number>();
+      settled.forEach((entry, index) => {
+        settledIndexByKey.set(chatEntryDedupKey(entry), index);
+      });
+      const liveIndexByKey = new Map<string, number>();
+      live.forEach((entry, index) => {
+        liveIndexByKey.set(chatEntryDedupKey(entry), index);
+      });
 
       const nextCommitted: ChatEntry[] = [];
+      let nextSettled = settled;
+      let nextLive = live;
       let changed = entries.length !== committed.length;
+      let tailChanged = false;
       for (const entry of entries) {
         const key = chatEntryDedupKey(entry);
-        if (tailKeys.has(key)) {
-          // Already rendered in the tail region; folds in at run_started.
+        const settledIndex = settledIndexByKey.get(key);
+        const liveIndex = settledIndex === undefined ? liveIndexByKey.get(key) : undefined;
+        if (settledIndex !== undefined || liveIndex !== undefined) {
+          // Already rendered in the tail region (folds in at run_started).
+          // Upgrade the tail entry in place — same id, same position — with
+          // the history payload: this is what gives the just-settled user
+          // bubble its messageRef (edit-resend affordance) and tool cards
+          // their full, untrimmed content.
+          if (settledIndex !== undefined) {
+            const existing = nextSettled[settledIndex];
+            if (existing) {
+              if (nextSettled === settled) {
+                nextSettled = settled.slice();
+              }
+              nextSettled[settledIndex] = { ...entry, id: existing.id };
+              tailChanged = true;
+            }
+          } else if (liveIndex !== undefined) {
+            const existing = nextLive[liveIndex];
+            if (existing) {
+              if (nextLive === live) {
+                nextLive = live.slice();
+              }
+              nextLive[liveIndex] = { ...entry, id: existing.id };
+              tailChanged = true;
+            }
+          }
           changed = true;
           continue;
         }
@@ -364,7 +450,11 @@ export function createTranscriptStore(): TranscriptStore {
           changed = true;
         }
       }
-      if (!changed && nextCommitted.length === committed.length) {
+      if (tailChanged) {
+        settled = nextSettled;
+        live = nextLive;
+      }
+      if (!tailChanged && !changed && nextCommitted.length === committed.length) {
         return;
       }
       committed = nextCommitted;
@@ -382,6 +472,7 @@ export function createTranscriptStore(): TranscriptStore {
       activeRun = null;
       toolStatus = null;
       toolStatusIsCompaction = false;
+      lastSeq = 0;
       pendingOptimistic.clear();
       adoptedEntryIds.clear();
       schedule(true);
@@ -427,6 +518,14 @@ export function createTranscriptStore(): TranscriptStore {
   }
 
   function applyOne(event: ConversationStreamEvent) {
+    const seq = readEventSeq(event);
+    if (seq > 0) {
+      if (seq <= lastSeq) {
+        // Already applied (resubscribe replay / snapshot overlap).
+        return;
+      }
+      lastSeq = seq;
+    }
     const runId = readEventRunId(event);
     switch (event.type) {
       case "run_started": {
@@ -467,8 +566,13 @@ export function createTranscriptStore(): TranscriptStore {
         return;
       }
       case "snapshot": {
-        const payload = event as { entries_json?: string };
+        const payload = event as { entries_json?: string; as_of_seq?: number };
         rebuildLiveFromSnapshot(payload.entries_json ?? "", runId);
+        if (typeof payload.as_of_seq === "number" && Number.isFinite(payload.as_of_seq)) {
+          // The snapshot content covers the log through as_of_seq; drop the
+          // overlapping tail of any concurrent replay.
+          lastSeq = Math.max(lastSeq, Math.floor(payload.as_of_seq));
+        }
         const status = (event as { tool_status?: string | null }).tool_status ?? null;
         setToolStatus(
           typeof status === "string" ? status : null,
