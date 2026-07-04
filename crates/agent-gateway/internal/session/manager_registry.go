@@ -181,6 +181,20 @@ func (m *Manager) UpdateRuntimeStatus(
 	m.registry.runtimeActiveRunCount = event.GetActiveRunCount()
 }
 
+// touchRuntimeActivity refreshes the chat-runtime heartbeat when live chat
+// traffic proves the desktop runtime is running, even while the webview's
+// own status timer is throttled (hidden/occluded window). Only refreshes an
+// already-reporting runtime: a zero heartbeat must not become readiness
+// (normalizeRuntimeState("") defaults to "ready").
+func (m *Manager) touchRuntimeActivity(session *AgentSession) {
+	m.registry.mu.Lock()
+	defer m.registry.mu.Unlock()
+	if m.registry.session != session || m.registry.runtimeLastHeartbeat.IsZero() {
+		return
+	}
+	m.registry.runtimeLastHeartbeat = time.Now()
+}
+
 func (m *Manager) TouchHeartbeat(session *AgentSession) {
 	m.registry.mu.Lock()
 	defer m.registry.mu.Unlock()
@@ -232,10 +246,7 @@ func (m *Manager) SendToAgent(env *gatewayv1.GatewayEnvelope) error {
 	if session == nil {
 		return ErrAgentOffline
 	}
-
-	err := session.SendToAgent(env)
-	m.clearSessionAfterSendError(session, err)
-	return err
+	return session.SendToAgent(env)
 }
 
 func (m *Manager) SendToAgentContext(ctx context.Context, env *gatewayv1.GatewayEnvelope) error {
@@ -245,10 +256,7 @@ func (m *Manager) SendToAgentContext(ctx context.Context, env *gatewayv1.Gateway
 	if session == nil {
 		return ErrAgentOffline
 	}
-
-	err := session.SendToAgentContext(ctx, env)
-	m.clearSessionAfterSendError(session, err)
-	return err
+	return session.SendToAgentContext(ctx, env)
 }
 
 func (m *Manager) SendToAgentOrQueue(ctx context.Context, env *gatewayv1.GatewayEnvelope) error {
@@ -257,13 +265,6 @@ func (m *Manager) SendToAgentOrQueue(ctx context.Context, env *gatewayv1.Gateway
 		return m.cmdQueue.Enqueue(ctx, env)
 	}
 	return err
-}
-
-func (m *Manager) clearSessionAfterSendError(session *AgentSession, err error) {
-	if err == nil || session == nil {
-		return
-	}
-	m.ClearSession(session)
 }
 
 func (m *Manager) currentSessionEpoch() uint64 {

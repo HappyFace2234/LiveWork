@@ -14,7 +14,8 @@ func NewAgentSession(auth AuthSnapshot) *AgentSession {
 		SessionID:    auth.SessionID,
 		ConnectedAt:  time.Now(),
 		LastPing:     time.Now(),
-		toAgent:      make(chan *OutboundEnvelope, 64),
+		toAgent:      make(chan *OutboundEnvelope, 512),
+		pingCh:       make(chan *gatewayv1.GatewayEnvelope, 1),
 		done:         make(chan struct{}),
 		streams:      make(map[string]*agentStream),
 	}
@@ -46,6 +47,34 @@ func (e *OutboundEnvelope) Ack(err error) {
 
 func (s *AgentSession) Outbound() <-chan *OutboundEnvelope {
 	return s.toAgent
+}
+
+func (s *AgentSession) Pings() <-chan *gatewayv1.GatewayEnvelope {
+	return s.pingCh
+}
+
+// SendPing queues a heartbeat on a dedicated lane that can never be starved
+// by the shared outbound queue. Single producer (heartbeatLoop): a still-queued
+// older ping is replaced so the freshest timestamp wins.
+func (s *AgentSession) SendPing(env *gatewayv1.GatewayEnvelope) error {
+	select {
+	case <-s.done:
+		return ErrAgentOffline
+	default:
+	}
+	select {
+	case s.pingCh <- env:
+	default:
+		select {
+		case <-s.pingCh:
+		default:
+		}
+		select {
+		case s.pingCh <- env:
+		default:
+		}
+	}
+	return nil
 }
 
 func (s *AgentSession) Done() <-chan struct{} {
@@ -82,7 +111,8 @@ func (s *AgentSession) SendToAgentContext(ctx context.Context, env *gatewayv1.Ga
 	case err := <-result:
 		return err
 	case <-ctx.Done():
-		s.Close()
+		// The envelope stays queued; the writer skips it once its context is
+		// expired. A congested-but-alive session must not be torn down here.
 		return ctx.Err()
 	case <-s.done:
 		return ErrAgentOffline

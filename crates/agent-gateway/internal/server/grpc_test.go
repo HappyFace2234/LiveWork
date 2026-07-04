@@ -70,3 +70,69 @@ func TestAgentTerminalConnectSendsReadyFrame(t *testing.T) {
 		t.Fatal("gRPC server did not stop")
 	}
 }
+
+func TestAgentConnectTouchesHeartbeatOnAnyEnvelope(t *testing.T) {
+	listener := bufconn.Listen(1024 * 1024)
+	sm := session.NewManager()
+	grpcServer := grpc.NewServer()
+	gatewayv1.RegisterAgentGatewayServer(
+		grpcServer,
+		NewGRPCServer(&config.Config{HeartbeatPeriod: 100 * time.Millisecond}, sm),
+	)
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+	go func() {
+		_ = grpcServer.Serve(listener)
+	}()
+
+	conn, err := grpc.NewClient(
+		"passthrough:///bufnet",
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return listener.DialContext(ctx)
+		}),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial bufconn gRPC: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := gatewayv1.NewAgentGatewayClient(conn).AgentConnect(ctx)
+	if err != nil {
+		t.Fatalf("open agent stream: %v", err)
+	}
+
+	// The dedicated lane must deliver pings regardless of data-queue state.
+	if _, err := stream.Recv(); err != nil {
+		t.Fatalf("receive initial ping: %v", err)
+	}
+
+	// Never send a Pong: non-pong traffic alone must keep the session alive
+	// through several staleness windows (timeout = 3 x 100ms period).
+	deadline := time.Now().Add(700 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if err := stream.Send(&gatewayv1.AgentEnvelope{RequestId: "activity"}); err != nil {
+			t.Fatalf("send activity envelope: %v", err)
+		}
+		if !sm.IsOnline() {
+			t.Fatalf("session cleared while agent was actively sending")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Once traffic stops, the staleness sweep must still clear the session.
+	waitUntil := time.Now().Add(2 * time.Second)
+	for sm.IsOnline() {
+		if time.Now().After(waitUntil) {
+			t.Fatalf("session not cleared after inbound traffic stopped")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}

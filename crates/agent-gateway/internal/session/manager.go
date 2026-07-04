@@ -43,6 +43,7 @@ type AgentSession struct {
 	LastPing     time.Time
 
 	toAgent chan *OutboundEnvelope
+	pingCh  chan *gatewayv1.GatewayEnvelope
 	done    chan struct{}
 
 	closeOnce sync.Once

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log"
 	"strings"
 	"time"
 
@@ -67,9 +66,22 @@ func (s *GRPCServer) AgentConnect(stream gatewayv1.AgentGateway_AgentConnectServ
 		}
 	}()
 
+	pings := sess.Pings()
 	sendErrCh := make(chan error, 1)
 	go func() {
 		for {
+			// Heartbeats jump the shared data queue so congestion can never
+			// starve them.
+			select {
+			case ping := <-pings:
+				if err := stream.Send(ping); err != nil {
+					sendErrCh <- err
+					cancel()
+					return
+				}
+				continue
+			default:
+			}
 			select {
 			case <-ctx.Done():
 				sendErrCh <- ctx.Err()
@@ -78,6 +90,12 @@ func (s *GRPCServer) AgentConnect(stream gatewayv1.AgentGateway_AgentConnectServ
 				sendErrCh <- nil
 				cancel()
 				return
+			case ping := <-pings:
+				if err := stream.Send(ping); err != nil {
+					sendErrCh <- err
+					cancel()
+					return
+				}
 			case outbound := <-toAgent:
 				if outbound == nil || outbound.GatewayEnvelope == nil {
 					continue
@@ -119,8 +137,10 @@ func (s *GRPCServer) AgentConnect(stream gatewayv1.AgentGateway_AgentConnectServ
 			return err
 		}
 
+		// Any inbound envelope proves the agent is alive; a streaming agent
+		// must never be declared heartbeat-stale.
+		s.sm.TouchHeartbeat(sess)
 		if env.GetPong() != nil {
-			s.sm.TouchHeartbeat(sess)
 			continue
 		}
 
@@ -239,7 +259,7 @@ func (s *GRPCServer) heartbeatPeriod() time.Duration {
 }
 
 func (s *GRPCServer) sendHeartbeat(sess *session.AgentSession) bool {
-	ok, err := sess.TrySendToAgent(&gatewayv1.GatewayEnvelope{
+	return sess.SendPing(&gatewayv1.GatewayEnvelope{
 		RequestId: "ping-" + uuid.NewString(),
 		Timestamp: time.Now().Unix(),
 		Payload: &gatewayv1.GatewayEnvelope_Ping{
@@ -247,16 +267,5 @@ func (s *GRPCServer) sendHeartbeat(sess *session.AgentSession) bool {
 				Timestamp: time.Now().Unix(),
 			},
 		},
-	})
-	if errors.Is(err, session.ErrAgentOffline) {
-		return false
-	}
-	if err != nil {
-		log.Printf("send heartbeat failed: %v", err)
-		return false
-	}
-	if !ok {
-		log.Printf("skip heartbeat: outbound queue is full")
-	}
-	return true
+	}) == nil
 }

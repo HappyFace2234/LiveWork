@@ -109,8 +109,8 @@ type websocketConnection struct {
 	done       chan struct{}
 	authorized bool
 
-	lastPongAt time.Time
-	lastPongMu sync.Mutex
+	lastInboundAt time.Time
+	lastInboundMu sync.Mutex
 
 	historyEvents             <-chan *gatewayv1.HistorySyncEvent
 	historyEventsCleanup      func()
@@ -187,13 +187,13 @@ func (c *websocketConnection) serve() {
 			return
 		}
 
+		// Any inbound frame proves the client is alive — heartbeat pongs are
+		// not the only liveness evidence.
+		c.touchInboundActivity()
+
 		req.ID = strings.TrimSpace(req.ID)
 		req.Type = strings.TrimSpace(req.Type)
 		if req.Type == "pong" {
-			c.lastPongMu.Lock()
-			c.lastPongAt = time.Now()
-			c.lastPongMu.Unlock()
-			_ = c.conn.SetReadDeadline(time.Now().Add(c.pongTimeout()))
 			continue
 		}
 		if req.ID == "" {
@@ -281,7 +281,6 @@ func (c *websocketConnection) handleAuth(req websocketRequest) {
 
 	c.authorized = true
 	go c.writeLoop()
-	_ = c.conn.SetReadDeadline(time.Now().Add(c.pongTimeout()))
 	c.startHistorySyncForwarder()
 	c.startSettingsSyncForwarder()
 	c.startTerminalEventForwarder()
@@ -505,9 +504,6 @@ func (c *websocketConnection) startWebSocketHeartbeat() {
 		if period <= 0 {
 			period = 15 * time.Second
 		}
-		c.lastPongMu.Lock()
-		c.lastPongAt = time.Now()
-		c.lastPongMu.Unlock()
 		go func() {
 			ticker := time.NewTicker(period)
 			defer ticker.Stop()
@@ -516,10 +512,10 @@ func (c *websocketConnection) startWebSocketHeartbeat() {
 				case <-c.done:
 					return
 				case <-ticker.C:
-					c.lastPongMu.Lock()
-					lastPong := c.lastPongAt
-					c.lastPongMu.Unlock()
-					if time.Since(lastPong) > c.pongTimeout() {
+					c.lastInboundMu.Lock()
+					lastInbound := c.lastInboundAt
+					c.lastInboundMu.Unlock()
+					if time.Since(lastInbound) > c.idleTimeout() {
 						c.close()
 						return
 					}
@@ -537,7 +533,16 @@ func (c *websocketConnection) startWebSocketHeartbeat() {
 	})
 }
 
-func (c *websocketConnection) pongTimeout() time.Duration {
+// touchInboundActivity records liveness for every inbound frame and pushes the
+// read deadline forward accordingly.
+func (c *websocketConnection) touchInboundActivity() {
+	c.lastInboundMu.Lock()
+	c.lastInboundAt = time.Now()
+	c.lastInboundMu.Unlock()
+	_ = c.conn.SetReadDeadline(time.Now().Add(c.idleTimeout()))
+}
+
+func (c *websocketConnection) idleTimeout() time.Duration {
 	period := c.cfg.WebSocketHeartbeatPeriod
 	if period <= 0 {
 		period = 15 * time.Second
@@ -614,15 +619,41 @@ func (c *websocketConnection) writeEvent(eventType string, payload any) error {
 	})
 }
 
+var errWriteQueueFull = errors.New("write queue full")
+
 func (c *websocketConnection) writeEnvelope(envelope websocketEnvelope) error {
+	err := c.enqueueEnvelope(envelope)
+	if errors.Is(err, errWriteQueueFull) {
+		c.close()
+	}
+	return err
+}
+
+// enqueueEnvelope waits up to writeTimeout for a slot when the outbox is
+// momentarily full (token bursts to a slow reader); only a persistent backlog
+// is fatal. The fast path allocates nothing.
+func (c *websocketConnection) enqueueEnvelope(envelope websocketEnvelope) error {
 	select {
 	case <-c.done:
 		return errors.New("connection closed")
 	case c.outbox <- envelope:
 		return nil
 	default:
-		c.close()
-		return errors.New("write queue full")
+	}
+
+	timeout := c.writeTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-c.done:
+		return errors.New("connection closed")
+	case c.outbox <- envelope:
+		return nil
+	case <-timer.C:
+		return errWriteQueueFull
 	}
 }
 

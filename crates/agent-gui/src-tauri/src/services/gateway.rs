@@ -695,7 +695,10 @@ impl GatewayController {
         config_rx: &mut watch::Receiver<RemoteSettingsPayload>,
     ) -> Result<(), String> {
         let grpc_url = build_grpc_url(&config)?;
-        let endpoint = build_endpoint(&grpc_url)?;
+        // The heartbeat interval setting drives the h2 keepalive cadence; the
+        // lower bound stays above the gateway's keepalive enforcement MinTime.
+        let keepalive_interval = Duration::from_secs(config.heartbeat_interval.clamp(10, 60));
+        let endpoint = build_endpoint(&grpc_url, keepalive_interval)?;
         let channel = endpoint.connect_lazy();
 
         let mut client = proto::agent_gateway_client::AgentGatewayClient::new(channel)
@@ -782,8 +785,8 @@ impl GatewayController {
             }
             self.spawn_tunnel_probes(None, false);
 
-            let timeout_seconds = i64::try_from(config.heartbeat_interval.max(5)).unwrap_or(30) * 3;
-
+            // Dead links are detected by the transport-level HTTP/2 keepalive
+            // configured on the endpoint and surface as receive errors here.
             loop {
                 tokio::select! {
                     changed = config_rx.changed() => {
@@ -795,15 +798,11 @@ impl GatewayController {
                             return Ok(());
                         }
                     }
-                    message = tokio::time::timeout(
-                        Duration::from_secs(u64::try_from(timeout_seconds.max(5)).unwrap_or(15)),
-                        inbound.message(),
-                    ) => {
+                    message = inbound.message() => {
                         match message {
-                            Err(_) => return Err("gateway heartbeat timed out".to_string()),
-                            Ok(Err(err)) => return Err(format!("gateway stream receive failed: {err}")),
-                            Ok(Ok(None)) => return Err("gateway stream closed".to_string()),
-                            Ok(Ok(Some(envelope))) => {
+                            Err(err) => return Err(format!("gateway stream receive failed: {err}")),
+                            Ok(None) => return Err("gateway stream closed".to_string()),
+                            Ok(Some(envelope)) => {
                                 self.touch_heartbeat();
                                 self.handle_gateway_envelope(envelope).await?;
                             }
@@ -1016,14 +1015,19 @@ impl GatewayController {
 
         match envelope.payload {
             Some(proto::gateway_envelope::Payload::Ping(ping)) => {
-                self.send_agent_envelope(proto::AgentEnvelope {
-                    request_id,
-                    timestamp: now_unix_seconds(),
-                    payload: Some(proto::agent_envelope::Payload::Pong(proto::PongResponse {
-                        timestamp: ping.timestamp,
-                    })),
-                })
-                .await
+                // Never block the receive loop on outbound saturation: the
+                // gateway counts any inbound envelope as liveness, so a pong
+                // dropped under load is harmless.
+                if let Ok(sender) = self.current_outbound_sender() {
+                    let _ = sender.try_send(proto::AgentEnvelope {
+                        request_id,
+                        timestamp: now_unix_seconds(),
+                        payload: Some(proto::agent_envelope::Payload::Pong(proto::PongResponse {
+                            timestamp: ping.timestamp,
+                        })),
+                    });
+                }
+                Ok(())
             }
             Some(proto::gateway_envelope::Payload::TunnelState(snapshot)) => {
                 self.handle_tunnel_state_snapshot(snapshot);
@@ -4951,7 +4955,8 @@ mod tests {
 
     #[test]
     fn build_https_gateway_endpoint_initializes_tls_provider() {
-        build_endpoint("https://agent.cnweb.org:443").expect("build https gateway endpoint");
+        build_endpoint("https://agent.cnweb.org:443", Duration::from_secs(30))
+            .expect("build https gateway endpoint");
     }
 
     #[test]
@@ -5625,11 +5630,16 @@ fn is_h2_protocol_error(message: &str) -> bool {
     normalized.contains("h2 protocol error") || normalized.contains("http2 error")
 }
 
-fn build_endpoint(grpc_url: &str) -> Result<Endpoint, String> {
+fn build_endpoint(grpc_url: &str, keepalive_interval: Duration) -> Result<Endpoint, String> {
+    // HTTP/2 keepalive owns dead-link detection: PING frames bypass stream
+    // flow control, so congestion or streaming never delays them.
     let endpoint = Endpoint::from_shared(grpc_url.to_string())
         .map_err(|e| format!("invalid gateway endpoint: {e}"))?
         .connect_timeout(Duration::from_secs(10))
-        .tcp_keepalive(Some(Duration::from_secs(30)));
+        .tcp_keepalive(Some(Duration::from_secs(30)))
+        .http2_keep_alive_interval(keepalive_interval)
+        .keep_alive_timeout(Duration::from_secs(15))
+        .keep_alive_while_idle(true);
 
     if grpc_url.starts_with("https://") {
         ensure_rustls_crypto_provider();

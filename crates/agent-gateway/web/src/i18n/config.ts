@@ -1198,7 +1198,7 @@ export const translations: Record<Locale, Record<string, string>> = {
       "由桌面端 Remote 设置控制。开启后，已登录 WebUI 可为 localhost 或 IP 地址 HTTP 服务创建和关闭临时访问链接。",
     "settings.remoteHeartbeat": "心跳间隔",
     "settings.remoteHeartbeatUnit": "秒",
-    "settings.remoteHeartbeatHint": "与 Gateway 之间的心跳检测间隔，用于维持连接和检测在线状态",
+    "settings.remoteHeartbeatHint": "与 Gateway 连接的保活心跳间隔（生效范围 10-60 秒），用于维持连接和检测在线状态",
     "settings.remoteInfoBanner":
       "启用后，本地 LiveAgent 将通过 gRPC 双向流连接云端 Gateway。你可以在浏览器中通过 WebUI 远程发送 Chat 消息、管理 Cron 任务和查看历史记录。所有工具执行仍在本地完成，远程端仅转发指令和结果。",
 
@@ -2712,7 +2712,7 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.remoteHeartbeat": "Heartbeat Interval",
     "settings.remoteHeartbeatUnit": "seconds",
     "settings.remoteHeartbeatHint":
-      "Heartbeat interval with Gateway for maintaining connection and detecting online status",
+      "Keepalive heartbeat interval for the Gateway connection (effective range 10-60 seconds), used to maintain the connection and detect online status",
     "settings.remoteInfoBanner":
       "When enabled, the local LiveAgent connects to the cloud Gateway via gRPC bidirectional streaming. You can remotely send Chat messages, manage Cron tasks, and view history through the WebUI in your browser. All tool execution remains local — the remote end only relays commands and results.",
 

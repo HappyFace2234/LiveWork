@@ -261,14 +261,14 @@ func TestSendToAgentUnblocksWhenSessionCloses(t *testing.T) {
 	}
 }
 
-func TestSendToAgentContextReturnsWhenOutboundQueueIsFull(t *testing.T) {
+func TestSendToAgentContextTimeoutKeepsSessionAlive(t *testing.T) {
 	t.Parallel()
 
 	sm := newTestSessionManager()
 	sess := session.NewAgentSession(sm.LatestAuthSnapshot())
 	sm.SetSession(sess)
 
-	for i := 0; i < 64; i += 1 {
+	for i := 0; i < cap(sess.Outbound()); i += 1 {
 		if err := sm.SendToAgent(&gatewayv1.GatewayEnvelope{RequestId: fmt.Sprintf("queued-%d", i)}); err != nil {
 			t.Fatalf("prime outbound queue: %v", err)
 		}
@@ -281,8 +281,48 @@ func TestSendToAgentContextReturnsWhenOutboundQueueIsFull(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("SendToAgentContext with full queue = %v, want context deadline exceeded", err)
 	}
-	if status := sm.Status(); status.Online {
-		t.Fatalf("status online = true after SendToAgentContext timeout")
+	if status := sm.Status(); !status.Online {
+		t.Fatalf("status online = false after SendToAgentContext timeout; congestion must not kill the session")
+	}
+	select {
+	case <-sess.Done():
+		t.Fatalf("session closed after SendToAgentContext timeout")
+	default:
+	}
+}
+
+func TestSendPingBypassesFullOutboundQueue(t *testing.T) {
+	t.Parallel()
+
+	sm := newTestSessionManager()
+	sess := session.NewAgentSession(sm.LatestAuthSnapshot())
+	sm.SetSession(sess)
+
+	for i := 0; i < cap(sess.Outbound()); i += 1 {
+		if err := sm.SendToAgent(&gatewayv1.GatewayEnvelope{RequestId: fmt.Sprintf("queued-%d", i)}); err != nil {
+			t.Fatalf("prime outbound queue: %v", err)
+		}
+	}
+
+	if err := sess.SendPing(&gatewayv1.GatewayEnvelope{RequestId: "ping-1"}); err != nil {
+		t.Fatalf("SendPing with full outbound queue: %v", err)
+	}
+	if err := sess.SendPing(&gatewayv1.GatewayEnvelope{RequestId: "ping-2"}); err != nil {
+		t.Fatalf("SendPing replacing queued ping: %v", err)
+	}
+
+	select {
+	case ping := <-sess.Pings():
+		if ping.GetRequestId() != "ping-2" {
+			t.Fatalf("queued ping = %q, want latest ping-2", ping.GetRequestId())
+		}
+	default:
+		t.Fatalf("no ping queued on the dedicated lane")
+	}
+
+	sess.Close()
+	if err := sess.SendPing(&gatewayv1.GatewayEnvelope{RequestId: "ping-3"}); !errors.Is(err, session.ErrAgentOffline) {
+		t.Fatalf("SendPing after close = %v, want ErrAgentOffline", err)
 	}
 }
 

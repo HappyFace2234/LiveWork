@@ -29,6 +29,10 @@ func (m *Manager) dispatchFromAgent(expected *AgentSession, env *gatewayv1.Agent
 		return
 	}
 
+	if env.GetChatEvent() != nil || env.GetChatControl() != nil || env.GetChatRuntimeSnapshot() != nil {
+		m.touchRuntimeActivity(session)
+	}
+
 	if runtimeSnapshot := env.GetChatRuntimeSnapshot(); runtimeSnapshot != nil {
 		m.ingestRuntimeSnapshot(runtimeSnapshot)
 		return

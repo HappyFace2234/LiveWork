@@ -1044,6 +1044,10 @@ function isRecoverableGatewayTransportError(error: unknown) {
   );
 }
 
+function isRequestTimeoutError(error: unknown) {
+  return asErrorMessage(error, "").startsWith("Gateway WebSocket request timed out");
+}
+
 const RECOVERABLE_MEMORY_MANAGE_COMMANDS = new Set([
   "memory_list",
   "memory_read",
@@ -1097,6 +1101,7 @@ export class GatewayWebSocketClient {
   });
   private terminalSessionSnapshot = new Map<string, TerminalSession>();
   private statusPollTimer: number | null = null;
+  private statusRefreshInFlight = false;
   private lastStatus: AgentStatus | null = null;
   private lastStatusError: string | null = null;
   private lastInboundAt = 0;
@@ -2179,7 +2184,23 @@ export class GatewayWebSocketClient {
     }
   }
 
+  // The transport is demonstrably alive while frames keep arriving; a starved
+  // status.get during a chat.event burst must not flip the UI to offline.
+  private hasFreshInboundActivity() {
+    return (
+      this.socket !== null &&
+      this.authenticated &&
+      this.socket.readyState === WebSocket.OPEN &&
+      this.lastInboundAt > 0 &&
+      Date.now() - this.lastInboundAt < SOCKET_INBOUND_STALL_MS
+    );
+  }
+
   private async refreshStatus() {
+    if (this.statusRefreshInFlight) {
+      return;
+    }
+    this.statusRefreshInFlight = true;
     try {
       const status = await this.getStatus();
       this.clearReconnectNoticeTimer();
@@ -2188,6 +2209,10 @@ export class GatewayWebSocketClient {
       if (isRecoverableGatewayTransportError(error) && this.shouldMaintainConnection()) {
         this.scheduleReconnect();
         this.scheduleReconnectNotice();
+        return;
+      }
+      if (isRequestTimeoutError(error) && this.hasFreshInboundActivity()) {
+        // Keep the last known status; the next poll retries.
         return;
       }
       const message = asErrorMessage(error, "status request failed");
@@ -2201,6 +2226,8 @@ export class GatewayWebSocketClient {
       this.lastStatus = offlineStatus;
       this.lastStatusError = message;
       this.emitStatus(offlineStatus, message);
+    } finally {
+      this.statusRefreshInFlight = false;
     }
   }
 
