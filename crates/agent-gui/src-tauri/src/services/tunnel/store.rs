@@ -56,6 +56,10 @@ struct TunnelStoreState {
     gateway_unsupported: bool,
     publish_epoch: u64,
     snapshot_epoch: u64,
+    /// Monotonic sequence stamped onto every emitted `TunnelStatePayload`.
+    /// This is the only revision the frontend ever sees; neither the gateway
+    /// process counter nor the local desired-state `revision` leaks through.
+    emit_seq: u64,
 }
 
 pub struct TunnelStore {
@@ -212,10 +216,9 @@ impl TunnelStore {
             }
             state.gateway_unsupported = false;
             state.snapshot_epoch = state.publish_epoch;
-            state.last_snapshot = Some(payload.clone());
             changed
         };
-        self.emit_state(&payload);
+        self.publish(payload);
         Ok(changed)
     }
 
@@ -224,9 +227,23 @@ impl TunnelStore {
     }
 
     pub(super) fn cache_and_emit(&self, payload: TunnelStatePayload) {
-        if let Ok(mut state) = self.lock_state() {
-            state.last_snapshot = Some(payload.clone());
-        }
+        self.publish(payload);
+    }
+
+    /// The single publish path for `gateway:tunnel-state`: stamps the payload
+    /// with the next `emit_seq` (overwriting whatever placeholder revision
+    /// the builder left) and caches it before emitting, so the initial
+    /// `gateway_tunnel_state` pull and the event stream share one strictly
+    /// monotonic revision domain regardless of whether the payload came from
+    /// a gateway snapshot or a local rebuild.
+    fn publish(&self, payload: TunnelStatePayload) {
+        let payload = match self.lock_state() {
+            Ok(mut state) => stamp_and_cache(&mut state, payload),
+            Err(error) => {
+                eprintln!("publish gateway tunnel state failed: {error}");
+                return;
+            }
+        };
         self.emit_state(&payload);
     }
 
@@ -246,40 +263,11 @@ impl TunnelStore {
         agent_online: bool,
     ) -> Result<TunnelStatePayload, String> {
         let state = self.lock_state()?;
-        let now = now_unix_seconds();
-        let mut specs = state
-            .specs
-            .values()
-            .filter(|spec| !spec_expired(spec, now))
-            .cloned()
-            .collect::<Vec<_>>();
-        specs.sort_by(|a, b| {
-            a.created_at
-                .cmp(&b.created_at)
-                .then_with(|| a.id.cmp(&b.id))
-        });
-        let tunnels = specs
-            .into_iter()
-            .map(|spec| TunnelStatusPayload {
-                local: state.local_health.get(&spec.id).cloned(),
-                id: spec.id,
-                slug: String::new(),
-                name: spec.name,
-                target_url: spec.target_url,
-                public_path: String::new(),
-                created_at: spec.created_at,
-                expires_at: spec.expires_at,
-                active_connections: 0,
-                project_path_key: spec.project_path_key,
-            })
-            .collect();
-        Ok(TunnelStatePayload {
-            revision: state.revision,
+        Ok(build_local_state_payload(
+            &state,
             agent_online,
-            relay: None,
-            tunnels,
-            gateway_unsupported: state.gateway_unsupported.then_some(true),
-        })
+            now_unix_seconds(),
+        ))
     }
 
     /// Returns `(tunnel_id, target_url)` pairs due for a local probe and
@@ -334,6 +322,60 @@ impl TunnelStore {
             state.local_health.insert(tunnel_id.clone(), health.clone());
         }
         Ok(())
+    }
+}
+
+/// Stamps the payload with the next emission sequence and caches it as the
+/// latest snapshot. Runs with the store lock held, so interleaved gateway
+/// snapshots and local rebuilds still receive strictly increasing revisions.
+fn stamp_and_cache(
+    state: &mut TunnelStoreState,
+    mut payload: TunnelStatePayload,
+) -> TunnelStatePayload {
+    state.emit_seq += 1;
+    payload.revision = state.emit_seq;
+    state.last_snapshot = Some(payload.clone());
+    payload
+}
+
+fn build_local_state_payload(
+    state: &TunnelStoreState,
+    agent_online: bool,
+    now: i64,
+) -> TunnelStatePayload {
+    let mut specs = state
+        .specs
+        .values()
+        .filter(|spec| !spec_expired(spec, now))
+        .cloned()
+        .collect::<Vec<_>>();
+    specs.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let tunnels = specs
+        .into_iter()
+        .map(|spec| TunnelStatusPayload {
+            local: state.local_health.get(&spec.id).cloned(),
+            id: spec.id,
+            slug: String::new(),
+            name: spec.name,
+            target_url: spec.target_url,
+            public_path: String::new(),
+            created_at: spec.created_at,
+            expires_at: spec.expires_at,
+            active_connections: 0,
+            project_path_key: spec.project_path_key,
+        })
+        .collect();
+    TunnelStatePayload {
+        // Placeholder: `TunnelStore::publish` injects the real revision.
+        revision: 0,
+        agent_online,
+        relay: None,
+        tunnels,
+        gateway_unsupported: state.gateway_unsupported.then_some(true),
     }
 }
 
@@ -453,7 +495,10 @@ fn random_url_token(byte_count: usize) -> String {
 
 fn tunnel_state_payload_from_proto(snapshot: &proto::TunnelStateSnapshot) -> TunnelStatePayload {
     TunnelStatePayload {
-        revision: snapshot.revision,
+        // Placeholder: `TunnelStore::publish` injects the real revision. The
+        // gateway process counter lives in a different domain and must never
+        // reach the frontend's monotonicity guard.
+        revision: 0,
         agent_online: snapshot.agent_online,
         relay: snapshot
             .relay
@@ -574,9 +619,11 @@ fn delete_tunnel_spec_sync(conn: &Connection, tunnel_id: &str) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::{
-        generate_tunnel_id, normalize_tunnel_ttl, prepare_create_spec, prepare_update_spec,
-        tunnel_expires_at, TunnelStoreState, TUNNEL_DEFAULT_TTL_SECONDS,
+        build_local_state_payload, generate_tunnel_id, normalize_tunnel_ttl, prepare_create_spec,
+        prepare_update_spec, stamp_and_cache, tunnel_expires_at, tunnel_state_payload_from_proto,
+        TunnelStoreState, TUNNEL_DEFAULT_TTL_SECONDS,
     };
+    use crate::services::gateway::proto;
     use crate::services::tunnel::{GatewayTunnelCreateInput, GatewayTunnelUpdateInput};
 
     fn create_input(target_url: &str) -> GatewayTunnelCreateInput {
@@ -586,6 +633,46 @@ mod tests {
             ttl_seconds: None,
             project_path_key: Some("/workspace/project".to_string()),
         }
+    }
+
+    #[test]
+    fn emitted_revisions_stay_monotonic_across_snapshot_and_local_paths() {
+        let mut state = TunnelStoreState::default();
+
+        // The gateway process counter must never leak into the emitted
+        // revision domain.
+        let snapshot = proto::TunnelStateSnapshot {
+            revision: 999,
+            agent_online: true,
+            ..Default::default()
+        };
+        let gateway_payload = tunnel_state_payload_from_proto(&snapshot);
+        assert_eq!(gateway_payload.revision, 0, "builder leaves a placeholder");
+
+        let first = stamp_and_cache(&mut state, gateway_payload.clone());
+        let local_payload = build_local_state_payload(&state, false, 1_000);
+        let second = stamp_and_cache(&mut state, local_payload);
+        let third = stamp_and_cache(&mut state, gateway_payload);
+
+        assert_eq!(first.revision, 1);
+        assert_eq!(second.revision, 2);
+        assert_eq!(third.revision, 3);
+        assert_eq!(state.last_snapshot.as_ref().unwrap().revision, 3);
+    }
+
+    #[test]
+    fn local_state_payload_reports_agent_offline() {
+        let mut state = TunnelStoreState::default();
+        let now = 1_000;
+        let spec = prepare_create_spec(&state, create_input("http://localhost:3000"), now)
+            .expect("create spec");
+        state.specs.insert(spec.id.clone(), spec);
+
+        let payload = build_local_state_payload(&state, false, now);
+        assert!(!payload.agent_online);
+        assert_eq!(payload.tunnels.len(), 1);
+        assert!(payload.tunnels[0].slug.is_empty());
+        assert_eq!(payload.revision, 0, "revision is assigned at publish time");
     }
 
     #[test]

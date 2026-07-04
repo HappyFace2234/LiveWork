@@ -26,9 +26,7 @@ impl GatewayController {
             if !config.enabled || !is_remote_configured(&config) {
                 self.set_outbound_sender(None);
                 self.set_terminal_stream_sender(None);
-                self.publish_status(|status| {
-                    set_disconnected_status(status, &config, None);
-                });
+                self.publish_disconnected_status(&config, None);
                 if config_rx.changed().await.is_err() {
                     break;
                 }
@@ -45,16 +43,11 @@ impl GatewayController {
             self.set_outbound_sender(None);
             self.set_terminal_stream_sender(None);
             if reconfigured {
-                self.publish_status(|status| {
-                    set_disconnected_status(status, &latest_config, None);
-                });
+                self.publish_disconnected_status(&latest_config, None);
                 continue;
             }
 
-            self.publish_status(|status| match connect_result.as_ref() {
-                Ok(()) => set_disconnected_status(status, &current_config, None),
-                Err(error) => set_disconnected_status(status, &current_config, Some(error.clone())),
-            });
+            self.publish_disconnected_status(&current_config, connect_result.as_ref().err().cloned());
 
             if config_rx.has_changed().unwrap_or(false) {
                 continue;
@@ -304,6 +297,19 @@ impl GatewayController {
         self.publish_status(|status| {
             status.last_heartbeat = Some(now_unix_seconds());
         });
+    }
+
+    /// Publishes a disconnected gateway status and mirrors the offline state
+    /// onto the tunnel event channel: without the mirror, the tunnel panel's
+    /// `agentOnline` badge would keep the last gateway snapshot's stale
+    /// "online" until the next snapshot — which never arrives while offline.
+    pub(crate) fn publish_disconnected_status(
+        &self,
+        config: &RemoteSettingsPayload,
+        last_error: Option<String>,
+    ) {
+        self.publish_status(|status| set_disconnected_status(status, config, last_error));
+        self.emit_local_tunnel_state();
     }
 
     pub(crate) fn publish_status(&self, mutate: impl FnOnce(&mut GatewayStatusSnapshot)) {
