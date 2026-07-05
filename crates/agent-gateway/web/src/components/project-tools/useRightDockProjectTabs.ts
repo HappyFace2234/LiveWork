@@ -1,26 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { RightDockProjectState } from "@/lib/settings";
-import type { TerminalSession } from "@/lib/terminal/types";
 import {
-  createRightDockSingletonTab,
-  FILE_TREE_TAB_ID,
+  openRightDockToolTabState,
+  type RightDockProjectState,
+  rightDockToolKindForTabId,
+} from "../../lib/settings";
+import type { TerminalSession } from "../../lib/terminal/types";
+import {
+  closeRightDockToolTabState,
   getCurrentRightDockActiveTab,
   getRightDockVisibleTabs,
-  GIT_REVIEW_TAB_ID,
   orderRightDockVisibleTabs,
-  removeRightDockTabFromState,
-  rightDockSingletonTabId,
-  sameRightDockOrder,
-  SSH_TUNNEL_TAB_ID,
-  tabOrderIdsEqual,
-  TUNNEL_TAB_ID,
   type RightDockSingletonTabKind,
+  resolveEffectiveActiveTabId,
+  rightDockNeighborTabId,
+  rightDockSingletonTabId,
+  sameStringArray,
 } from "./rightDockModel";
 
 type UseRightDockProjectTabsOptions = {
   localSessions: TerminalSession[];
   projectPathKey: string;
   projectState: RightDockProjectState;
+  sessionsLoaded: boolean;
   tunnelAvailable: boolean;
   onProjectStateChange: (
     updater: (current: RightDockProjectState) => RightDockProjectState,
@@ -33,13 +34,14 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
     onProjectStateChange,
     projectPathKey,
     projectState,
+    sessionsLoaded,
     tunnelAvailable,
   } = options;
   const [draftTabOrder, setDraftTabOrder] = useState<string[] | null>(null);
-  const fileTreeInitialized = Boolean(projectPathKey && projectState.tabs[FILE_TREE_TAB_ID]);
-  const gitReviewInitialized = Boolean(projectPathKey && projectState.tabs[GIT_REVIEW_TAB_ID]);
-  const tunnelInitialized = Boolean(projectState.tabs[TUNNEL_TAB_ID] && tunnelAvailable);
-  const sshTunnelInitialized = Boolean(projectPathKey && projectState.tabs[SSH_TUNNEL_TAB_ID]);
+  const fileTreeInitialized = Boolean(projectPathKey && projectState.tools.fileTree);
+  const gitReviewInitialized = Boolean(projectPathKey && projectState.tools.gitReview);
+  const tunnelInitialized = Boolean(projectState.tools.tunnel && tunnelAvailable);
+  const sshTunnelInitialized = Boolean(projectPathKey && projectState.tools.sshTunnel);
   const visibleTabs = useMemo(
     () =>
       getRightDockVisibleTabs({
@@ -59,11 +61,16 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
     () => orderedProjectTabs.map((tab) => tab.id),
     [orderedProjectTabs],
   );
-  const currentActiveTab = getCurrentRightDockActiveTab(projectState.activeTabId, visibleTabs);
+  const effectiveActiveTabId = resolveEffectiveActiveTabId(
+    projectState.activeTabId,
+    orderedProjectTabIds,
+    sessionsLoaded,
+  );
+  const currentActiveTab = getCurrentRightDockActiveTab(effectiveActiveTabId, visibleTabs);
 
   useEffect(() => {
     if (!draftTabOrder) return;
-    if (tabOrderIdsEqual(draftTabOrder, projectState.tabOrder)) {
+    if (sameStringArray(draftTabOrder, projectState.tabOrder)) {
       setDraftTabOrder(null);
     }
   }, [draftTabOrder, projectState.tabOrder]);
@@ -80,7 +87,6 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
               tabOrder: current.tabOrder.includes(tabId)
                 ? current.tabOrder
                 : [...current.tabOrder, tabId],
-              stateVersion: current.stateVersion + 1,
             },
       );
     },
@@ -89,64 +95,41 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
 
   const openSingletonTab = useCallback(
     (kind: RightDockSingletonTabKind) => {
-      const tabId = rightDockSingletonTabId(kind);
-      onProjectStateChange((current) => {
-        const tab = current.tabs[tabId] ?? createRightDockSingletonTab(kind, projectPathKey);
-        const tabs = current.tabs[tabId] ? current.tabs : { ...current.tabs, [tabId]: tab };
-        const tabOrder = current.tabOrder.includes(tabId)
-          ? current.tabOrder
-          : [...current.tabOrder, tabId];
-        if (
-          current.activeTabId === tabId &&
-          tabs === current.tabs &&
-          tabOrder === current.tabOrder
-        ) {
-          return current;
-        }
-        return {
-          ...current,
-          activeTabId: tabId,
-          tabOrder,
-          tabs,
-          openVersion: current.openVersion + (current.tabs[tabId] ? 0 : 1),
-          stateVersion: current.stateVersion + 1,
-        };
-      });
+      onProjectStateChange((current) => openRightDockToolTabState(current, kind));
     },
-    [onProjectStateChange, projectPathKey],
+    [onProjectStateChange],
   );
 
   const closeToolTab = useCallback(
     (kind: RightDockSingletonTabKind) => {
-      const tabId = rightDockSingletonTabId(kind);
-      onProjectStateChange((current) => removeRightDockTabFromState(current, tabId));
+      const fallback = rightDockNeighborTabId(orderedProjectTabIds, rightDockSingletonTabId(kind));
+      onProjectStateChange((current) => closeRightDockToolTabState(current, kind, fallback));
     },
-    [onProjectStateChange],
+    [onProjectStateChange, orderedProjectTabIds],
   );
 
+  // Reorders are user gestures, so they double as the lazy GC point for dead
+  // session ids — but only once the session list is actually known.
   const commitTabOrder = useCallback(
     (nextOrder: string[]) => {
+      const liveSessionIds = new Set(localSessions.map((session) => session.id));
       onProjectStateChange((current) => {
-        const knownIds = new Set(Object.keys(current.tabs));
-        const ordered: string[] = [];
-        for (const id of nextOrder) {
-          if (knownIds.has(id) && !ordered.includes(id)) ordered.push(id);
-        }
-        for (const id of current.tabOrder) {
-          if (knownIds.has(id) && !ordered.includes(id)) ordered.push(id);
-        }
-        for (const id of Object.keys(current.tabs)) {
-          if (!ordered.includes(id)) ordered.push(id);
-        }
-        if (sameRightDockOrder(current.tabOrder, ordered)) return current;
-        return {
-          ...current,
-          tabOrder: ordered,
-          stateVersion: current.stateVersion + 1,
+        const keepsId = (id: string) => {
+          const toolKind = rightDockToolKindForTabId(id);
+          if (toolKind) return Boolean(current.tools[toolKind]);
+          return liveSessionIds.has(id) || !sessionsLoaded;
         };
+        const ordered: string[] = [];
+        const push = (id: string) => {
+          if (id && keepsId(id) && !ordered.includes(id)) ordered.push(id);
+        };
+        for (const id of nextOrder) push(id);
+        for (const id of current.tabOrder) push(id);
+        if (sameStringArray(current.tabOrder, ordered)) return current;
+        return { ...current, tabOrder: ordered };
       });
     },
-    [onProjectStateChange],
+    [localSessions, onProjectStateChange, sessionsLoaded],
   );
 
   return {
@@ -155,6 +138,7 @@ export function useRightDockProjectTabs(options: UseRightDockProjectTabsOptions)
     closeToolTab,
     commitTabOrder,
     currentActiveTab,
+    effectiveActiveTabId,
     fileTreeInitialized,
     gitReviewInitialized,
     openSingletonTab,

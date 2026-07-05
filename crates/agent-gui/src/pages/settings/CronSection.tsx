@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  AlertTriangle,
   Clock3,
   Eye,
   Globe,
@@ -12,9 +13,15 @@ import {
 
 import { Button } from "../../components/ui/button";
 import { useLocale } from "../../i18n";
+import {
+  applyCronOps,
+  type CronTask,
+  type CronTaskType,
+  useAutomation,
+} from "../../lib/automation";
 import { buildModelOptions } from "../../lib/chat/page/chatPageHelpers";
-import { isAgentExecutionMode, updateCronTasks } from "../../lib/settings";
-import { type CronTask, CronTaskModal, type CronTaskType } from "./CronTaskModal";
+import { isAgentExecutionMode } from "../../lib/settings";
+import { type CronTaskFormData, CronTaskModal } from "./CronTaskModal";
 import { CronTaskViewModal } from "./CronTaskViewModal";
 import { AgentActivationSwitch, ConfirmDeletePopover } from "./shared";
 import type { SettingsSectionProps } from "./types";
@@ -46,7 +53,7 @@ const TASK_TYPE_TONE: Record<CronTaskType, { bg: string; text: string; label: st
 type ModalState =
   | { open: false }
   | { open: true; mode: "add" | "edit"; task?: CronTask }
-  | { open: true; mode: "view"; task: CronTask };
+  | { open: true; mode: "view"; taskId: string };
 
 function isCronTaskExhausted(task: CronTask) {
   return task.remainingExecutions === 0;
@@ -59,10 +66,12 @@ function formatRemainingExecutionsLabel(t: (key: string) => string, task: CronTa
 }
 
 export function CronSection(props: SettingsSectionProps) {
-  const { settings, setSettings } = props;
+  const { settings } = props;
   const { t } = useLocale();
   const [modal, setModal] = useState<ModalState>({ open: false });
-  const tasks = settings.cron;
+  const [actionError, setActionError] = useState<string | null>(null);
+  const { cron } = useAutomation();
+  const tasks = cron.tasks;
   const autoPromptSupported = isAgentExecutionMode(settings.system.executionMode);
   const modelOptions = useMemo(
     () =>
@@ -74,42 +83,33 @@ export function CronSection(props: SettingsSectionProps) {
     [settings],
   );
 
-  function handleAdd(data: Omit<CronTask, "id">) {
-    const newTask: CronTask = { ...data, id: crypto.randomUUID() };
-    setSettings((prev) => updateCronTasks(prev, [...prev.cron, newTask]));
+  function runOps(run: () => Promise<unknown>) {
+    setActionError(null);
+    void run().catch((error) => {
+      setActionError(error instanceof Error ? error.message : String(error));
+    });
+  }
+
+  async function handleAdd(data: CronTaskFormData) {
+    setActionError(null);
+    await applyCronOps([{ op: "create", item: { ...data, enabled: true } }]);
     setModal({ open: false });
   }
 
-  function handleEdit(data: Omit<CronTask, "id">) {
+  async function handleEdit(data: CronTaskFormData) {
     if (!modal.open || modal.mode !== "edit" || !modal.task) return;
-    const editId = modal.task.id;
-    setSettings((prev) =>
-      updateCronTasks(
-        prev,
-        prev.cron.map((task) => (task.id === editId ? { ...data, id: editId } : task)),
-      ),
-    );
+    setActionError(null);
+    await applyCronOps([{ op: "update", id: modal.task.id, patch: { ...data } }]);
     setModal({ open: false });
   }
 
   function handleDelete(id: string) {
-    setSettings((prev) =>
-      updateCronTasks(
-        prev,
-        prev.cron.filter((task) => task.id !== id),
-      ),
-    );
+    runOps(() => applyCronOps([{ op: "delete", id }]));
   }
 
-  function handleToggle(id: string) {
-    setSettings((prev) =>
-      updateCronTasks(
-        prev,
-        prev.cron.map((task) =>
-          task.id === id && !isCronTaskExhausted(task) ? { ...task, enabled: !task.enabled } : task,
-        ),
-      ),
-    );
+  function handleToggle(task: CronTask) {
+    if (isCronTaskExhausted(task)) return;
+    runOps(() => applyCronOps([{ op: "update", id: task.id, patch: { enabled: !task.enabled } }]));
   }
 
   const enabledCount = tasks.filter((task) => task.enabled).length;
@@ -153,13 +153,20 @@ export function CronSection(props: SettingsSectionProps) {
         </div>
       </div>
 
-      {/* Task List */}
       {!autoPromptSupported ? (
         <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] px-4 py-3 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
           {t("settings.cronPromptAgentModeOnlyHint")}
         </div>
       ) : null}
 
+      {actionError ? (
+        <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{actionError}</span>
+        </div>
+      ) : null}
+
+      {/* Task List */}
       {tasks.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border/60 bg-muted/20 py-12 text-center">
           <Clock3 className="mx-auto h-8 w-8 text-muted-foreground/30" />
@@ -208,6 +215,15 @@ export function CronSection(props: SettingsSectionProps) {
                       >
                         {t(tone.label)}
                       </span>
+                      {task.lastError ? (
+                        <span
+                          title={task.lastError}
+                          className="flex shrink-0 items-center gap-1 rounded-full bg-red-500/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-red-600 dark:text-red-400"
+                        >
+                          <AlertTriangle className="h-2.5 w-2.5" />
+                          {t("settings.cronScheduleError")}
+                        </span>
+                      ) : null}
                     </div>
                     <p className="mt-0.5 truncate text-xs text-muted-foreground">
                       {task.description}
@@ -241,7 +257,7 @@ export function CronSection(props: SettingsSectionProps) {
                   <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
                     <button
                       type="button"
-                      onClick={() => setModal({ open: true, mode: "view", task })}
+                      onClick={() => setModal({ open: true, mode: "view", taskId: task.id })}
                       className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
                       title={t("settings.cronView")}
                     >
@@ -275,7 +291,7 @@ export function CronSection(props: SettingsSectionProps) {
                       checked={task.enabled}
                       disabled={exhausted}
                       title={switchTitle}
-                      onToggle={() => handleToggle(task.id)}
+                      onToggle={() => handleToggle(task)}
                     />
                   </span>
                 </div>
@@ -299,7 +315,7 @@ export function CronSection(props: SettingsSectionProps) {
 
       {/* View Modal */}
       {modal.open && modal.mode === "view" ? (
-        <CronTaskViewModal task={modal.task} onClose={() => setModal({ open: false })} />
+        <CronTaskViewModal taskId={modal.taskId} onClose={() => setModal({ open: false })} />
       ) : null}
     </div>
   );

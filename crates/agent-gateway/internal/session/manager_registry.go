@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -34,7 +35,6 @@ func (m *Manager) IsOnline() bool {
 func (m *Manager) SetSession(s *AgentSession) {
 	m.registry.mu.Lock()
 	previous := m.registry.session
-	previousEpoch := m.registry.sessionEpoch
 	if m.registry.authValid {
 		s.AgentID = m.registry.lastAuth.AgentID
 		s.AgentVersion = m.registry.lastAuth.AgentVersion
@@ -53,7 +53,15 @@ func (m *Manager) SetSession(s *AgentSession) {
 	}
 	if previous != nil && previous != s {
 		previous.Close()
-		m.failOpenChatRunsForSessionEpoch(previousEpoch, agentDisconnectedChatRunMessage)
+	}
+	if s != nil && sessionChanged {
+		m.cmdQueue.DrainTo(s)
+		// Replay the watched-workdir set: a freshly connected agent starts
+		// with an empty watch set and only learns a non-empty one from this
+		// push. An empty set needs no replay.
+		if m.hasWorkspaceWatchInterest() {
+			go m.pushWorkspaceWatchSet()
+		}
 	}
 }
 
@@ -63,7 +71,6 @@ func (m *Manager) ClearSession(session *AgentSession) {
 		m.registry.mu.Unlock()
 		return
 	}
-	clearedEpoch := m.registry.sessionEpoch
 	m.registry.session = nil
 	clearRuntimeStatusLocked(m.registry)
 	m.registry.mu.Unlock()
@@ -74,7 +81,7 @@ func (m *Manager) ClearSession(session *AgentSession) {
 
 	session.Close()
 	m.clearTerminalSessionSnapshot()
-	m.failOpenChatRunsForSessionEpoch(clearedEpoch, agentDisconnectedChatRunMessage)
+	go m.onAgentSessionCleared()
 }
 
 func (m *Manager) ClearSessionIfHeartbeatStale(session *AgentSession, timeout time.Duration) bool {
@@ -92,18 +99,17 @@ func (m *Manager) ClearSessionIfHeartbeatStale(session *AgentSession, timeout ti
 		m.registry.mu.Unlock()
 		return false
 	}
-	clearedEpoch := m.registry.sessionEpoch
 	m.registry.session = nil
 	clearRuntimeStatusLocked(m.registry)
 	m.registry.mu.Unlock()
 
 	session.Close()
 	m.clearTerminalSessionSnapshot()
-	m.failOpenChatRunsForSessionEpoch(clearedEpoch, agentDisconnectedChatRunMessage)
+	go m.onAgentSessionCleared()
 	return true
 }
 
-func (m *Manager) ClearSessionForEpoch(sessionEpoch uint64) bool {
+func (m *Manager) clearSessionForEpoch(sessionEpoch uint64) bool {
 	m.registry.mu.Lock()
 	session := m.registry.session
 	if session == nil || m.registry.sessionEpoch != sessionEpoch {
@@ -116,7 +122,7 @@ func (m *Manager) ClearSessionForEpoch(sessionEpoch uint64) bool {
 
 	session.Close()
 	m.clearTerminalSessionSnapshot()
-	m.failOpenChatRunsForSessionEpoch(sessionEpoch, agentDisconnectedChatRunMessage)
+	go m.onAgentSessionCleared()
 	return true
 }
 
@@ -181,6 +187,20 @@ func (m *Manager) UpdateRuntimeStatus(
 	m.registry.runtimeActiveRunCount = event.GetActiveRunCount()
 }
 
+// touchRuntimeActivity refreshes the chat-runtime heartbeat when live chat
+// traffic proves the desktop runtime is running, even while the webview's
+// own status timer is throttled (hidden/occluded window). Only refreshes an
+// already-reporting runtime: a zero heartbeat must not become readiness
+// (normalizeRuntimeState("") defaults to "ready").
+func (m *Manager) touchRuntimeActivity(session *AgentSession) {
+	m.registry.mu.Lock()
+	defer m.registry.mu.Unlock()
+	if m.registry.session != session || m.registry.runtimeLastHeartbeat.IsZero() {
+		return
+	}
+	m.registry.runtimeLastHeartbeat = time.Now()
+}
+
 func (m *Manager) TouchHeartbeat(session *AgentSession) {
 	m.registry.mu.Lock()
 	defer m.registry.mu.Unlock()
@@ -232,10 +252,7 @@ func (m *Manager) SendToAgent(env *gatewayv1.GatewayEnvelope) error {
 	if session == nil {
 		return ErrAgentOffline
 	}
-
-	err := session.SendToAgent(env)
-	m.clearSessionAfterSendError(session, err)
-	return err
+	return session.SendToAgent(env)
 }
 
 func (m *Manager) SendToAgentContext(ctx context.Context, env *gatewayv1.GatewayEnvelope) error {
@@ -245,17 +262,15 @@ func (m *Manager) SendToAgentContext(ctx context.Context, env *gatewayv1.Gateway
 	if session == nil {
 		return ErrAgentOffline
 	}
-
-	err := session.SendToAgentContext(ctx, env)
-	m.clearSessionAfterSendError(session, err)
-	return err
+	return session.SendToAgentContext(ctx, env)
 }
 
-func (m *Manager) clearSessionAfterSendError(session *AgentSession, err error) {
-	if err == nil || session == nil {
-		return
+func (m *Manager) SendToAgentOrQueue(ctx context.Context, env *gatewayv1.GatewayEnvelope) error {
+	err := m.SendToAgentContext(ctx, env)
+	if errors.Is(err, ErrAgentOffline) {
+		return m.cmdQueue.Enqueue(ctx, env)
 	}
-	m.ClearSession(session)
+	return err
 }
 
 func (m *Manager) currentSessionEpoch() uint64 {

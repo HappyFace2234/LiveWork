@@ -1,197 +1,66 @@
 import type { RefObject } from "react";
 import { useLocale } from "../../i18n";
-import type { GitClient } from "../../lib/git/types";
-import type {
-  RightDockFileTreeState,
-  RightDockFileTreeStatePatch,
-  RightDockTabKind,
-  SshHostConfig,
-} from "../../lib/settings";
+import type { RightDockTabKind } from "../../lib/settings";
 import { cn } from "../../lib/shared/utils";
-import type { TerminalClient, TerminalSession, TerminalSnapshot } from "../../lib/terminal/types";
+import type { TerminalSession, TerminalSnapshot } from "../../lib/terminal/types";
 import { Terminal } from "../icons";
 import { Button } from "../ui/button";
-import {
-  type GitCommitContextPayload,
-  type GitFileContextPayload,
-  GitReviewPanel,
-} from "./GitReviewPanel";
-import { type LocalTunnelClient, LocalTunnelPanel } from "./LocalTunnelPanel";
-import { ProjectFileTreePanel } from "./ProjectFileTreePanel";
-import { SshTunnelPanel } from "./SshTunnelPanel";
+import { useRightDockToolContext } from "./RightDockContext";
+import { RIGHT_DOCK_TOOL_DEFINITIONS, type RightDockSingletonTabKind } from "./rightDockRegistry";
 import { XTermViewport } from "./XTermViewport";
 
 type RightDockContentProps = {
-  projectPathKey: string;
-  cwd: string;
   currentActiveTab: RightDockTabKind;
-  fileTreeInitialized: boolean;
-  gitReviewInitialized: boolean;
-  tunnelInitialized: boolean;
-  sshTunnelInitialized: boolean;
-  fileTreeState: RightDockFileTreeState;
-  gitClient?: GitClient | null;
-  gitWriteEnabled: boolean;
-  gitDisabledMessage?: string;
-  tunnelClient?: LocalTunnelClient | null;
-  tunnelEnabled: boolean;
-  tunnelDisabledMessage?: string;
-  tunnelRefreshToken?: number;
-  sshHosts: SshHostConfig[];
-  associatedSshHostIds: string[];
-  client: TerminalClient;
-  sshSessions: TerminalSession[];
+  initializedTools: Readonly<Record<RightDockSingletonTabKind, boolean>>;
   localSessions: TerminalSession[];
   activeSession: TerminalSession | null;
   initialTerminalSnapshotsRef: RefObject<Map<string, TerminalSnapshot>>;
-  theme: "light" | "dark";
   error: string | null;
-  terminalReady: boolean;
-  terminalDisabledMessage?: string;
   creating: boolean;
   loading: boolean;
-  onFileTreeInitializedChange: (initialized: boolean) => void;
-  onFileTreeStateChange: (patch: RightDockFileTreeStatePatch) => void;
-  onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
-  onOpenFile?: (path: string, imagePaths?: string[]) => void;
-  onRevealInFileTree: (path: string) => void;
-  onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
-  onInsertGitFileMention?: (file: GitFileContextPayload) => void;
-  onSessionSnapshot: (snapshot: TerminalSnapshot) => void;
-  onSessionClosed: (sessionId: string) => void;
-  onSshSessionsReconcile: (sessions: TerminalSession[]) => void;
-  onOpenSshSession?: (session: TerminalSession, kind?: "bash" | "sftp") => void;
-  onSshProjectHostIdsChange?: (hostIds: string[]) => void;
-  onTerminalError: (error: string | null) => void;
+  onTerminalError: (sessionId: string, message: string | null) => void;
   onInitialTerminalSnapshotConsumed: (sessionId: string) => void;
   onCreateTerminal: () => void;
 };
 
 export function RightDockContent(props: RightDockContentProps) {
   const {
-    projectPathKey,
-    cwd,
     currentActiveTab,
-    fileTreeInitialized,
-    gitReviewInitialized,
-    tunnelInitialized,
-    sshTunnelInitialized,
-    fileTreeState,
-    gitClient,
-    gitWriteEnabled,
-    gitDisabledMessage,
-    tunnelClient,
-    tunnelEnabled,
-    tunnelDisabledMessage,
-    tunnelRefreshToken,
-    sshHosts,
-    associatedSshHostIds,
-    client,
-    sshSessions,
+    initializedTools,
     localSessions,
     activeSession,
     initialTerminalSnapshotsRef,
-    theme,
     error,
-    terminalReady,
-    terminalDisabledMessage,
     creating,
     loading,
-    onFileTreeInitializedChange,
-    onFileTreeStateChange,
-    onInsertFileMention,
-    onOpenFile,
-    onRevealInFileTree,
-    onInsertCommitMention,
-    onInsertGitFileMention,
-    onSessionSnapshot,
-    onSessionClosed,
-    onSshSessionsReconcile,
-    onOpenSshSession,
-    onSshProjectHostIdsChange,
     onTerminalError,
     onInitialTerminalSnapshotConsumed,
     onCreateTerminal,
   } = props;
   const { t } = useLocale();
+  const context = useRightDockToolContext();
+  const { terminalReady, terminalDisabledMessage } = context.capabilities;
+  const terminalClient = context.clients.terminal;
 
   return (
     <>
-      {fileTreeInitialized ? (
-        <div className={cn("min-h-0 flex-1", currentActiveTab === "fileTree" ? "block" : "hidden")}>
-          <ProjectFileTreePanel
-            key={projectPathKey}
-            projectPathKey={projectPathKey}
-            cwd={cwd}
-            initialized={fileTreeInitialized}
-            syncState={fileTreeState}
-            onInitializedChange={onFileTreeInitializedChange}
-            onSyncStateChange={onFileTreeStateChange}
-            onInsertFileMention={onInsertFileMention}
-            onOpenFile={onOpenFile}
-          />
-        </div>
-      ) : null}
-      {gitReviewInitialized ? (
-        <div
-          className={cn(
-            "min-h-0 flex-1",
-            currentActiveTab === "gitReview" ? "flex flex-col" : "hidden",
-          )}
-        >
-          <GitReviewPanel
-            key={`${projectPathKey}:git-review`}
-            cwd={cwd}
-            gitClient={gitClient}
-            canWrite={gitWriteEnabled}
-            disabledMessage={gitDisabledMessage}
-            onRevealInFileTree={onRevealInFileTree}
-            onInsertCommitMention={onInsertCommitMention}
-            onInsertGitFileMention={onInsertGitFileMention}
-          />
-        </div>
-      ) : null}
-      {tunnelInitialized && tunnelClient ? (
-        <div
-          className={cn(
-            "min-h-0 flex-1",
-            currentActiveTab === "tunnel" ? "flex flex-col" : "hidden",
-          )}
-        >
-          <LocalTunnelPanel
-            client={tunnelClient}
-            enabled={tunnelEnabled}
-            disabledMessage={tunnelDisabledMessage}
-            projectPathKey={projectPathKey}
-            refreshToken={tunnelRefreshToken}
-          />
-        </div>
-      ) : null}
-      {sshTunnelInitialized ? (
-        <div
-          className={cn(
-            "min-h-0 flex-1",
-            currentActiveTab === "sshTunnel" ? "flex flex-col" : "hidden",
-          )}
-        >
-          <SshTunnelPanel
-            active={currentActiveTab === "sshTunnel"}
-            cwd={cwd}
-            projectPathKey={projectPathKey}
-            hosts={sshHosts}
-            associatedHostIds={associatedSshHostIds}
-            client={client}
-            sessions={sshSessions}
-            onSessionSnapshot={onSessionSnapshot}
-            onSessionClosed={onSessionClosed}
-            onSshSessionsReconcile={onSshSessionsReconcile}
-            onOpenSession={(session, kind) => onOpenSshSession?.(session, kind)}
-            onAssociatedHostIdsChange={(hostIds) => {
-              onSshProjectHostIdsChange?.(hostIds);
-            }}
-          />
-        </div>
-      ) : null}
+      {RIGHT_DOCK_TOOL_DEFINITIONS.map((definition) => {
+        if (!initializedTools[definition.kind] || !definition.isAvailable(context)) {
+          return null;
+        }
+        const active = currentActiveTab === definition.kind;
+        return (
+          <div
+            key={definition.kind}
+            className={cn(
+              "min-h-0 flex-1",
+              active ? definition.containerActiveClassName : "hidden",
+            )}
+          >
+            {definition.render({ active })}
+          </div>
+        );
+      })}
       {localSessions.length > 0 ? (
         <div
           className={cn(
@@ -215,9 +84,9 @@ export function RightDockContent(props: RightDockContentProps) {
                   className={cn("absolute inset-0 min-h-0", isActiveTerminal ? "block" : "hidden")}
                 >
                   <XTermViewport
-                    client={client}
+                    client={terminalClient}
                     session={session}
-                    theme={theme}
+                    theme={context.theme}
                     isActive={isActiveTerminal}
                     initialSnapshot={
                       initialTerminalSnapshotsRef.current.get(session.id) ?? undefined

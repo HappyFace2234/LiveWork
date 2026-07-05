@@ -1,38 +1,26 @@
-import type { ChatHistorySummary } from "@/lib/chat/chatHistory";
+import { formatConversationTitle } from "@/lib/chatUi";
 import type { ConversationSummary } from "@/lib/gatewayTypes";
-import { buildGatewaySettingsSyncPayload } from "@/lib/settings/sync";
 import {
+  type AppSettings,
   DEFAULT_WORKSPACE_PROJECT_ID,
   resolveWorkspaceProjects,
-  type AppSettings,
-  type SelectedModel,
   type WorkspaceProject,
 } from "@/lib/settings";
-import { formatConversationTitle } from "@/lib/chatUi";
-import { isLocalDraftConversationId } from "@/lib/localDraftConversation";
-import {
-  fallbackWorkspaceProjectName,
-} from "@/lib/workspaceProjects";
+import { buildGatewaySettingsSyncPayload } from "@/lib/settings/sync";
+
+function isLocalDraftConversationId(id: string) {
+  return id.trim().startsWith("__local_draft__:");
+}
+
+import { fallbackWorkspaceProjectName } from "@/lib/workspaceProjects";
 
 import { MOBILE_SIDEBAR_MEDIA_QUERY } from "./constants";
-import { normalizeOptionalStatus } from "./chatEventUtils";
-import type { ConversationRuntimeEntry } from "./types";
 
-export function formatTranslation(
-  template: string,
-  values: Record<string, string | number>,
-) {
+export function formatTranslation(template: string, values: Record<string, string | number>) {
   return Object.entries(values).reduce(
     (text, [key, value]) => text.replaceAll(`{${key}}`, String(value)),
     template,
   );
-}
-
-export function pickConversationSummary(
-  conversations: ConversationSummary[],
-  conversationId: string,
-): ConversationSummary | null {
-  return conversations.find((item) => item.id === conversationId) ?? null;
 }
 
 export function getDefaultWorkspaceProjectPath(system: AppSettings["system"]) {
@@ -42,10 +30,7 @@ export function getDefaultWorkspaceProjectPath(system: AppSettings["system"]) {
   );
 }
 
-export function createWorkspaceProjectFromPath(
-  path: string,
-  kind: WorkspaceProject["kind"],
-) {
+export function createWorkspaceProjectFromPath(path: string, kind: WorkspaceProject["kind"]) {
   const now = Date.now();
   return {
     id: `${kind}-${now}-${Math.random().toString(36).slice(2, 8)}`,
@@ -81,26 +66,6 @@ export function resolveConversationTitle(
   return formatConversationTitle(summary, fallbackConversationId);
 }
 
-export function toChatHistorySummary(
-  item: ConversationSummary,
-  selectedModel?: SelectedModel | null,
-): ChatHistorySummary {
-  return {
-    id: item.id,
-    title: resolveConversationTitle(item, item.id),
-    providerId: item.provider_id ?? selectedModel?.customProviderId ?? "gateway",
-    model: item.model ?? selectedModel?.model ?? "gateway",
-    sessionId: item.session_id || undefined,
-    cwd: item.cwd || undefined,
-    messageCount: item.message_count,
-    createdAt: item.created_at * 1000,
-    updatedAt: item.updated_at * 1000,
-    isPinned: item.is_pinned === true,
-    pinnedAt: item.pinned_at && item.pinned_at > 0 ? item.pinned_at * 1000 : undefined,
-    isShared: item.is_shared === true,
-  };
-}
-
 export function hasLocalDraftConversation(params: {
   conversationId: string;
   selectedHistoryId: string;
@@ -129,24 +94,7 @@ export function hasLocalDraftConversation(params: {
   );
 }
 
-export function createConversationRuntimeEntry(
-  input?: Partial<ConversationRuntimeEntry>,
-): ConversationRuntimeEntry {
-  const toolStatus = normalizeOptionalStatus(input?.toolStatus);
-  return {
-    messages: input?.messages ?? [],
-    error: input?.error ?? null,
-    toolStatus,
-    toolStatusIsCompaction: toolStatus ? input?.toolStatusIsCompaction === true : false,
-    isSending: input?.isSending ?? false,
-    workdir: input?.workdir?.trim() || undefined,
-  };
-}
-
-export function resolveVisibleConversationId(
-  selectedHistoryId: string,
-  conversationId: string,
-) {
+export function resolveVisibleConversationId(selectedHistoryId: string, conversationId: string) {
   const selectedId = selectedHistoryId.trim();
   if (selectedId) {
     return selectedId;
@@ -163,13 +111,4 @@ export function isMobileSidebarLayout() {
 
 export function shouldOpenSidebarByDefault() {
   return !isMobileSidebarLayout();
-}
-
-export function hasDetachedHistorySelection(
-  selectedHistoryId: string,
-  conversationId: string,
-) {
-  const selectedId = selectedHistoryId.trim();
-  const activeConversationId = conversationId.trim();
-  return selectedId !== "" && selectedId !== activeConversationId;
 }

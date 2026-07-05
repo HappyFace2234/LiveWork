@@ -1,7 +1,5 @@
 function readUnauthorizedErrorMessage(errorText: string) {
-  return errorText === "unauthorized"
-    ? "Access Token 错误，请检查后重试。"
-    : errorText;
+  return errorText === "unauthorized" ? "Access Token 错误，请检查后重试。" : errorText;
 }
 
 async function readFetchError(response: Response, fallback: string) {

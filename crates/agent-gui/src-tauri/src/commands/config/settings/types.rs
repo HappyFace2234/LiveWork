@@ -6,8 +6,6 @@ pub struct SettingsLoadResponse {
     pub mcp: Option<Value>,
     pub agents: Option<Value>,
     pub ssh: Option<Value>,
-    pub hooks: Option<Value>,
-    pub cron: Option<Value>,
     pub remote: Option<Value>,
     pub memory: Option<Value>,
     pub default_workdir: String,

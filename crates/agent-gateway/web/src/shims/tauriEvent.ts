@@ -17,15 +17,13 @@ export async function listen<T>(
 
     return getGatewayWebSocketClient(token).subscribeStatus((status, error) => {
       handler({
-        payload: (
-          status ?? {
-            online: false,
-            enabled: true,
-            configured: true,
-            gatewayUrl: window.location.origin,
-            lastError: error,
-          }
-        ) as T,
+        payload: (status ?? {
+          online: false,
+          enabled: true,
+          configured: true,
+          gatewayUrl: window.location.origin,
+          lastError: error,
+        }) as T,
       });
     });
   }

@@ -1,4 +1,4 @@
-import { parseHistoryMessagesJson, type ChatEntry } from "./chatUi";
+import { type ChatEntry, parseHistoryMessagesJson } from "./chatUi";
 
 type HistoryParseWorkerResponse =
   | {
@@ -91,7 +91,8 @@ function parseHistoryMessagesJsonInWorker(raw: string) {
     return null;
   }
 
-  const requestId = `history-parse-${Date.now()}-${parseRequestSeq += 1}`;
+  parseRequestSeq += 1;
+  const requestId = `history-parse-${Date.now()}-${parseRequestSeq}`;
   return new Promise<ChatEntry[]>((resolve, reject) => {
     pendingParses.set(requestId, { resolve, reject });
     try {

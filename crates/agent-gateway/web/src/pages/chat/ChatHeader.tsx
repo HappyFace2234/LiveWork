@@ -1,9 +1,10 @@
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { memo, type ReactNode, useMemo, useState } from "react";
 import {
   Check,
   ChevronDown,
   ClaudeIcon,
   GeminiIcon,
+  MonitorSmartphone,
   Moon,
   OpenaiChatgptIcon,
   PanelLeft,
@@ -21,26 +22,28 @@ import {
   DropdownMenuTrigger,
 } from "../../components/ui/dropdown-menu";
 import { useLocale } from "../../i18n";
-import { cn } from "../../lib/shared/utils";
-import { parseModelValue, type ModelOption } from "../../lib/providers/llm";
+import { type ModelOption, parseModelValue } from "../../lib/providers/llm";
 import {
-  setSelectedModel,
   type AppSettings,
+  getNextTheme,
   type ProviderId,
+  setSelectedModel,
+  type Theme,
 } from "../../lib/settings";
+import { cn } from "../../lib/shared/utils";
 import type { SectionId } from "../settings/types";
 
-function ProviderBrandIcon({
-  type,
-  className,
-}: {
-  type: ProviderId;
-  className?: string;
-}) {
+function ProviderBrandIcon({ type, className }: { type: ProviderId; className?: string }) {
   const cls = cn("h-4 w-4 shrink-0", className);
   if (type === "claude_code") return <ClaudeIcon className={cls} />;
   if (type === "gemini") return <GeminiIcon className={cls} />;
   return <OpenaiChatgptIcon className={cn(cls, "fill-current dark:text-white")} />;
+}
+
+function ThemeToggleIcon(props: { theme: Theme }) {
+  if (props.theme === "light") return <Sun className="h-4.5 w-4.5" />;
+  if (props.theme === "dark") return <Moon className="h-4.5 w-4.5" />;
+  return <MonitorSmartphone className="h-4.5 w-4.5" />;
 }
 
 export const ChatHeader = memo(function ChatHeader(props: {
@@ -72,6 +75,13 @@ export const ChatHeader = memo(function ChatHeader(props: {
     trailingActions,
   } = props;
   const { t } = useLocale();
+  const nextTheme = getNextTheme(settings.theme);
+  const themeToggleTitle =
+    nextTheme === "light"
+      ? t("tooltip.switchToLight")
+      : nextTheme === "dark"
+        ? t("tooltip.switchToDark")
+        : t("tooltip.switchToAuto");
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const groups = useMemo(() => {
     const nextGroups: { name: string; providerType: ProviderId; opts: ModelOption[] }[] = [];
@@ -121,10 +131,7 @@ export const ChatHeader = memo(function ChatHeader(props: {
             >
               <span className="model-selector-current-label flex min-w-0 items-center gap-1.5 text-left">
                 {selectedOption ? (
-                  <ProviderBrandIcon
-                    type={selectedOption.providerType}
-                    className="opacity-80"
-                  />
+                  <ProviderBrandIcon type={selectedOption.providerType} className="opacity-80" />
                 ) : null}
                 <span className="min-w-0 truncate">{currentModelLabel}</span>
               </span>
@@ -187,9 +194,7 @@ export const ChatHeader = memo(function ChatHeader(props: {
                             />
                             <span className="min-w-0 truncate">{option.model}</span>
                           </span>
-                          {isSelected ? (
-                            <Check className="h-4 w-4 shrink-0 text-primary" />
-                          ) : null}
+                          {isSelected ? <Check className="h-4 w-4 shrink-0 text-primary" /> : null}
                         </DropdownMenuItem>
                       );
                     })}
@@ -207,18 +212,11 @@ export const ChatHeader = memo(function ChatHeader(props: {
           variant="ghost"
           size="icon"
           onClick={onToggleTheme}
-          title={
-            settings.theme === "dark"
-              ? t("tooltip.switchToLight")
-              : t("tooltip.switchToDark")
-          }
+          title={themeToggleTitle}
+          aria-label={themeToggleTitle}
           className="h-8 w-8 rounded-lg text-muted-foreground hover:text-foreground"
         >
-          {settings.theme === "dark" ? (
-            <Sun className="h-4.5 w-4.5" />
-          ) : (
-            <Moon className="h-4.5 w-4.5" />
-          )}
+          <ThemeToggleIcon theme={nextTheme} />
         </Button>
         <Button
           variant="ghost"

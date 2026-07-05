@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import {
@@ -33,14 +33,14 @@ import {
   applyMcpRegistryInstallConfig,
   createUniqueMcpServerId,
   MCP_REGISTRY_SOURCE_OPTIONS,
-  mcpRegistryConfigInputKey,
-  resolveMcpRegistryInstallDraft,
-  searchMcpRegistry,
-  withUniqueMcpServerId,
   type McpRegistryCard,
   type McpRegistryConfigInput,
   type McpRegistryInstallDraft,
   type McpRegistrySource,
+  mcpRegistryConfigInputKey,
+  resolveMcpRegistryInstallDraft,
+  searchMcpRegistry,
+  withUniqueMcpServerId,
 } from "../../lib/mcpRegistry";
 import { type AppSettings, type McpServerConfig, updateMcp } from "../../lib/settings";
 import { useModalMotion } from "../../lib/shared/modalMotion";
@@ -210,18 +210,22 @@ function valueFromServerConfig(input: McpRegistryConfigInput, server: McpServerC
   if (input.target === "config") {
     for (let index = 0; index < (server.args ?? []).length; index += 1) {
       const arg = server.args[index];
-      const rawConfig = arg === "--config"
-        ? server.args[index + 1]
-        : arg.startsWith("--config=")
-          ? arg.slice("--config=".length)
-          : undefined;
+      const rawConfig =
+        arg === "--config"
+          ? server.args[index + 1]
+          : arg.startsWith("--config=")
+            ? arg.slice("--config=".length)
+            : undefined;
       if (!rawConfig) continue;
       try {
         const parsed = JSON.parse(rawConfig);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
-        const value = (parsed as Record<string, unknown>)[targetName]
-          ?? (parsed as Record<string, unknown>)[input.name];
-        return cleanConfigValue(typeof value === "string" ? value : value === undefined ? undefined : String(value));
+        const value =
+          (parsed as Record<string, unknown>)[targetName] ??
+          (parsed as Record<string, unknown>)[input.name];
+        return cleanConfigValue(
+          typeof value === "string" ? value : value === undefined ? undefined : String(value),
+        );
       } catch {
         return "";
       }
@@ -389,9 +393,10 @@ function McpConfigureModal(props: {
         warnings: configureDraft?.warnings ?? [],
         commandPreview: "",
       };
-      const finalDraft = requiredConfig.length > 0
-        ? applyMcpRegistryInstallConfig(configuredDraft, draft.configValues)
-        : configuredDraft;
+      const finalDraft =
+        requiredConfig.length > 0
+          ? applyMcpRegistryInstallConfig(configuredDraft, draft.configValues)
+          : configuredDraft;
       onSave(finalDraft.server);
       requestClose();
     } catch (error) {
@@ -415,7 +420,7 @@ function McpConfigureModal(props: {
         className="settings-modal-panel relative z-10 flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl"
       >
         <div className="settings-modal-header flex items-center gap-3 border-b border-border/40 px-6 py-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
             <Sparkles className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -450,14 +455,16 @@ function McpConfigureModal(props: {
                 />
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="mcp-store-config-transport" className="text-xs text-muted-foreground">
+                <Label
+                  htmlFor="mcp-store-config-transport"
+                  className="text-xs text-muted-foreground"
+                >
                   {t("mcpHub.transport")}
                 </Label>
                 <Select
                   value={draft.transport}
                   onValueChange={(value) => {
-                    const transport =
-                      value === "http" ? "http" : value === "sse" ? "sse" : "stdio";
+                    const transport = value === "http" ? "http" : value === "sse" ? "sse" : "stdio";
                     updateDraft({ transport });
                   }}
                 >
@@ -489,7 +496,10 @@ function McpConfigureModal(props: {
               <div className="space-y-3 rounded-xl border border-border/45 bg-muted/20 p-4">
                 <div className="grid gap-3 sm:grid-cols-2">
                   <div className="space-y-1.5">
-                    <Label htmlFor="mcp-store-config-command" className="text-xs text-muted-foreground">
+                    <Label
+                      htmlFor="mcp-store-config-command"
+                      className="text-xs text-muted-foreground"
+                    >
                       {t("mcpHub.command")}
                     </Label>
                     <Input
@@ -558,7 +568,10 @@ function McpConfigureModal(props: {
                 </div>
                 {isSse ? (
                   <div className="space-y-1.5">
-                    <Label htmlFor="mcp-store-config-message-url" className="text-xs text-muted-foreground">
+                    <Label
+                      htmlFor="mcp-store-config-message-url"
+                      className="text-xs text-muted-foreground"
+                    >
                       {t("mcpHub.messageUrl")}
                     </Label>
                     <Input
@@ -571,7 +584,10 @@ function McpConfigureModal(props: {
                   </div>
                 ) : null}
                 <div className="space-y-1.5">
-                  <Label htmlFor="mcp-store-config-headers" className="text-xs text-muted-foreground">
+                  <Label
+                    htmlFor="mcp-store-config-headers"
+                    className="text-xs text-muted-foreground"
+                  >
                     {t("mcpHub.headers")}
                   </Label>
                   <Textarea
@@ -588,7 +604,9 @@ function McpConfigureModal(props: {
             {requiredConfig.length > 0 ? (
               <div className="space-y-3 rounded-xl border border-border/50 bg-background/65 p-4 backdrop-blur-md">
                 <div>
-                  <div className="text-sm font-semibold">{t("mcpHub.storeConfigureRequiredTitle")}</div>
+                  <div className="text-sm font-semibold">
+                    {t("mcpHub.storeConfigureRequiredTitle")}
+                  </div>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t("mcpHub.storeConfigureRequiredDesc")}
                   </p>
@@ -598,7 +616,10 @@ function McpConfigureModal(props: {
                     const key = mcpRegistryConfigInputKey(input);
                     return (
                       <div key={key} className="space-y-1.5">
-                        <Label htmlFor={`mcp-store-config-${key}`} className="text-xs text-muted-foreground">
+                        <Label
+                          htmlFor={`mcp-store-config-${key}`}
+                          className="text-xs text-muted-foreground"
+                        >
                           {input.label ?? input.name}
                         </Label>
                         <Input
@@ -693,22 +714,14 @@ function RegistryCard(props: {
   const installing = installingId === card.id;
   const done = Boolean(installedId);
   const configureDraft = configureDraftForCard(card);
-  const transports = configureDraft
-    ? [configureDraft.server.transport]
-    : card.transportHints;
+  const transports = configureDraft ? [configureDraft.server.transport] : card.transportHints;
   const link = primaryRegistryLink(card);
   const versionOptions = group.cards.map((item) => ({
     id: item.id,
     label: versionLabelForCard(item) ?? t("mcpHub.storeVersionLatest"),
   }));
   const hasVersionSelector = versionOptions.length > 1;
-  const headerPadding = hasVersionSelector
-    ? link
-      ? "pr-36"
-      : "pr-28"
-    : link
-      ? "pr-8"
-      : undefined;
+  const headerPadding = hasVersionSelector ? (link ? "pr-36" : "pr-28") : link ? "pr-8" : undefined;
 
   return (
     <div
@@ -724,8 +737,8 @@ function RegistryCard(props: {
       className={cn(
         "skill-card-enter group relative flex h-full min-h-[228px] cursor-pointer flex-col rounded-2xl border p-3.5 text-left backdrop-blur-xl transition-all focus:outline-none focus:ring-2 focus:ring-foreground/10",
         done
-          ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)]"
-          : "border-border/40 bg-background/55 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/70 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)]",
+          ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)] dark:border-white/[0.10] dark:bg-white/[0.07] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_18px_-12px_rgba(0,0,0,0.55)]"
+          : "border-border/40 bg-background/55 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/70 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.05] dark:bg-white/[0.03] dark:hover:border-white/[0.10] dark:hover:bg-white/[0.06] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)]",
       )}
     >
       {link || hasVersionSelector ? (
@@ -750,11 +763,14 @@ function RegistryCard(props: {
           {hasVersionSelector ? (
             <Select value={card.id} onValueChange={setSelectedCardId}>
               <SelectTrigger
-                className="h-7 w-[5.75rem] rounded-lg border-border/40 bg-background/85 px-2 py-0 text-[10.5px] shadow-none backdrop-blur-md [&>svg]:h-3 [&>svg]:w-3"
-                title={t("mcpHub.storeVersion")}
+                className="h-7 w-[5.75rem] overflow-hidden rounded-lg border-border/40 bg-background/85 px-2 py-0 text-[10.5px] shadow-none backdrop-blur-md [&>svg]:h-3 [&>svg]:w-3 [&>svg]:shrink-0"
+                title={versionLabelForCard(card) ?? t("mcpHub.storeVersionLatest")}
                 aria-label={t("mcpHub.storeVersion")}
               >
-                <SelectValue placeholder={t("mcpHub.storeVersionLatest")} />
+                <SelectValue
+                  className="min-w-0 flex-1 truncate text-left"
+                  placeholder={t("mcpHub.storeVersionLatest")}
+                />
               </SelectTrigger>
               <SelectContent className="z-[70] min-w-[5.75rem]">
                 {versionOptions.map((option) => (
@@ -772,20 +788,22 @@ function RegistryCard(props: {
           className={cn(
             "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-all",
             done
-              ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+              ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
               : "border-border/30 bg-muted/50 text-muted-foreground group-hover:border-border/50 group-hover:bg-background/70 group-hover:text-foreground/85",
           )}
         >
-          {card.remote ? <Globe2 className="h-[18px] w-[18px]" /> : <Server className="h-[18px] w-[18px]" />}
+          {card.remote ? (
+            <Globe2 className="h-[18px] w-[18px]" />
+          ) : (
+            <Server className="h-[18px] w-[18px]" />
+          )}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-start gap-1.5">
             <span className="truncate text-[13px] font-semibold leading-tight text-foreground">
               {card.displayName}
             </span>
-            {card.verified ? (
-              <Shield className="h-3.5 w-3.5 shrink-0 text-foreground/65" />
-            ) : null}
+            {card.verified ? <Shield className="h-3.5 w-3.5 shrink-0 text-foreground/65" /> : null}
           </div>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
             <span
@@ -954,13 +972,13 @@ function McpRegistryPreviewDrawer(props: {
     >
       <aside
         className={cn(
-          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
+          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover/95 dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
           closing ? "skills-drawer-panel-closing" : "skills-drawer-panel",
         )}
       >
         <div className="flex flex-col gap-2.5 border-b border-border/40 px-5 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
               {data.remote ? <Globe2 className="h-5 w-5" /> : <Server className="h-5 w-5" />}
             </div>
             <div className="min-w-0 flex-1">
@@ -982,7 +1000,9 @@ function McpRegistryPreviewDrawer(props: {
             </button>
           </div>
           <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-            <span className={cn("inline-flex rounded-md border px-1.5 py-0.5", sourceTone(data.source))}>
+            <span
+              className={cn("inline-flex rounded-md border px-1.5 py-0.5", sourceTone(data.source))}
+            >
               {data.source}
             </span>
             {transports.map((transport) => (
@@ -1073,7 +1093,11 @@ function McpRegistryPreviewDrawer(props: {
                 </div>
               )}
               <div className="divide-y divide-border/30">
-                <McpPreviewField label={t("mcpHub.serverName")} value={server?.id ?? data.name} mono />
+                <McpPreviewField
+                  label={t("mcpHub.serverName")}
+                  value={server?.id ?? data.name}
+                  mono
+                />
                 <McpPreviewField
                   label={t("mcpHub.transport")}
                   value={transports.length > 0 ? transports.join(", ") : null}
@@ -1115,7 +1139,9 @@ function McpRegistryPreviewDrawer(props: {
                       className="rounded-xl border border-border/35 bg-muted/25 px-3 py-2"
                     >
                       <div className="flex min-w-0 items-center gap-2">
-                        {input.secret ? <Key className="h-3.5 w-3.5 shrink-0 text-foreground/65" /> : null}
+                        {input.secret ? (
+                          <Key className="h-3.5 w-3.5 shrink-0 text-foreground/65" />
+                        ) : null}
                         <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground">
                           {input.label ?? input.name}
                         </span>
@@ -1199,8 +1225,7 @@ function McpRegistryPreviewDrawer(props: {
             size="sm"
             className={cn(
               "h-9 flex-1 gap-1.5 rounded-xl",
-              installed &&
-                "border-border/55 bg-background/75 text-foreground/85 backdrop-blur-md",
+              installed && "border-border/55 bg-background/75 text-foreground/85 backdrop-blur-md",
             )}
             disabled={installed || installing}
             onClick={() => onInstall(data)}
@@ -1290,7 +1315,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
       .then((resolved) => {
         if (cancelled) return;
         setPreviewDetail(resolved);
-        setItems((prev) => prev.map((item) => item.id === resolved.id ? resolved : item));
+        setItems((prev) => prev.map((item) => (item.id === resolved.id ? resolved : item)));
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1308,36 +1333,39 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
     };
   }, [previewCard, t]);
 
-  const runSearch = useCallback(async (mode: "replace" | "append" = "replace") => {
-    const cursor = mode === "append" ? nextCursor : undefined;
-    if (mode === "append" && !cursor) return;
-    if (mode === "append") {
-      setLoadingMore(true);
-    } else {
-      setLoading(true);
-    }
-    setError(null);
-    try {
-      const result = await searchMcpRegistry({
-        source,
-        query,
-        cursor,
-        limit: STORE_PAGE_LIMIT,
-      });
-      setItems((prev) => mode === "append" ? [...prev, ...result.items] : result.items);
-      setNextCursor(result.nextCursor);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message || t("mcpHub.storeLoadFailed"));
-      if (mode === "replace") {
-        setItems([]);
-        setNextCursor(undefined);
+  const runSearch = useCallback(
+    async (mode: "replace" | "append" = "replace") => {
+      const cursor = mode === "append" ? nextCursor : undefined;
+      if (mode === "append" && !cursor) return;
+      if (mode === "append") {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
       }
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, [nextCursor, query, source, t]);
+      setError(null);
+      try {
+        const result = await searchMcpRegistry({
+          source,
+          query,
+          cursor,
+          limit: STORE_PAGE_LIMIT,
+        });
+        setItems((prev) => (mode === "append" ? [...prev, ...result.items] : result.items));
+        setNextCursor(result.nextCursor);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message || t("mcpHub.storeLoadFailed"));
+        if (mode === "replace") {
+          setItems([]);
+          setNextCursor(undefined);
+        }
+      } finally {
+        setLoading(false);
+        setLoadingMore(false);
+      }
+    },
+    [nextCursor, query, source, t],
+  );
 
   useEffect(() => {
     // Clear immediately on source switch so the skeleton + hero render right away.
@@ -1352,7 +1380,9 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
   function installedIdForCard(card: McpRegistryCard) {
     const draft = configureDraftForCard(card);
     const draftId = draft?.server.id ?? "";
-    return installedByCardId[card.id] ?? (draftId && existingIds.has(draftId) ? draftId : undefined);
+    return (
+      installedByCardId[card.id] ?? (draftId && existingIds.has(draftId) ? draftId : undefined)
+    );
   }
 
   function addServerFromStore(card: McpRegistryCard, server: McpServerConfig) {
@@ -1370,7 +1400,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
     setError(null);
     try {
       const resolved = await resolveMcpRegistryInstallDraft(card);
-      setItems((prev) => prev.map((item) => item.id === card.id ? resolved : item));
+      setItems((prev) => prev.map((item) => (item.id === card.id ? resolved : item)));
       if (previewCard?.id === card.id) {
         setPreviewDetail(resolved);
       }
@@ -1444,7 +1474,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
         </Button>
       </form>
 
-      <div className="hub-panel-enter flex max-w-full items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="hub-panel-enter flex max-w-full items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {MCP_REGISTRY_SOURCE_OPTIONS.map((option) => {
           const active = source === option.value;
           return (
@@ -1455,7 +1485,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
               className={cn(
                 "h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-[11.5px] font-medium transition-all",
                 active
-                  ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] ring-1 ring-border/45"
+                  ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] ring-1 ring-border/45 dark:bg-white/[0.08] dark:ring-white/[0.09] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                   : "text-muted-foreground hover:bg-background/80 hover:text-foreground",
               )}
             >
@@ -1493,10 +1523,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
 
               <div key={`${source}-skeleton`} className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {Array.from({ length: 6 }).map((_, index) => (
-                  <div
-                    key={index}
-                    className="hub-frost-skeleton skill-card-enter h-[228px] p-3.5"
-                  >
+                  <div key={index} className="hub-frost-skeleton skill-card-enter h-[228px] p-3.5">
                     <div className="flex items-center gap-3">
                       <div className="skills-skeleton-shimmer h-10 w-10 shrink-0 rounded-xl" />
                       <div className="flex-1 space-y-2">
@@ -1528,15 +1555,13 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
             </div>
           ) : (
             <div className="hub-panel-enter rounded-2xl border border-dashed border-border/45 bg-background/40 px-6 py-12 text-center backdrop-blur-xl">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
                 <Terminal className="h-6 w-6" />
               </div>
               <p className="mt-4 text-sm font-medium text-foreground">
                 {t("mcpHub.storeEmptyTitle")}
               </p>
-              <p className="mt-1 text-xs text-muted-foreground/80">
-                {t("mcpHub.storeEmptyDesc")}
-              </p>
+              <p className="mt-1 text-xs text-muted-foreground/80">{t("mcpHub.storeEmptyDesc")}</p>
             </div>
           )}
 

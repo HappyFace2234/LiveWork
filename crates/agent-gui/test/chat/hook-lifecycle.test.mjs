@@ -13,10 +13,10 @@ test("conversation hook lifecycle closes message and turn after all tool results
 
   lifecycle.startAgent();
   lifecycle.startTurn(1);
-  lifecycle.messageUpdated();
   lifecycle.assistantMessageCompleted(1, 2);
   lifecycle.toolExecutionStarted();
   lifecycle.toolResultReceived(1);
+  lifecycle.toolExecutionStarted();
   lifecycle.toolResultReceived(1);
   lifecycle.endAgent();
 
@@ -24,12 +24,10 @@ test("conversation hook lifecycle closes message and turn after all tool results
     "agent_start",
     "turn_start",
     "message_start",
-    "message_update",
     "message_end",
     "tool_execution_start",
-    "tool_execution_update",
     "tool_execution_end",
-    "tool_execution_update",
+    "tool_execution_start",
     "tool_execution_end",
     "turn_end",
     "agent_end",

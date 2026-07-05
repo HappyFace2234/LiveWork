@@ -1,32 +1,20 @@
 import type { ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
-import {
-  listSubagentIdentities,
-  listSubagentRuns,
-  type SubagentIdentityRecord,
-  type SubagentRunSummary,
-} from "../chat/subagent/subagentHistory";
-import type { SubagentRuntimeManager } from "../chat/subagent/subagentRuntimeManager";
-import type { SubagentScheduler } from "../chat/subagent/subagentScheduler";
+import { homeDir } from "@tauri-apps/api/path";
 import type { RuntimePlatform } from "../runtimePlatform";
-import type {
-  AgentPromptTemplate,
-  CodexRequestFormat,
-  McpServerConfig,
-  ProviderId,
-  ProviderModelConfig,
-  ReasoningLevel,
-  SshHostConfig,
-} from "../settings";
+import type { McpServerConfig, ProviderId, SshHostConfig } from "../settings";
+import {
+  createSendMessageTools,
+  createSubagentTools,
+  SUBAGENT_PARENT_ID,
+  type SubagentRuntimeConfig,
+} from "../subagents";
 import type {
   BuiltinToolBundle,
   BuiltinToolExecutionContext,
   BuiltinToolMetadata,
-  BuiltinToolPreflightResult,
 } from "./builtinTypes";
 import { createCronTools } from "./cronTools";
 import { createCustomSystemTools } from "./customSystemTools";
-import { createSubagentMessageTools } from "./delegate/messageTools";
-import { createDelegateTools } from "./delegateTools";
 import { createFileToolState, type FileToolState } from "./fileToolState";
 import { createFsTools } from "./fsTools";
 import { createMcpManagerTools } from "./mcpManagerTools";
@@ -38,7 +26,7 @@ import { createSkillTools } from "./skillTools";
 import { createSSHManagerTools, type SshManagerSessionChange } from "./sshManagerTools";
 import type { SystemToolId, SystemToolRuntimeScope } from "./systemToolOptions";
 import { createTerminalTools } from "./terminalTools";
-import { createTunnelManagerTools } from "./tunnelManagerTools";
+import { createTunnelManagerTools, type TunnelManagerChange } from "./tunnelManagerTools";
 
 export type BuiltinToolRegistry = {
   tools: BuiltinToolBundle["tools"];
@@ -47,70 +35,14 @@ export type BuiltinToolRegistry = {
     signal?: AbortSignal,
     context?: BuiltinToolExecutionContext,
   ) => Promise<ToolResultMessage>;
-  preflightToolCall: (
-    toolCall: ToolCall,
-    signal?: AbortSignal,
-  ) => Promise<BuiltinToolPreflightResult | null>;
   metadataByName: Map<string, BuiltinToolMetadata>;
   hasTool: (toolName: string) => boolean;
 };
-
-export type DelegateToolRuntimeConfig = {
-  providerId: ProviderId;
-  model: string;
-  runtime: {
-    baseUrl: string;
-    apiKey: string;
-    requestFormat?: CodexRequestFormat;
-    reasoning?: ReasoningLevel;
-    promptCachingEnabled?: boolean;
-    nativeWebSearchEnabled?: boolean;
-    modelConfig?: ProviderModelConfig;
-  };
-  conversationId?: string;
-  sessionId?: string;
-  agentTemplates?: AgentPromptTemplate[];
-  conversationSubagentIdentities?: SubagentIdentityRecord[];
-  conversationSubagentRuns?: SubagentRunSummary[];
-  subagentRuntimeManager?: SubagentRuntimeManager;
-  subagentScheduler?: SubagentScheduler;
-};
-
-async function loadExistingSubagentRuns(conversationId?: string): Promise<SubagentRunSummary[]> {
-  const parentConversationId = conversationId?.trim();
-  if (!parentConversationId) return [];
-  try {
-    return await listSubagentRuns({
-      parentConversationId,
-      limit: 50,
-    });
-  } catch (error) {
-    console.warn("Failed to load existing delegated subagent runs", error);
-    return [];
-  }
-}
-
-async function loadExistingSubagentIdentities(
-  conversationId?: string,
-): Promise<SubagentIdentityRecord[]> {
-  const parentConversationId = conversationId?.trim();
-  if (!parentConversationId) return [];
-  try {
-    return await listSubagentIdentities({
-      parentConversationId,
-      limit: 200,
-    });
-  } catch (error) {
-    console.warn("Failed to load delegated subagent identities", error);
-    return [];
-  }
-}
 
 function createBuiltinToolRegistry(bundles: BuiltinToolBundle[]): BuiltinToolRegistry {
   const tools: BuiltinToolBundle["tools"] = [];
   const metadataByName = new Map<string, BuiltinToolMetadata>();
   const executorsByName = new Map<string, BuiltinToolBundle["executeToolCall"]>();
-  const preflightsByName = new Map<string, NonNullable<BuiltinToolBundle["preflightToolCall"]>>();
   const canonicalToolNameByLookupKey = new Map<string, string | null>();
 
   const registerCanonicalToolName = (toolName: string) => {
@@ -137,9 +69,6 @@ function createBuiltinToolRegistry(bundles: BuiltinToolBundle[]): BuiltinToolReg
       }
       tools.push(tool);
       executorsByName.set(tool.name, bundle.executeToolCall);
-      if (bundle.preflightToolCall) {
-        preflightsByName.set(tool.name, bundle.preflightToolCall);
-      }
       registerCanonicalToolName(tool.name);
       const metadata = bundle.metadataByName.get(tool.name);
       if (metadata) {
@@ -181,15 +110,6 @@ function createBuiltinToolRegistry(bundles: BuiltinToolBundle[]): BuiltinToolReg
         resolvedToolName === toolCall.name ? toolCall : { ...toolCall, name: resolvedToolName };
       return execute(effectiveToolCall, signal, context);
     },
-    async preflightToolCall(toolCall, signal) {
-      const resolvedToolName = resolveToolName(toolCall.name);
-      if (!resolvedToolName) return null;
-      const preflight = preflightsByName.get(resolvedToolName);
-      if (!preflight) return null;
-      const effectiveToolCall =
-        resolvedToolName === toolCall.name ? toolCall : { ...toolCall, name: resolvedToolName };
-      return preflight(effectiveToolCall, signal);
-    },
   };
 }
 
@@ -223,27 +143,16 @@ type BuildBuiltinBaseToolRegistryParams = {
   mcpLoadFailureMode?: "continue" | "throw";
   memoryToolMode?: "rw" | "ro";
   remoteWebTunnelsEnabled?: boolean;
-  remoteGatewayOnline?: boolean;
   tunnelProjectPathKey?: string;
+  tunnelPublicBaseUrl?: string;
   sshHosts?: SshHostConfig[];
   associatedSshHostIds?: string[];
   sshManagerRemoteAllowed?: boolean;
   onSshSessionsChanged?: (change: SshManagerSessionChange) => void | Promise<void>;
-  onTunnelsChanged?: (change: {
-    action: "create" | "close";
-    tunnel: {
-      id: string;
-      slug: string;
-      name: string;
-      targetUrl: string;
-      publicUrl: string;
-      createdAt: number;
-      expiresAt: number;
-      status: "active" | "expired" | "offline";
-      projectPathKey?: string;
-    };
-  }) => void | Promise<void>;
+  onTunnelsChanged?: (change: TunnelManagerChange) => void | Promise<void>;
 };
+
+const resolveHomeDir = () => homeDir();
 
 async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryParams) {
   let currentMcpSettings = params.mcpSettings;
@@ -254,6 +163,7 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
       skillsRootEnabled: params.skillsEnabled,
       skillsRootDir: params.skillsRootDir,
       skillAccessPolicy: params.skillAccessPolicy,
+      resolveHomeDir,
     }),
     createShellTools({
       workdir: params.workdir,
@@ -263,6 +173,7 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
       skillsRootDir: params.skillsRootDir,
       skillAccessPolicy: params.skillAccessPolicy,
       managedProcessEnabled: params.runtimeScope === "chat",
+      resolveHomeDir,
     }),
     ...(params.skillsEnabled
       ? [
@@ -286,6 +197,7 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
           }
         : undefined,
       runtimeScope: params.runtimeScope,
+      resolveHomeDir,
     }),
     createCustomSystemTools({
       selectedToolIds: params.selectedSystemToolIds,
@@ -297,12 +209,10 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
       mode: params.memoryToolMode ?? "rw",
     }),
     createTunnelManagerTools({
-      enabled:
-        params.remoteWebTunnelsEnabled === true &&
-        params.remoteGatewayOnline === true &&
-        params.runtimeScope === "chat",
+      enabled: params.remoteWebTunnelsEnabled === true && params.runtimeScope === "chat",
       runtimeScope: params.runtimeScope,
       projectPathKey: params.tunnelProjectPathKey,
+      publicBaseUrl: params.tunnelPublicBaseUrl,
       onTunnelsChanged: params.onTunnelsChanged,
     }),
     createSSHManagerTools({
@@ -315,6 +225,7 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
       projectPathKey: params.tunnelProjectPathKey,
       hosts: params.sshHosts,
       associatedHostIds: params.associatedSshHostIds,
+      resolveHomeDir,
       onSshSessionsChanged: params.onSshSessionsChanged,
     }),
     ...(params.runtimeScope === "chat"
@@ -345,55 +256,46 @@ async function buildBaseBuiltinToolBundles(params: BuildBuiltinBaseToolRegistryP
 
 export async function buildBuiltinToolRegistry(
   params: BuildBuiltinBaseToolRegistryParams & {
-    delegateRuntime?: DelegateToolRuntimeConfig;
+    subagentRuntime?: SubagentRuntimeConfig;
   },
 ) {
   const baseBundles = await buildBaseBuiltinToolBundles(params);
 
-  if (!params.delegateRuntime) {
+  const subagentRuntime = params.subagentRuntime;
+  if (!subagentRuntime) {
     return createBuiltinToolRegistry(baseBundles);
   }
 
   const baseRegistry = createBuiltinToolRegistry(baseBundles);
-  const parentMessageBundle = params.delegateRuntime.conversationId?.trim()
-    ? createSubagentMessageTools({
-        parentConversationId: params.delegateRuntime.conversationId,
-        currentAgentId: "parent",
-        currentAgentName: "Parent Agent",
+  // The Agent tool description embeds the roster, so the store must be
+  // hydrated before the bundle is created. Roster load failures degrade to an
+  // empty roster instead of blocking the whole registry.
+  try {
+    await subagentRuntime.store.ready();
+  } catch (error) {
+    console.warn("Failed to load subagent roster for the Agent tool", error);
+  }
+  const parentMessageBundle = subagentRuntime.store.conversationId
+    ? createSendMessageTools({
+        store: subagentRuntime.store,
+        senderId: SUBAGENT_PARENT_ID,
+        senderName: "Parent Agent",
       })
     : null;
   const parentBundles = parentMessageBundle ? [...baseBundles, parentMessageBundle] : baseBundles;
-  const storedSubagentRuns = Array.isArray(params.delegateRuntime.conversationSubagentRuns)
-    ? []
-    : await loadExistingSubagentRuns(params.delegateRuntime.conversationId);
-  const existingSubagentRuns = [
-    ...(params.delegateRuntime.conversationSubagentRuns ?? []),
-    ...storedSubagentRuns,
-  ];
-  const storedSubagentIdentities = Array.isArray(
-    params.delegateRuntime.conversationSubagentIdentities,
-  )
-    ? []
-    : await loadExistingSubagentIdentities(params.delegateRuntime.conversationId);
-  const existingSubagentIdentities = [
-    ...(params.delegateRuntime.conversationSubagentIdentities ?? []),
-    ...storedSubagentIdentities,
-  ];
   return createBuiltinToolRegistry([
     ...parentBundles,
-    createDelegateTools({
-      providerId: params.delegateRuntime.providerId,
-      model: params.delegateRuntime.model,
-      runtime: params.delegateRuntime.runtime,
+    createSubagentTools({
+      providerId: subagentRuntime.providerId,
+      model: subagentRuntime.model,
+      runtime: subagentRuntime.runtime,
       runtimePlatform: params.runtimePlatform,
       workdir: params.workdir,
-      parentConversationId: params.delegateRuntime.conversationId,
-      sessionId: params.delegateRuntime.sessionId,
-      agentTemplates: params.delegateRuntime.agentTemplates,
-      existingSubagentIdentities,
-      existingSubagentRuns,
-      subagentRuntimeManager: params.delegateRuntime.subagentRuntimeManager,
-      subagentScheduler: params.delegateRuntime.subagentScheduler,
+      resolveHomeDir,
+      sessionId: subagentRuntime.sessionId,
+      templates: subagentRuntime.templates,
+      store: subagentRuntime.store,
+      scheduler: subagentRuntime.scheduler,
       baseTools: baseRegistry.tools,
       executeToolCall: baseRegistry.executeToolCall,
       metadataByName: baseRegistry.metadataByName,

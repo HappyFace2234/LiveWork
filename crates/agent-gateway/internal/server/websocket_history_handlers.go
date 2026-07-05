@@ -65,10 +65,9 @@ func (c *websocketConnection) handleHistoryList(req websocketRequest) {
 	}
 
 	_ = c.writeResponse(req.ID, map[string]any{
-		"conversations":            conversations,
-		"total_count":              resp.GetTotalCount(),
-		"running_conversation_ids": c.sm.ActiveChatRunConversationIDs(),
-		"running_conversations":    websocketActiveChatRunSummariesPayload(c.sm.ActiveChatRunSummaries()),
+		"conversations":         conversations,
+		"total_count":           resp.GetTotalCount(),
+		"running_conversations": websocketRunningConversationsPayload(c.sm.ActiveConversationActivities()),
 	})
 }
 

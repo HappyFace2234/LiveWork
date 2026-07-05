@@ -1,8 +1,28 @@
-import type { ConversationViewState } from "../conversationState";
+import type { ConversationViewState, HistoryMessageRef } from "../conversationState";
 
 type QueueEventOptions = {
   allowAfterClose?: boolean;
 };
+
+type QueueUserMessageOptions = {
+  // Edit-resend: the edited (truncation-base) user message. The gateway
+  // broadcasts a `rebased` event from it so every other connected client
+  // truncates its transcript at the same point.
+  baseMessageRef?: HistoryMessageRef;
+};
+
+// Wire shape mirror of the gateway's ChatMessageRef (snake_case), matching
+// the webui's buildHistoryMessageRefPayload byte for byte.
+function buildGatewayBaseMessageRefPayload(ref: HistoryMessageRef): Record<string, unknown> {
+  return {
+    segment_index: ref.segmentIndex,
+    message_index: ref.messageIndex,
+    segment_id: ref.segmentId,
+    message_id: ref.messageId,
+    role: ref.role,
+    content_hash: ref.contentHash,
+  };
+}
 
 type GatewayBridgeSendResult = Promise<void> | void;
 
@@ -27,6 +47,7 @@ export type GatewayBridgeEventController = {
   queueUserMessage: (
     message: string,
     uploadedFiles?: readonly unknown[],
+    options?: QueueUserMessageOptions,
   ) => GatewayBridgeSendResult;
   queueToken: (delta: string, extra?: Record<string, unknown>) => void;
   queueTitle: (nextTitle: string, allowAfterClose?: boolean) => void;
@@ -66,7 +87,7 @@ export function createGatewayBridgeEventController(
 
   return {
     queueEvent,
-    queueUserMessage(message: string, uploadedFiles = []) {
+    queueUserMessage(message: string, uploadedFiles = [], options?: QueueUserMessageOptions) {
       if (!message.trim() && uploadedFiles.length === 0) return;
       return queueEvent({
         type: "user_message",
@@ -75,6 +96,12 @@ export function createGatewayBridgeEventController(
           file && typeof file === "object" ? { ...(file as Record<string, unknown>) } : file,
         ),
         conversation_id: params.conversationId,
+        ...(options?.baseMessageRef
+          ? {
+              base_message_ref: buildGatewayBaseMessageRefPayload(options.baseMessageRef),
+              reason: "edit_resend",
+            }
+          : {}),
       });
     },
     queueToken(delta: string, extra?: Record<string, unknown>) {

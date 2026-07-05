@@ -13,6 +13,7 @@ import {
 
 import { Button } from "../../components/ui/button";
 import { useLocale } from "../../i18n";
+import { updateSkills } from "../../lib/settings";
 import {
   discoverSkills,
   isAlwaysEnabledSkillName,
@@ -21,7 +22,6 @@ import {
   notifySkillsDiscoveryUpdated,
   type SkillSummary,
 } from "../../lib/skills";
-import { updateSkills } from "../../lib/settings";
 import type { SettingsSectionProps } from "./types";
 
 export function SkillsSettingsForm(props: SettingsSectionProps) {
@@ -142,7 +142,9 @@ export function SkillsSettingsForm(props: SettingsSectionProps) {
             onClick={() => void refresh()}
             disabled={loading || skillsLockedByChatMode}
           >
-            <RefreshCw className={`h-3.5 w-3.5 transition-transform ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw
+              className={`h-3.5 w-3.5 transition-transform ${loading ? "animate-spin" : ""}`}
+            />
             {loading ? t("settings.skillsScanning") : t("settings.skillsScan")}
             {loading && (
               <span className="ml-0.5 inline-flex gap-[2px]">
@@ -208,10 +210,7 @@ export function SkillsSettingsForm(props: SettingsSectionProps) {
           {loading && skills.length === 0 ? (
             <div className="space-y-3">
               {[1, 2, 3, 4].map((item) => (
-                <div
-                  key={item}
-                  className="skill-card-enter rounded-xl border border-border/40 p-4"
-                >
+                <div key={item} className="skill-card-enter rounded-xl border border-border/40 p-4">
                   <div className="flex items-center gap-3">
                     <div className="skills-skeleton-shimmer h-9 w-9 shrink-0 rounded-lg" />
                     <div className="flex-1 space-y-2">
@@ -257,9 +256,7 @@ export function SkillsSettingsForm(props: SettingsSectionProps) {
 
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium leading-none">
-                          {skill.name}
-                        </span>
+                        <span className="text-sm font-medium leading-none">{skill.name}</span>
                       </div>
                       {skill.description ? (
                         <p className="mt-1 truncate text-xs text-muted-foreground">

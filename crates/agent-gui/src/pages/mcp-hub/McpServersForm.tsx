@@ -263,8 +263,8 @@ const McpServerCard = memo(function McpServerCard(props: {
       className={cn(
         "skill-card-enter group rounded-2xl border backdrop-blur-xl transition-all",
         enabled
-          ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_18px_-12px_rgba(15,23,42,0.16)]"
-          : "border-border/40 bg-background/55 hover:border-border/55 hover:bg-background/70",
+          ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_18px_-12px_rgba(15,23,42,0.16)] dark:border-white/[0.10] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset,0_4px_18px_-12px_rgba(0,0,0,0.5)]"
+          : "border-border/40 bg-background/55 hover:border-border/55 hover:bg-background/70 dark:border-white/[0.05] dark:bg-white/[0.03] dark:hover:border-white/[0.10] dark:hover:bg-white/[0.06]",
       )}
     >
       <div className="flex items-center gap-3 px-4 py-3">
@@ -276,7 +276,7 @@ const McpServerCard = memo(function McpServerCard(props: {
           className={cn(
             "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full ring-1 transition-colors",
             enabled
-              ? "bg-foreground/80 ring-foreground/30 shadow-[0_2px_8px_-3px_rgba(15,23,42,0.4)]"
+              ? "bg-foreground/80 ring-foreground/30 shadow-[0_2px_8px_-3px_rgba(15,23,42,0.4)] dark:shadow-[0_2px_8px_-3px_rgba(0,0,0,0.6)]"
               : "bg-muted-foreground/25 ring-border/40",
           )}
         >
@@ -299,7 +299,7 @@ const McpServerCard = memo(function McpServerCard(props: {
             className={cn(
               "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border transition-all",
               enabled
-                ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+                ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                 : "border-border/40 bg-muted/45 text-muted-foreground group-hover:border-border/55 group-hover:bg-background/70 group-hover:text-foreground/85",
             )}
           >
@@ -455,7 +455,7 @@ export function McpServerEditModal(props: {
         className="settings-modal-panel relative z-10 flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl"
       >
         <div className="settings-modal-header flex items-center gap-3 border-b border-border/40 px-6 py-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
             <Plug className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -692,7 +692,7 @@ export function McpServersForm(props: McpServersFormProps) {
 
         {serverCount === 0 ? (
           <div className="hub-panel-enter rounded-2xl border border-dashed border-border/45 bg-background/40 px-6 py-12 text-center backdrop-blur-xl">
-            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
               <Server className="h-6 w-6" />
             </div>
             <p className="mt-4 text-sm font-medium text-foreground">{t("mcpHub.noServers")}</p>

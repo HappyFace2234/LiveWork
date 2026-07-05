@@ -62,8 +62,10 @@ const COMMON_SKILL_MENTION_ENV_VARS = new Set([
 
 function isCommonSkillMentionEnvVar(name: string) {
   const upper = name.toUpperCase();
-  return COMMON_SKILL_MENTION_ENV_VARS.has(upper) ||
-    (upper.endsWith(":") && COMMON_SKILL_MENTION_ENV_VARS.has(upper.slice(0, -1)));
+  return (
+    COMMON_SKILL_MENTION_ENV_VARS.has(upper) ||
+    (upper.endsWith(":") && COMMON_SKILL_MENTION_ENV_VARS.has(upper.slice(0, -1)))
+  );
 }
 
 type SystemListSkillFilesResponse = {
@@ -325,21 +327,25 @@ function getSkillBaseDir(path: string) {
 }
 
 function normalizeSkillNameFromBaseDir(baseDir: string) {
-  const segments = normalizeRelPath(baseDir)
-    .split("/")
-    .filter(Boolean);
+  const segments = normalizeRelPath(baseDir).split("/").filter(Boolean);
   const segment = segments.length > 0 ? segments[segments.length - 1] : "readme-skill";
-  return segment
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .replace(/-+/g, "-") || "readme-skill";
+  return (
+    segment
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .replace(/-+/g, "-") || "readme-skill"
+  );
 }
 
 function firstReadmeDescriptionLine(content: string) {
   for (const rawLine of content.replace(/^\uFEFF/, "").split(/\r?\n/)) {
-    const line = rawLine.trim().replace(/^#+\s*/, "").replace(/^[*_`]+|[*_`]+$/g, "").trim();
+    const line = rawLine
+      .trim()
+      .replace(/^#+\s*/, "")
+      .replace(/^[*_`]+|[*_`]+$/g, "")
+      .trim();
     if (line === "---") continue;
     if (line) return line.slice(0, 280);
   }
@@ -356,8 +362,7 @@ async function buildReadmeFallbackSkill(params: {
   });
   const name = normalizeSkillNameFromBaseDir(params.baseDir);
   const description =
-    firstReadmeDescriptionLine(readme.content) ||
-    `README.md skill instructions for ${name}`;
+    firstReadmeDescriptionLine(readme.content) || `README.md skill instructions for ${name}`;
   return {
     name,
     description,
@@ -536,9 +541,8 @@ async function discoverSkillsViaLegacyFileScan(): Promise<SkillDiscovery> {
       } as any);
 
       const name = typeof metadata.name === "string" ? metadata.name.trim() : "";
-      const description = typeof metadata.description === "string"
-        ? metadata.description.trim()
-        : "";
+      const description =
+        typeof metadata.description === "string" ? metadata.description.trim() : "";
       if (!name || !description) {
         if (
           !name &&
@@ -546,10 +550,12 @@ async function discoverSkillsViaLegacyFileScan(): Promise<SkillDiscovery> {
           metadataFile === group.readmeFile &&
           skillFile === group.readmeFile
         ) {
-          skills.push(await buildReadmeFallbackSkill({
-            baseDir: group.baseDir,
-            skillFile,
-          }));
+          skills.push(
+            await buildReadmeFallbackSkill({
+              baseDir: group.baseDir,
+              skillFile,
+            }),
+          );
           continue;
         }
         invalidMetadata.push(metadataFile);
@@ -583,9 +589,7 @@ async function discoverSkillsViaLegacyFileScan(): Promise<SkillDiscovery> {
       throw new Error(`发现 Skill 文件但读取失败：${readErrors[0]}`);
     }
     if (invalidMetadata.length > 0) {
-      throw new Error(
-        `发现 Skill 元数据无效：${invalidMetadata[0]}（需要 name + description）`,
-      );
+      throw new Error(`发现 Skill 元数据无效：${invalidMetadata[0]}（需要 name + description）`);
     }
   }
 
@@ -599,9 +603,7 @@ async function loadSkillsDiscovery(): Promise<SkillDiscovery> {
   return discoverSkillsViaLegacyFileScan();
 }
 
-export async function discoverSkills(
-  options: DiscoverSkillsOptions = {},
-): Promise<SkillDiscovery> {
+export async function discoverSkills(options: DiscoverSkillsOptions = {}): Promise<SkillDiscovery> {
   if (options.force) {
     invalidateSkillsDiscoveryCache();
   }
@@ -641,7 +643,9 @@ export async function readSkillText(params: {
   } as any);
 }
 
-export async function manageSkill(params: Record<string, unknown>): Promise<SystemManageSkillResponse> {
+export async function manageSkill(
+  params: Record<string, unknown>,
+): Promise<SystemManageSkillResponse> {
   const response = await invoke<SystemManageSkillResponse>("system_manage_skill", {
     payload: params,
   } as any);
@@ -668,9 +672,7 @@ export async function startSkillInstallJob(
   return response.installJob;
 }
 
-export async function getSkillInstallJobStatus(
-  jobId: string,
-): Promise<SkillInstallJobSnapshot> {
+export async function getSkillInstallJobStatus(jobId: string): Promise<SkillInstallJobSnapshot> {
   const response = await manageSkill({ action: "install_status", jobId });
   if (!response.installJob) {
     throw new Error("SkillsManager install_status did not return an install job");
@@ -705,8 +707,8 @@ export function buildSkillsSystemPrompt(params: {
     "- SkillsManager.path uses the skillFile below. It is relative to the fixed Skills root directory and may point to SKILL.md, skill.md, skill.json, or README.md.",
     '- For files referenced inside an enabled Skill, use file tools with root="skills" and a path relative to the fixed Skills root, for example Read(root="skills", path="<baseDir>/references/guide.md"), List, Glob, Grep, Write, Edit, or Delete.',
     "- You may update files inside enabled Skills when the user asks you to optimize or maintain them. Create, install, search/install from ClawHub, validate, package, or delete user Skills through SkillsManager actions.",
-    "- Never expand the fixed Skills root into an absolute local path in any tool call. If a path belongs to a Skill, keep it root-relative and set root=\"skills\".",
-    "- If Skill content contains absolute local paths, home-directory paths, drive-letter paths, or shell snippets that read Skill files with cat/ls/find/grep, treat those path fragments as non-portable examples and convert them to root=\"skills\" file-tool calls.",
+    '- Never expand the fixed Skills root into an absolute local path in any tool call. If a path belongs to a Skill, keep it root-relative and set root="skills".',
+    '- If Skill content contains absolute local paths, home-directory paths, drive-letter paths, or shell snippets that read Skill files with cat/ls/find/grep, treat those path fragments as non-portable examples and convert them to root="skills" file-tool calls.',
     "- Do not guess a Skill's exact instructions or script paths before reading the Skill file.",
     "- Relative paths inside a Skill (scripts/, references/, assets/, and so on) are resolved relative to baseDir.",
     "- If a Skill contains the {baseDir} placeholder, interpret it as the baseDir value in the metadata below (relative to the Skills root directory).",
@@ -717,7 +719,9 @@ export function buildSkillsSystemPrompt(params: {
           "- The user explicitly mentioned the following enabled Skills with `$skill-name` in this turn.",
           "- Treat these mentions as user intent to prioritize those Skills. Read and follow the mentioned Skill instructions before acting when they are relevant.",
           "- `$` mentions never grant access to disabled Skills; only the enabled Skills listed in this prompt are available.",
-          ...explicit.map((skill) => `- ${skill.name} (skillFile: ${skill.skillFile}, baseDir: ${skill.baseDir})`),
+          ...explicit.map(
+            (skill) => `- ${skill.name} (skillFile: ${skill.skillFile}, baseDir: ${skill.baseDir})`,
+          ),
         ].join("\n")
       : "",
     "",

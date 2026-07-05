@@ -1,6 +1,6 @@
 import type {
-  CodexRequestFormat,
   ChatRuntimeControls,
+  CodexRequestFormat,
   ProviderId,
   ProviderModelConfig,
   ReasoningLevel,
@@ -58,43 +58,21 @@ export type ChatCheckpointPayload = {
   };
 };
 
-export type ChatRunControlState =
-  | "queued"
-  | "delivered"
-  | "claimed"
-  | "starting"
-  | "desktop_queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled";
-
-export type ChatControlEvent = {
-  type:
-    | "accepted"
-    | "user_message"
-    | "rebased"
-    | "projection_updated"
-    | "delivered"
-    | "claimed"
-    | "starting"
-    | "queued_in_gui"
-    | "started"
-    | "progress"
-    | "completed"
-    | "failed"
-    | "cancelled";
+export type ChatUserMessageEvent = {
+  type: "user_message";
   client_request_id?: string;
   conversation_id?: string;
-  run_epoch?: number;
-  state?: ChatRunControlState;
-  error_code?: string;
   message?: string;
   uploaded_files?: unknown;
   base_message_ref?: unknown;
   reason?: string;
-  seq?: number;
-  workdir?: string;
+};
+
+export type ChatRebasedEvent = {
+  type: "rebased";
+  conversation_id?: string;
+  base_message_ref?: unknown;
+  reason?: string;
 };
 
 export type ChatEvent = (
@@ -164,7 +142,8 @@ export type ChatEvent = (
       conversation_id?: string;
     }
   | { type: "error"; message: string; round?: number; conversation_id?: string }
-  | ChatControlEvent
+  | ChatUserMessageEvent
+  | ChatRebasedEvent
 ) & { seq?: number; workdir?: string };
 
 export type CronManagePayload = {
@@ -230,16 +209,16 @@ export type ConversationSummary = {
 export type HistoryList = {
   conversations: ConversationSummary[];
   total_count: number;
-  running_conversation_ids?: string[];
   running_conversations?: RunningConversationSummary[];
 };
 
+// history.list `running_conversations` items — the gateway's activity
+// registry snapshot at response time.
 export type RunningConversationSummary = {
   conversation_id: string;
   run_id?: string;
+  state?: string;
   cwd?: string;
-  first_seq?: number;
-  run_epoch?: number;
   updated_at?: number;
 };
 
@@ -298,13 +277,4 @@ export type GatewayHistoryEvent =
       kind: "delete";
       conversation_id: string;
       conversation?: undefined;
-    }
-  | {
-      kind: "running" | "idle";
-      conversation_id: string;
-      conversation?: ConversationSummary;
-      run_id?: string;
-      first_seq?: number;
-      run_epoch?: number;
-      updated_at?: number;
     };

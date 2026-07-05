@@ -1,20 +1,20 @@
-import { generateDiffFile } from "@git-diff-view/file";
-import { DiffModeEnum, DiffView } from "@git-diff-view/react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { ImageContent, ToolResultMessage, Usage } from "../../lib/agentTypes";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FileChangeBadge } from "../../components/chat/FileChangeBadge";
+import { ImagePreview, type ImagePreviewSlide } from "../../components/chat/ImagePreview";
+import type { IconComponent } from "../../components/icons";
 import {
   Bot,
   Brain,
-  Clock3,
   ChevronRight,
+  Clock3,
   Eye,
+  FilePenLine,
+  FileText,
+  FolderTree,
   ImageIcon,
   ImageOff,
-  FileText,
-  FilePenLine,
-  FolderTree,
-  Loader2,
   Link2,
+  Loader2,
   Plug,
   Search,
   Server,
@@ -23,30 +23,33 @@ import {
   Trash2,
   Wrench,
 } from "../../components/icons";
-import type { IconComponent } from "../../components/icons";
-
 import { Markdown } from "../../components/Markdown";
-import { ImagePreview, type ImagePreviewSlide } from "../../components/chat/ImagePreview";
 import { useLocale } from "../../i18n";
-import { cn } from "../../lib/shared/utils";
+import type { ImageContent, ToolResultMessage, Usage } from "../../lib/agentTypes";
+import { normalizeLiveToolStatus, VIBING_STATUS } from "../../lib/chat/chatPageHelpers";
+import { deriveFileChangeStats } from "../../lib/chat/fileChangeStats";
+import type { HostedSearchBlock } from "../../lib/chat/hostedSearch";
+import { deriveFileToolPreview, FILE_TOOL_TEXT_FIELDS } from "../../lib/chat/toolPreview";
 import {
-  getStreamingEditToolPreview,
-  getStreamingWriteToolPreview,
   previewText,
   safeStringify,
   shouldDisplayToolTraceItem,
-  toolCallArgsForDisplay,
-  toolResultMessageToText,
   summarizeToolCall,
   type ToolTraceItem,
+  toolCallArgsForDisplay,
+  toolResultMessageToText,
   type UiRound,
 } from "../../lib/chat/uiMessages";
-import type { HostedSearchBlock } from "../../lib/chat/hostedSearch";
-import { normalizeLiveToolStatus, VIBING_STATUS } from "../../lib/chat/chatPageHelpers";
 import { prepareImageProxyUrl } from "../../lib/providers/proxy";
+import { cn } from "../../lib/shared/utils";
+import type {
+  SubagentBatchDetails,
+  SubagentCardDetails,
+  SubagentMessageDetails,
+  SubagentReportDetails,
+} from "../../lib/subagents/protocol";
 import type {
   DeleteResultDetails,
-  DelegateAgentCardResultDetails,
   DisplayImageItemDetails,
   DisplayImageResultDetails,
   EditResultDetails,
@@ -58,13 +61,22 @@ import type {
   ReadImageResultDetails,
   ReadNotebookResultDetails,
   ReadPdfResultDetails,
-  SkillsManagerResultDetails,
   ReadTextResultDetails,
-  SubagentMessageResultDetails,
+  SkillsManagerResultDetails,
   WriteResultDetails,
 } from "../../lib/tools/builtinTypes";
-import "@git-diff-view/react/styles/diff-view.css";
-
+import { EditDiffView } from "./EditDiffView";
+import { FileToolArgsDisplay } from "./FileToolArgs";
+import {
+  type MetaTag,
+  MetaTags,
+  PathDisplay,
+  ToolFactGrid,
+  ToolScrollablePre,
+  ToolSection,
+  ToolSurface,
+  ToolSurfaceLabel,
+} from "./ToolSurfaces";
 export function AssistantAvatar(props: { className?: string }) {
   const { className } = props;
   return (
@@ -357,13 +369,7 @@ function useStickyBottomScroll(
   useEffect(() => () => cancelScheduledScroll(), [cancelScheduledScroll]);
 }
 
-function ThinkingBlock({
-  text,
-  open,
-}: {
-  text: string;
-  open?: boolean;
-}) {
+function ThinkingBlock({ text, open }: { text: string; open?: boolean }) {
   const hasText = /\S/.test(text || "");
   const { t } = useLocale();
   const [isOpen, setIsOpen] = useState(typeof open === "boolean" ? open : false);
@@ -481,10 +487,7 @@ function getLatestHostedSearchTitle(
   return t("chat.search.noQuery");
 }
 
-function getHostedSearchCountLabel(
-  count: number,
-  t: (key: string) => string,
-) {
+function getHostedSearchCountLabel(count: number, t: (key: string) => string) {
   return count <= 1 ? t("chat.search.oneSearch") : `${count} ${t("chat.search.searches")}`;
 }
 
@@ -539,7 +542,8 @@ function HostedSearchGroupView({
         <div
           className="relative mt-0.5 flex h-[24px] w-[24px] shrink-0 items-center justify-center rounded-[7px] sm:mt-0"
           style={{
-            background: "linear-gradient(135deg, hsl(var(--tool-search-accent) / 0.13), hsl(var(--tool-search-accent) / 0.06))",
+            background:
+              "linear-gradient(135deg, hsl(var(--tool-search-accent) / 0.13), hsl(var(--tool-search-accent) / 0.06))",
           }}
         >
           {isSearching ? (
@@ -621,9 +625,7 @@ function HostedSearchGroupView({
                       className="block min-w-0 max-w-full rounded-[6px] border border-transparent px-2 py-1 text-[12px] transition-colors hover:border-border/45 hover:bg-background/60"
                       title={source.url}
                     >
-                      <span className="block truncate font-medium text-foreground/85">
-                        {label}
-                      </span>
+                      <span className="block truncate font-medium text-foreground/85">{label}</span>
                       <span className="block truncate text-muted-foreground">
                         {getSourceHost(source.url)}
                       </span>
@@ -642,29 +644,45 @@ function HostedSearchGroupView({
 function getToolMeta(name: string): { Icon: IconComponent; accent: string; category: string } {
   switch (name) {
     case "Bash":
-    case "ManagedProcess": return { Icon: Terminal, accent: "var(--tool-bash-accent)", category: "terminal" };
-    case "Read":   return { Icon: Eye,         accent: "var(--tool-file-accent)",   category: "file" };
-    case "Image":  return { Icon: ImageIcon,   accent: "var(--tool-file-accent)",   category: "file" };
-    case "SkillsManager": return { Icon: Eye,  accent: "var(--tool-file-accent)",   category: "file" };
-    case "CronTaskManager": return { Icon: Clock3, accent: "var(--tool-list-accent)", category: "system" };
-    case "MemoryManager": return { Icon: Brain, accent: "var(--tool-list-accent)",   category: "system" };
-    case "McpManager": return { Icon: Plug,     accent: "var(--tool-list-accent)",   category: "mcp" };
-    case "TunnelManager": return { Icon: Link2, accent: "var(--tool-list-accent)", category: "system" };
+    case "ManagedProcess":
+      return { Icon: Terminal, accent: "var(--tool-bash-accent)", category: "terminal" };
+    case "Read":
+      return { Icon: Eye, accent: "var(--tool-file-accent)", category: "file" };
+    case "Image":
+      return { Icon: ImageIcon, accent: "var(--tool-file-accent)", category: "file" };
+    case "SkillsManager":
+      return { Icon: Eye, accent: "var(--tool-file-accent)", category: "file" };
+    case "CronTaskManager":
+      return { Icon: Clock3, accent: "var(--tool-list-accent)", category: "system" };
+    case "MemoryManager":
+      return { Icon: Brain, accent: "var(--tool-list-accent)", category: "system" };
+    case "McpManager":
+      return { Icon: Plug, accent: "var(--tool-list-accent)", category: "mcp" };
+    case "TunnelManager":
+      return { Icon: Link2, accent: "var(--tool-list-accent)", category: "system" };
     case "SSHManager":
-    case "SshManager": return { Icon: Server,   accent: "var(--tool-bash-accent)",   category: "terminal" };
-    case "Agent":  return { Icon: Bot,         accent: "var(--tool-list-accent)",   category: "system" };
-    case "SendMessage": return { Icon: Bot,     accent: "var(--tool-list-accent)",   category: "system" };
-    case "Write":  return { Icon: FileText,    accent: "var(--tool-file-accent)",   category: "file" };
-    case "Edit":   return { Icon: FilePenLine, accent: "var(--tool-file-accent)",   category: "file" };
-    case "Delete": return { Icon: Trash2,      accent: "var(--tool-file-accent)",   category: "file" };
-    case "Glob":   return { Icon: Search,      accent: "var(--tool-search-accent)", category: "search" };
-    case "Grep":   return { Icon: Search,      accent: "var(--tool-search-accent)", category: "search" };
-    case "List":   return { Icon: FolderTree,  accent: "var(--tool-list-accent)",   category: "list" };
-    default:       return { Icon: Wrench,      accent: "var(--tool-file-accent)",   category: "other" };
+    case "SshManager":
+      return { Icon: Server, accent: "var(--tool-bash-accent)", category: "terminal" };
+    case "Agent":
+      return { Icon: Bot, accent: "var(--tool-list-accent)", category: "system" };
+    case "SendMessage":
+      return { Icon: Bot, accent: "var(--tool-list-accent)", category: "system" };
+    case "Write":
+      return { Icon: FileText, accent: "var(--tool-file-accent)", category: "file" };
+    case "Edit":
+      return { Icon: FilePenLine, accent: "var(--tool-file-accent)", category: "file" };
+    case "Delete":
+      return { Icon: Trash2, accent: "var(--tool-file-accent)", category: "file" };
+    case "Glob":
+      return { Icon: Search, accent: "var(--tool-search-accent)", category: "search" };
+    case "Grep":
+      return { Icon: Search, accent: "var(--tool-search-accent)", category: "search" };
+    case "List":
+      return { Icon: FolderTree, accent: "var(--tool-list-accent)", category: "list" };
+    default:
+      return { Icon: Wrench, accent: "var(--tool-file-accent)", category: "other" };
   }
 }
-
-type MetaTag = { label: string; value: string };
 
 function displayString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -676,40 +694,32 @@ function compactInlineText(value: unknown, maxChars = 120) {
   return `${text.slice(0, maxChars)}...`;
 }
 
-function isDelegateAgentCardToolCall(toolCall: {
-  name: string;
-  arguments?: Record<string, unknown>;
-}) {
-  return toolCall.name === "Agent" && toolCall.arguments?.delegate_agent_card === true;
+function isSubagentCardToolCall(toolCall: { name: string; arguments?: Record<string, unknown> }) {
+  return toolCall.name === "Agent" && toolCall.arguments?.subagent_card === true;
 }
 
-function getDelegateAgentTask(agent: { prompt?: unknown; description?: unknown }) {
-  return displayString(agent.prompt) || displayString(agent.description);
+function getSubagentTask(agent: { prompt?: unknown }) {
+  return displayString(agent.prompt);
 }
 
-function getDelegateAgentInlineSummary(item: ToolTraceItem) {
-  const details = item.toolResult?.details as Partial<DelegateAgentCardResultDetails> | undefined;
-  const agent = details?.kind === "delegate_agent_item" ? details.agent : undefined;
+function getSubagentInlineSummary(item: ToolTraceItem) {
+  const details = item.toolResult?.details as Partial<SubagentCardDetails> | undefined;
+  const agent = details?.kind === "subagent_card" ? details.agent : undefined;
   const args = item.toolCall.arguments || {};
-  const name =
-    displayString(agent?.name) ||
-    displayString(agent?.agentName) ||
-    displayString(args.name) ||
-    displayString(args.agent_id) ||
-    displayString(args.id);
-  const task = agent ? getDelegateAgentTask(agent) : displayString(args.prompt) || displayString(args.description);
+  const name = displayString(agent?.name) || displayString(args.name) || displayString(args.id);
+  const task = agent ? getSubagentTask(agent) : displayString(args.prompt);
 
   if (name && task) return `${name} - ${compactInlineText(task, 96)}`;
   return name || compactInlineText(task, 120);
 }
 
-function shouldShowDelegateApplyStatus(agent: DelegateAgentCardResultDetails["agent"]) {
+function shouldShowSubagentApplyStatus(agent: SubagentReportDetails) {
   if (!agent.applyStatus) return false;
   if (agent.applyStatus === "applied" || agent.applyStatus === "failed") return true;
   return Boolean(agent.applySkippedReason && agent.applySkippedReason !== "no_changes");
 }
 
-function shouldShowDelegateCleanupStatus(agent: DelegateAgentCardResultDetails["agent"]) {
+function shouldShowSubagentCleanupStatus(agent: SubagentReportDetails) {
   return Boolean(
     agent.worktreeCleanupStatus &&
       agent.worktreeCleanupStatus !== "removed" &&
@@ -717,10 +727,10 @@ function shouldShowDelegateCleanupStatus(agent: DelegateAgentCardResultDetails["
   );
 }
 
-function shouldShowDelegateWorktreeLocation(agent: DelegateAgentCardResultDetails["agent"]) {
+function shouldShowSubagentWorktreeLocation(agent: SubagentReportDetails) {
   return Boolean(
     agent.worktreeRoot &&
-      (agent.status === "failed" ||
+      (agent.status !== "completed" ||
         agent.worktreeCleanupStatus === "retained" ||
         agent.worktreeCleanupStatus === "failed"),
   );
@@ -757,7 +767,6 @@ type GroupedRoundBlock =
       key: string;
       items: ToolTraceItem[];
     };
-
 
 type ShellResultDetails = {
   exit_code: number;
@@ -836,10 +845,7 @@ const TOOL_CARD_ACTION_NAMES = new Set([
   "SSHManager",
 ]);
 
-function getManagerToolActionName(toolCall: {
-  name: string;
-  arguments?: Record<string, unknown>;
-}) {
+function getManagerToolActionName(toolCall: { name: string; arguments?: Record<string, unknown> }) {
   const name = getToolDisplayName(toolCall.name);
   if (!TOOL_CARD_ACTION_NAMES.has(name)) return "";
   const args = toolCall.arguments || {};
@@ -851,10 +857,7 @@ function getManagerToolActionName(toolCall: {
   return "";
 }
 
-function getToolDisplayTitle(toolCall: {
-  name: string;
-  arguments?: Record<string, unknown>;
-}) {
+function getToolDisplayTitle(toolCall: { name: string; arguments?: Record<string, unknown> }) {
   const name = getToolDisplayName(toolCall.name);
   const action = getManagerToolActionName(toolCall);
   return { name, action };
@@ -990,64 +993,6 @@ function getDominantToolName(items: ToolTraceItem[]) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "Tool";
 }
 
-function ToolSection(props: {
-  label: string;
-  trailing?: ReactNode;
-  children: ReactNode;
-}) {
-  const { label, trailing, children } = props;
-  return (
-    <section className="space-y-2">
-      <div className="flex items-center gap-2">
-        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground/52">
-          {label}
-        </span>
-        <div className="h-px flex-1 bg-black/[0.05] dark:bg-white/[0.08]" />
-        {trailing}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function ToolSurface(props: { children: ReactNode; className?: string }) {
-  const { children, className } = props;
-  return (
-    <div
-      className={cn(
-        "rounded-[10px] border border-black/[0.05] bg-white/[0.56] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.58)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-none",
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
-}
-
-function ToolSurfaceLabel({ label }: { label: string }) {
-  return (
-    <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground/45">
-      {label}
-    </div>
-  );
-}
-
-function ToolFactGrid({ tags }: { tags: MetaTag[] }) {
-  if (tags.length === 0) return null;
-  return (
-    <div className="grid gap-1.5 sm:grid-cols-2">
-      {tags.map((tag) => (
-        <ToolSurface key={`${tag.label}-${tag.value}`} className="px-2.5 py-2">
-          <ToolSurfaceLabel label={tag.label} />
-          <div className="break-all font-mono text-[11px] leading-[1.55] text-foreground/78">
-            {tag.value}
-          </div>
-        </ToolSurface>
-      ))}
-    </div>
-  );
-}
-
 function buildPagedResultTags(params: {
   label: string;
   returned: number;
@@ -1063,44 +1008,6 @@ function buildPagedResultTags(params: {
   ];
 }
 
-function fileRootTags(root?: string | null): MetaTag[] {
-  return root && root !== "workspace" ? [{ label: "root", value: root }] : [];
-}
-
-/** Render path with dir dimmed and filename highlighted */
-function PathDisplay({ path, className }: { path: string; className?: string }) {
-  const lastSlash = path.lastIndexOf("/");
-  if (lastSlash < 0) {
-    return (
-      <span
-        className={cn(
-          className,
-          "block max-w-full overflow-hidden text-ellipsis whitespace-nowrap break-normal",
-        )}
-        title={path}
-      >
-        {path}
-      </span>
-    );
-  }
-  const dir = path.slice(0, lastSlash + 1);
-  const file = path.slice(lastSlash + 1);
-  return (
-    <span
-      className={cn(
-        className,
-        "inline-flex max-w-full min-w-0 items-baseline overflow-hidden whitespace-nowrap break-normal",
-      )}
-      title={path}
-    >
-      <span className="min-w-0 flex-1 truncate text-muted-foreground/40">
-        {dir.length > 50 ? `…${dir.slice(-50)}` : dir}
-      </span>
-      <span className="max-w-[70%] truncate text-foreground/85">{file}</span>
-    </span>
-  );
-}
-
 /** Extract tool-specific display info */
 function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unknown> }) {
   const args = toolCall.arguments || {};
@@ -1111,64 +1018,80 @@ function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unk
 
   switch (name) {
     case "Read":
-      if (typeof args.start_line === "number") tags.push({ label: "start", value: String(args.start_line) });
+      if (typeof args.start_line === "number")
+        tags.push({ label: "start", value: String(args.start_line) });
       if (typeof args.limit === "number") tags.push({ label: "limit", value: String(args.limit) });
-      if (typeof args.page_start === "number") tags.push({ label: "page", value: String(args.page_start) });
-      if (typeof args.page_limit === "number") tags.push({ label: "pages", value: String(args.page_limit) });
-      if (typeof args.cell_start === "number") tags.push({ label: "cell", value: String(args.cell_start) });
-      if (typeof args.cell_limit === "number") tags.push({ label: "cells", value: String(args.cell_limit) });
+      if (typeof args.page_start === "number")
+        tags.push({ label: "page", value: String(args.page_start) });
+      if (typeof args.page_limit === "number")
+        tags.push({ label: "pages", value: String(args.page_limit) });
+      if (typeof args.cell_start === "number")
+        tags.push({ label: "cell", value: String(args.cell_start) });
+      if (typeof args.cell_limit === "number")
+        tags.push({ label: "cells", value: String(args.cell_limit) });
       return { type: "file" as const, path, tags };
     case "SkillsManager":
-      if (typeof args.offset === "number") tags.push({ label: "start", value: String(args.offset + 1) });
-      if (typeof args.length === "number") tags.push({ label: "limit", value: String(args.length) });
+      if (typeof args.offset === "number")
+        tags.push({ label: "start", value: String(args.offset + 1) });
+      if (typeof args.length === "number")
+        tags.push({ label: "limit", value: String(args.length) });
       return { type: "file" as const, path, tags };
     case "MemoryManager":
-      if (typeof args.action === "string") tags.push({ label: "action", value: args.action as string });
+      if (typeof args.action === "string")
+        tags.push({ label: "action", value: args.action as string });
       if (typeof args.slug === "string") tags.push({ label: "slug", value: args.slug as string });
-      if (typeof args.scope === "string") tags.push({ label: "scope", value: args.scope as string });
+      if (typeof args.scope === "string")
+        tags.push({ label: "scope", value: args.scope as string });
       if (typeof args.type === "string") tags.push({ label: "type", value: args.type as string });
       return { type: "generic" as const, path: null, pattern: null, tags };
     case "McpManager":
-      if (typeof args.action === "string") tags.push({ label: "action", value: args.action as string });
-      if (typeof args.server_id === "string") tags.push({ label: "server", value: args.server_id as string });
-      if (Array.isArray(args.server_ids)) tags.push({ label: "servers", value: String(args.server_ids.length) });
-      if (typeof args.conflict === "string") tags.push({ label: "conflict", value: args.conflict as string });
+      if (typeof args.action === "string")
+        tags.push({ label: "action", value: args.action as string });
+      if (typeof args.server_id === "string")
+        tags.push({ label: "server", value: args.server_id as string });
+      if (Array.isArray(args.server_ids))
+        tags.push({ label: "servers", value: String(args.server_ids.length) });
+      if (typeof args.conflict === "string")
+        tags.push({ label: "conflict", value: args.conflict as string });
       if (args.include_schema === true) tags.push({ label: "schema", value: "true" });
       return { type: "generic" as const, path: null, pattern: null, tags };
     case "SendMessage":
       if (typeof args.to === "string") tags.push({ label: "to", value: args.to as string });
-      if (typeof args.channel === "string") tags.push({ label: "channel", value: args.channel as string });
-      if (typeof args.subject === "string") tags.push({ label: "subject", value: args.subject as string });
-      if (typeof args.summary === "string" && typeof args.subject !== "string") tags.push({ label: "subject", value: args.summary as string });
-      if (typeof args.message === "string") tags.push({ label: "message", value: `${(args.message as string).length} chars` });
+      if (typeof args.channel === "string")
+        tags.push({ label: "channel", value: args.channel as string });
+      if (typeof args.subject === "string")
+        tags.push({ label: "subject", value: args.subject as string });
+      if (typeof args.summary === "string" && typeof args.subject !== "string")
+        tags.push({ label: "subject", value: args.summary as string });
+      if (typeof args.message === "string")
+        tags.push({ label: "message", value: `${(args.message as string).length} chars` });
       return { type: "generic" as const, path: null, pattern: null, tags };
-    case "Write":
-      tags.push({ label: "mode", value: "rewrite" });
-      if (typeof args.content === "string") tags.push({ label: "content", value: `${(args.content as string).length} chars` });
-      return { type: "file" as const, path, tags };
-    case "Edit":
-      if (typeof args.old_string === "string") tags.push({ label: "old", value: `${(args.old_string as string).length}c` });
-      if (typeof args.new_string === "string") tags.push({ label: "new", value: `${(args.new_string as string).length}c` });
-      if (typeof args.expected_replacements === "number") tags.push({ label: "×", value: String(args.expected_replacements) });
-      if (args.replace_all === true) tags.push({ label: "all", value: "true" });
-      return { type: "file" as const, path, tags };
     case "Delete":
       return { type: "file" as const, path, tags };
     case "List":
       if (typeof args.depth === "number") tags.push({ label: "depth", value: String(args.depth) });
-      if (typeof args.offset === "number") tags.push({ label: "offset", value: String(args.offset) });
-      if (typeof args.max_results === "number") tags.push({ label: "max", value: String(args.max_results) });
+      if (typeof args.offset === "number")
+        tags.push({ label: "offset", value: String(args.offset) });
+      if (typeof args.max_results === "number")
+        tags.push({ label: "max", value: String(args.max_results) });
       return { type: "file" as const, path: path || "/", tags };
     case "Glob":
-      if (typeof args.offset === "number") tags.push({ label: "offset", value: String(args.offset) });
-      if (typeof args.max_results === "number") tags.push({ label: "max", value: String(args.max_results) });
+      if (typeof args.offset === "number")
+        tags.push({ label: "offset", value: String(args.offset) });
+      if (typeof args.max_results === "number")
+        tags.push({ label: "max", value: String(args.max_results) });
       return { type: "search" as const, path, pattern, tags };
     case "Grep":
-      if (typeof args.file_pattern === "string") tags.push({ label: "filter", value: args.file_pattern as string });
-      if (typeof args.output_mode === "string") tags.push({ label: "mode", value: args.output_mode as string });
-      if (typeof args.ignore_case === "boolean" && args.ignore_case) tags.push({ label: "flag", value: "-i" });
-      if (typeof args.context === "number" && args.context > 0) tags.push({ label: "ctx", value: String(args.context) });
-      if (typeof args.head_limit === "number") tags.push({ label: "head", value: String(args.head_limit) });
+      if (typeof args.file_pattern === "string")
+        tags.push({ label: "filter", value: args.file_pattern as string });
+      if (typeof args.output_mode === "string")
+        tags.push({ label: "mode", value: args.output_mode as string });
+      if (typeof args.ignore_case === "boolean" && args.ignore_case)
+        tags.push({ label: "flag", value: "-i" });
+      if (typeof args.context === "number" && args.context > 0)
+        tags.push({ label: "ctx", value: String(args.context) });
+      if (typeof args.head_limit === "number")
+        tags.push({ label: "head", value: String(args.head_limit) });
       if (args.multiline === true) tags.push({ label: "multi", value: "true" });
       return { type: "search" as const, path, pattern, tags };
     case "Bash":
@@ -1177,198 +1100,32 @@ function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unk
       // Generic: collect all string/number/boolean args
       const entries: MetaTag[] = [];
       for (const [k, v] of Object.entries(args)) {
-        if (typeof v === "string") entries.push({ label: k, value: v.length > 60 ? `${v.slice(0, 60)}…` : v });
-        else if (typeof v === "number" || typeof v === "boolean") entries.push({ label: k, value: String(v) });
+        if (typeof v === "string")
+          entries.push({ label: k, value: v.length > 60 ? `${v.slice(0, 60)}…` : v });
+        else if (typeof v === "number" || typeof v === "boolean")
+          entries.push({ label: k, value: String(v) });
       }
       return { type: "generic" as const, path: null, pattern: null, tags: entries };
     }
   }
 }
 
-/** Inline meta tags */
-function MetaTags({ tags }: { tags: MetaTag[] }) {
-  if (tags.length === 0) return null;
-  const labelCounts = new Map<string, number>();
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {tags.map((tag) => {
-        const seenCount = labelCounts.get(tag.label) ?? 0;
-        labelCounts.set(tag.label, seenCount + 1);
-        const stableKey = seenCount === 0 ? tag.label : `${tag.label}-${seenCount}`;
-        return (
-          <span
-            key={stableKey}
-            className="tool-arg-pill inline-flex min-h-6 items-center gap-1.5 rounded-full border border-black/[0.05] bg-white/[0.78] px-2 py-1 text-[10.5px] leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-none"
-          >
-            <span className="font-semibold uppercase tracking-[0.12em] text-muted-foreground/55">
-              {tag.label}
-            </span>
-            <span className="h-3 w-px bg-black/[0.06] dark:bg-white/[0.08]" />
-            <span className="font-mono tabular-nums text-foreground/75">{tag.value}</span>
-          </span>
-        );
-      })}
-    </div>
-  );
-}
-
-function StreamingArgPlaceholder({ label }: { label: string }) {
-  return (
-    <ToolSurface>
-      <div className="text-[11.5px] leading-[1.6] text-muted-foreground/62">{label}</div>
-    </ToolSurface>
-  );
-}
-
-function StreamingTextPreviewSurface({
-  label,
-  hasValue,
-  emptyLabel,
-  preview,
-}: {
-  label: string;
-  hasValue: boolean;
-  emptyLabel: string;
-  preview: { text: string; chars: number; lines: number; truncated: boolean };
-}) {
-  return (
-    <ToolSurface className="overflow-hidden px-0 py-0">
-      <div className="px-2.5 pt-2">
-        <ToolSurfaceLabel label={label} />
-      </div>
-      {hasValue ? (
-        preview.text ? (
-          <ToolScrollablePre className="max-h-56 rounded-none bg-black/[0.02] dark:bg-white/[0.03]">
-            {preview.text}
-          </ToolScrollablePre>
-        ) : (
-          <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
-            {emptyLabel}
-          </div>
-        )
-      ) : (
-        <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
-          Waiting for {label}...
-        </div>
-      )}
-    </ToolSurface>
-  );
-}
-
 /** Expanded args display — tool-aware layout */
 function ToolArgsDisplay({ item }: { item: ToolTraceItem }) {
   const toolCall = item.toolCall;
+
+  const filePreview = deriveFileToolPreview(toolCall);
+  if (filePreview) {
+    return <FileToolArgsDisplay preview={filePreview} />;
+  }
+
   const display = getToolDisplay(toolCall);
 
-  const writePreview = getStreamingWriteToolPreview(toolCall);
-  if (writePreview) {
-    const hasAnyArg = Boolean(writePreview.path || writePreview.hasContent);
-    if (!hasAnyArg) {
-      return <StreamingArgPlaceholder label="Waiting for file content..." />;
-    }
-    return (
-      <div className="tool-expand flex flex-col gap-2">
-        {writePreview.path ? (
-          <ToolSurface>
-            <ToolSurfaceLabel label="path" />
-            <PathDisplay
-              path={writePreview.path}
-              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
-            />
-          </ToolSurface>
-        ) : null}
-        {writePreview.hasContent ? (
-          <MetaTags
-            tags={[
-              { label: "mode", value: writePreview.mode },
-              { label: "chars", value: String(writePreview.content.chars) },
-              { label: "lines", value: String(writePreview.content.lines) },
-              ...(writePreview.content.truncated ? [{ label: "preview", value: "partial" }] : []),
-            ]}
-          />
-        ) : null}
-        <StreamingTextPreviewSurface
-          label="content"
-          hasValue={writePreview.hasContent}
-          emptyLabel="(empty content)"
-          preview={writePreview.content}
-        />
-      </div>
-    );
-  }
-
-  const editPreview = getStreamingEditToolPreview(toolCall);
-  if (editPreview) {
-    const hasAnyArg =
-      Boolean(editPreview.path) || editPreview.hasOldString || editPreview.hasNewString;
-    if (!hasAnyArg) {
-      return <StreamingArgPlaceholder label="Waiting for replacement strings..." />;
-    }
-    return (
-      <div className="tool-expand flex flex-col gap-2">
-        {editPreview.path ? (
-          <ToolSurface>
-            <ToolSurfaceLabel label="path" />
-            <PathDisplay
-              path={editPreview.path}
-              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
-            />
-          </ToolSurface>
-        ) : null}
-        <MetaTags
-          tags={[
-            ...(typeof editPreview.expectedReplacements === "number"
-              ? [{ label: "expected", value: String(editPreview.expectedReplacements) }]
-              : []),
-            ...(editPreview.replaceAll ? [{ label: "all", value: "true" }] : []),
-            ...(editPreview.hasOldString
-              ? [
-                  { label: "old", value: `${editPreview.oldString.chars} chars` },
-                  { label: "old lines", value: String(editPreview.oldString.lines) },
-                ]
-              : []),
-            ...(editPreview.hasNewString
-              ? [
-                  { label: "new", value: `${editPreview.newString.chars} chars` },
-                  { label: "new lines", value: String(editPreview.newString.lines) },
-                ]
-              : []),
-          ]}
-        />
-        {editPreview.hasOldString && editPreview.hasNewString ? (
-          <EditDiffView
-            beforeText={editPreview.oldString.text}
-            afterText={editPreview.newString.text}
-            filePath={editPreview.path}
-          />
-        ) : (
-          <>
-            <StreamingTextPreviewSurface
-              label="old string"
-              hasValue={editPreview.hasOldString}
-              emptyLabel="(empty old string)"
-              preview={editPreview.oldString}
-            />
-            <StreamingTextPreviewSurface
-              label="new string"
-              hasValue={editPreview.hasNewString}
-              emptyLabel="(empty replacement)"
-              preview={editPreview.newString}
-            />
-          </>
-        )}
-      </div>
-    );
-  }
-
-  if (isDelegateAgentCardToolCall(toolCall)) {
+  if (isSubagentCardToolCall(toolCall)) {
     const args = toolCall.arguments || {};
-    const name =
-      displayString(args.name) ||
-      displayString(args.agent_id) ||
-      displayString(args.id);
+    const name = displayString(args.name) || displayString(args.id);
     const role = displayString(args.role);
-    const task = displayString(args.prompt) || displayString(args.description);
+    const task = displayString(args.prompt);
 
     return (
       <div className="tool-expand flex flex-col gap-2">
@@ -1391,9 +1148,7 @@ function ToolArgsDisplay({ item }: { item: ToolTraceItem }) {
         {task ? (
           <ToolSurface>
             <ToolSurfaceLabel label="task" />
-            <div className="break-words text-[11.5px] leading-[1.6] text-foreground/82">
-              {task}
-            </div>
+            <div className="break-words text-[11.5px] leading-[1.6] text-foreground/82">{task}</div>
           </ToolSurface>
         ) : null}
       </div>
@@ -1402,12 +1157,16 @@ function ToolArgsDisplay({ item }: { item: ToolTraceItem }) {
 
   // Bash: terminal block
   if (display.type === "bash") {
-    const cmd = typeof toolCall.arguments?.command === "string" ? (toolCall.arguments.command as string).trim() : "";
+    const cmd =
+      typeof toolCall.arguments?.command === "string"
+        ? (toolCall.arguments.command as string).trim()
+        : "";
     if (!cmd) return null;
     return (
       <ToolSurface className="overflow-hidden border-emerald-500/15 bg-zinc-950/90 px-0 py-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] dark:border-white/[0.08] dark:bg-zinc-950/90">
         <ToolScrollablePre className="max-h-44 rounded-none text-emerald-300/90">
-          <span className="mr-1 select-none text-emerald-500/30">$</span>{cmd}
+          <span className="mr-1 select-none text-emerald-500/30">$</span>
+          {cmd}
         </ToolScrollablePre>
       </ToolSurface>
     );
@@ -1508,7 +1267,11 @@ function getImageDataUrl(image: ImageContent) {
 }
 
 function isDisplayImageItemDetails(value: unknown): value is DisplayImageItemDetails {
-  return Boolean(value) && typeof value === "object" && typeof (value as { path?: unknown }).path === "string";
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as { path?: unknown }).path === "string"
+  );
 }
 
 function getDisplayImageDetails(result: ToolResultMessage): DisplayImageItemDetails[] {
@@ -1589,7 +1352,9 @@ function parseNativeDisplayImageProxyKey(proxyKey: string): NativeDisplayImagePr
 
 function useNativeDisplayImageSources(entries: NativeDisplayImageEntry[]) {
   const proxyKey = getNativeDisplayImageProxyKey(entries);
-  const [proxySources, setProxySources] = useState<Record<number, NativeDisplayImageSourceState>>({});
+  const [proxySources, setProxySources] = useState<Record<number, NativeDisplayImageSourceState>>(
+    {},
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1843,16 +1608,14 @@ function ToolResultImagePreview(props: {
           if (canPreview) setPreviewOpen(true);
         }}
         title={alt}
-        aria-label={canPreview ? `${t("chat.image.preview")} ${alt}` : `${t("chat.image.loading")} ${alt}`}
+        aria-label={
+          canPreview ? `${t("chat.image.preview")} ${alt}` : `${t("chat.image.loading")} ${alt}`
+        }
       >
         {imageFrame}
       </button>
       {previewOpen ? (
-        <ImagePreview
-          open={previewOpen}
-          slides={slides}
-          onClose={() => setPreviewOpen(false)}
-        />
+        <ImagePreview open={previewOpen} slides={slides} onClose={() => setPreviewOpen(false)} />
       ) : null}
     </>
   );
@@ -1959,7 +1722,7 @@ function NativeDisplayImageTile(props: {
               ? "absolute inset-0 h-full w-full p-1"
               : isSvgImage
                 ? "h-auto max-h-[32rem] w-full max-w-full p-1"
-              : "h-auto max-h-[32rem] max-w-full",
+                : "h-auto max-h-[32rem] max-w-full",
             imageStatus === "loaded"
               ? "opacity-100"
               : "pointer-events-none absolute inset-0 h-full w-full max-h-none opacity-0",
@@ -1985,9 +1748,7 @@ function NativeDisplayImageTile(props: {
   return (
     <button
       type="button"
-      className={cn(
-        className,
-      )}
+      className={cn(className)}
       disabled={!canPreview}
       aria-label={canPreview ? `${t("chat.image.preview")} ${alt}` : statusTitle}
       onClick={() => {
@@ -2059,20 +1820,6 @@ function extractReadBody(text: string) {
   return marker >= 0 ? text.slice(marker + 2) : text;
 }
 
-function ToolScrollablePre(props: { children: ReactNode; className?: string }) {
-  const { children, className } = props;
-  return (
-    <pre
-      className={cn(
-        "tool-text-scroll overflow-x-auto overflow-y-auto whitespace-pre break-normal rounded-[8px] px-2.5 py-2 text-[11.5px] leading-[1.6]",
-        className,
-      )}
-    >
-      {children}
-    </pre>
-  );
-}
-
 function CodePreview(props: { text: string; maxChars?: number }) {
   const { text, maxChars = 4000 } = props;
   if (!/\S/.test(text)) return null;
@@ -2083,95 +1830,25 @@ function CodePreview(props: { text: string; maxChars?: number }) {
   );
 }
 
-function guessLangFromPath(filePath?: string): string {
-  if (!filePath) return "txt";
-  const ext = filePath.split(".").pop()?.toLowerCase();
-  const map: Record<string, string> = {
-    ts: "typescript",
-    tsx: "typescript",
-    js: "javascript",
-    jsx: "javascript",
-    py: "python",
-    rs: "rust",
-    go: "go",
-    java: "java",
-    kt: "kotlin",
-    rb: "ruby",
-    swift: "swift",
-    c: "c",
-    cpp: "cpp",
-    h: "c",
-    hpp: "cpp",
-    cs: "csharp",
-    css: "css",
-    scss: "scss",
-    html: "html",
-    vue: "vue",
-    json: "json",
-    yaml: "yaml",
-    yml: "yaml",
-    toml: "toml",
-    xml: "xml",
-    md: "markdown",
-    sql: "sql",
-    sh: "bash",
-    zsh: "bash",
-    bash: "bash",
-    dockerfile: "dockerfile",
-    lua: "lua",
-    php: "php",
-    dart: "dart",
-  };
-  return (ext && map[ext]) || "txt";
+// Render-layer tolerance for historical messages: current details carry
+// `scope` ("workspace" | "skill" | "external"), while old sessions may still
+// carry the legacy `root` ("workspace" | "skills") or unknown scope values
+// such as "temp"/"artifact". Degrade at the read site — unknown values are
+// displayed verbatim; "workspace" (the default) is hidden.
+function resolveFileToolScope(details: unknown): string | undefined {
+  if (!details || typeof details !== "object") return undefined;
+  const record = details as Record<string, unknown>;
+  const scope =
+    typeof record.scope === "string" && record.scope.trim() ? record.scope.trim() : undefined;
+  const legacyRoot =
+    typeof record.root === "string" && record.root.trim() ? record.root.trim() : undefined;
+  const resolved = scope ?? (legacyRoot === "skills" ? "skill" : legacyRoot);
+  return resolved && resolved !== "workspace" ? resolved : undefined;
 }
 
-function useIsDark() {
-  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains("dark"));
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => observer.disconnect();
-  }, []);
-  return isDark;
-}
-
-function EditDiffView(props: { beforeText: string; afterText: string; filePath?: string }) {
-  const { beforeText, afterText, filePath } = props;
-  const isDark = useIsDark();
-  const lang = guessLangFromPath(filePath);
-
-  const diffFile = useMemo(() => {
-    if (!beforeText && !afterText) return undefined;
-    const instance = generateDiffFile(
-      filePath ?? "old",
-      beforeText,
-      filePath ?? "new",
-      afterText,
-      lang,
-      lang,
-    );
-    instance.init();
-    instance.buildSplitDiffLines();
-    return instance;
-  }, [beforeText, afterText, filePath, lang]);
-
-  if (!diffFile) return null;
-
-  return (
-    <div className="edit-tool-diff-view tool-text-scroll overflow-x-auto overflow-y-hidden rounded-[10px] border border-black/[0.06] bg-white/[0.58] shadow-sm dark:border-white/[0.08] dark:bg-white/[0.04] dark:shadow-none">
-      <DiffView
-        diffFile={diffFile}
-        diffViewMode={DiffModeEnum.Unified}
-        diffViewTheme={isDark ? "dark" : "light"}
-        diffViewHighlight
-        diffViewAddWidget={false}
-        diffViewWrap={false}
-        diffViewFontSize={12}
-      />
-    </div>
-  );
+function fileScopeTags(details: unknown): MetaTag[] {
+  const scope = resolveFileToolScope(details);
+  return scope ? [{ label: "scope", value: scope }] : [];
 }
 
 function ToolResultDisplay({
@@ -2201,8 +1878,14 @@ function ToolResultDisplay({
             ...(typeof shellDetails.effective_timeout_ms === "number"
               ? [{ label: "timeout_ms", value: `${shellDetails.effective_timeout_ms}` }]
               : []),
-            { label: "stdout", value: summarizeShellStream(shellDetails.stdout, shellDetails.stdout_truncated) },
-            { label: "stderr", value: summarizeShellStream(shellDetails.stderr, shellDetails.stderr_truncated) },
+            {
+              label: "stdout",
+              value: summarizeShellStream(shellDetails.stdout, shellDetails.stdout_truncated),
+            },
+            {
+              label: "stderr",
+              value: summarizeShellStream(shellDetails.stderr, shellDetails.stderr_truncated),
+            },
             ...(shellDetails.timed_out ? [{ label: "timeout", value: "true" }] : []),
             ...(shellDetails.cancelled ? [{ label: "cancelled", value: "true" }] : []),
           ]}
@@ -2218,15 +1901,23 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
-              { label: "lines", value: details.numLines > 0 ? `${details.startLine}-${details.startLine + details.numLines - 1}/${details.totalLines}` : `empty/${details.totalLines}` },
+              ...fileScopeTags(details),
+              {
+                label: "lines",
+                value:
+                  details.numLines > 0
+                    ? `${details.startLine}-${details.startLine + details.numLines - 1}/${details.totalLines}`
+                    : `empty/${details.totalLines}`,
+              },
               { label: "view", value: details.isPartialView ? "partial" : "full" },
               ...(details.truncated ? [{ label: "truncated", value: "true" }] : []),
               ...(details.reusedExisting ? [{ label: "cache", value: "unchanged" }] : []),
             ]}
           />
         </ToolSurface>
-        {!details.reusedExisting ? <CodePreview text={extractReadBody(text)} maxChars={8000} /> : null}
+        {!details.reusedExisting ? (
+          <CodePreview text={extractReadBody(text)} maxChars={8000} />
+        ) : null}
       </div>
     );
   }
@@ -2264,15 +1955,29 @@ function ToolResultDisplay({
             tags={[
               { label: "action", value: details.action },
               { label: "root", value: details.rootDir },
-              ...(typeof details.skillsCount === "number" ? [{ label: "skills", value: String(details.skillsCount) }] : []),
-              ...(typeof details.installedCount === "number" ? [{ label: "installed", value: String(details.installedCount) }] : []),
+              ...(typeof details.skillsCount === "number"
+                ? [{ label: "skills", value: String(details.skillsCount) }]
+                : []),
+              ...(typeof details.installedCount === "number"
+                ? [{ label: "installed", value: String(details.installedCount) }]
+                : []),
               ...(details.createdName ? [{ label: "created", value: details.createdName }] : []),
-              ...(typeof details.clawhubResultCount === "number" ? [{ label: "clawhub", value: String(details.clawhubResultCount) }] : []),
+              ...(typeof details.clawhubResultCount === "number"
+                ? [{ label: "clawhub", value: String(details.clawhubResultCount) }]
+                : []),
               ...(details.clawhubSlug ? [{ label: "slug", value: details.clawhubSlug }] : []),
-              ...(typeof details.validationOk === "boolean" ? [{ label: "valid", value: details.validationOk ? "true" : "false" }] : []),
-              ...(details.packageArchive ? [{ label: "archive", value: details.packageArchive }] : []),
-              ...(details.clawhubNextCursor ? [{ label: "cursor", value: details.clawhubNextCursor }] : []),
-              ...(typeof details.invalidCount === "number" && details.invalidCount > 0 ? [{ label: "invalid", value: String(details.invalidCount) }] : []),
+              ...(typeof details.validationOk === "boolean"
+                ? [{ label: "valid", value: details.validationOk ? "true" : "false" }]
+                : []),
+              ...(details.packageArchive
+                ? [{ label: "archive", value: details.packageArchive }]
+                : []),
+              ...(details.clawhubNextCursor
+                ? [{ label: "cursor", value: details.clawhubNextCursor }]
+                : []),
+              ...(typeof details.invalidCount === "number" && details.invalidCount > 0
+                ? [{ label: "invalid", value: String(details.invalidCount) }]
+                : []),
               ...(details.backup ? [{ label: "backup", value: details.backup }] : []),
             ]}
           />
@@ -2292,13 +1997,25 @@ function ToolResultDisplay({
               { label: "action", value: details.action },
               ...(details.serverId ? [{ label: "server", value: details.serverId }] : []),
               ...(details.transport ? [{ label: "transport", value: details.transport }] : []),
-              ...(typeof details.ok === "boolean" ? [{ label: "ok", value: details.ok ? "true" : "false" }] : []),
+              ...(typeof details.ok === "boolean"
+                ? [{ label: "ok", value: details.ok ? "true" : "false" }]
+                : []),
               ...(details.phase ? [{ label: "phase", value: details.phase }] : []),
-              ...(typeof details.serverCount === "number" ? [{ label: "servers", value: String(details.serverCount) }] : []),
-              ...(typeof details.enabledCount === "number" ? [{ label: "enabled", value: String(details.enabledCount) }] : []),
-              ...(typeof details.toolsCount === "number" ? [{ label: "tools", value: String(details.toolsCount) }] : []),
-              ...(typeof details.changed === "boolean" ? [{ label: "changed", value: details.changed ? "true" : "false" }] : []),
-              ...(typeof details.stopped === "boolean" ? [{ label: "stopped", value: details.stopped ? "true" : "false" }] : []),
+              ...(typeof details.serverCount === "number"
+                ? [{ label: "servers", value: String(details.serverCount) }]
+                : []),
+              ...(typeof details.enabledCount === "number"
+                ? [{ label: "enabled", value: String(details.enabledCount) }]
+                : []),
+              ...(typeof details.toolsCount === "number"
+                ? [{ label: "tools", value: String(details.toolsCount) }]
+                : []),
+              ...(typeof details.changed === "boolean"
+                ? [{ label: "changed", value: details.changed ? "true" : "false" }]
+                : []),
+              ...(typeof details.stopped === "boolean"
+                ? [{ label: "stopped", value: details.stopped ? "true" : "false" }]
+                : []),
             ]}
           />
         </ToolSurface>
@@ -2314,7 +2031,7 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
+              ...fileScopeTags(details),
               { label: "mime", value: details.mimeType },
               { label: "size", value: `${details.sizeBytes} bytes` },
               ...(details.reusedExisting ? [{ label: "cache", value: "unchanged" }] : []),
@@ -2346,7 +2063,7 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
+              ...fileScopeTags(details),
               {
                 label: "pages",
                 value:
@@ -2359,7 +2076,9 @@ function ToolResultDisplay({
             ]}
           />
         </ToolSurface>
-        {!details.reusedExisting ? <CodePreview text={extractReadBody(text)} maxChars={8000} /> : null}
+        {!details.reusedExisting ? (
+          <CodePreview text={extractReadBody(text)} maxChars={8000} />
+        ) : null}
       </div>
     );
   }
@@ -2371,7 +2090,7 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
+              ...fileScopeTags(details),
               {
                 label: "cells",
                 value:
@@ -2384,7 +2103,9 @@ function ToolResultDisplay({
             ]}
           />
         </ToolSurface>
-        {!details.reusedExisting ? <CodePreview text={extractReadBody(text)} maxChars={8000} /> : null}
+        {!details.reusedExisting ? (
+          <CodePreview text={extractReadBody(text)} maxChars={8000} />
+        ) : null}
       </div>
     );
   }
@@ -2396,7 +2117,7 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
+              ...fileScopeTags(details),
               ...(details.mimeType ? [{ label: "mime", value: details.mimeType }] : []),
               ...(typeof details.sizeBytes === "number"
                 ? [{ label: "size", value: `${details.sizeBytes} bytes` }]
@@ -2406,7 +2127,9 @@ function ToolResultDisplay({
             ]}
           />
         </ToolSurface>
-        {!details.reusedExisting ? <CodePreview text={extractReadBody(text)} maxChars={8000} /> : null}
+        {!details.reusedExisting ? (
+          <CodePreview text={extractReadBody(text)} maxChars={8000} />
+        ) : null}
       </div>
     );
   }
@@ -2418,7 +2141,7 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
+              ...fileScopeTags(details),
               { label: "target", value: details.existedBefore ? "existing" : "new" },
               { label: "bytes", value: String(details.bytesWritten) },
               { label: "lines", value: String(details.totalLines) },
@@ -2436,7 +2159,10 @@ function ToolResultDisplay({
       <EditDiffView
         beforeText={details.oldPreview}
         afterText={details.newPreview}
-        filePath={details.root === "skills" ? `skills:${details.path}` : details.path}
+        filePath={
+          details.displayPath ||
+          (resolveFileToolScope(details) === "skill" ? `skills:${details.path}` : details.path)
+        }
       />
     );
   }
@@ -2445,7 +2171,9 @@ function ToolResultDisplay({
     const details = result.details as DeleteResultDetails;
     return (
       <ToolSurface>
-        <MetaTags tags={[...fileRootTags(details.root), { label: "kind", value: details.targetKind }]} />
+        <MetaTags
+          tags={[...fileScopeTags(details), { label: "kind", value: details.targetKind }]}
+        />
       </ToolSurface>
     );
   }
@@ -2462,7 +2190,7 @@ function ToolResultDisplay({
               total: details.total,
               offset: details.offset,
               hasMore: details.hasMore,
-            }).concat(fileRootTags(details.root))}
+            }).concat(fileScopeTags(details))}
           />
         </ToolSurface>
         <ToolSurface className="max-h-56 overflow-auto">
@@ -2472,8 +2200,13 @@ function ToolResultDisplay({
                 key={`${entry.kind}-${entry.path}`}
                 className="flex items-start gap-2 rounded-[8px] px-1.5 py-1 text-[11px] leading-[1.5] even:bg-black/[0.02] dark:even:bg-white/[0.03]"
               >
-                <span className="mt-[1px] shrink-0 text-[10px] font-semibold uppercase text-muted-foreground/35">{entry.kind}</span>
-                <PathDisplay path={entry.path} className="min-w-0 break-all font-mono text-[11px]" />
+                <span className="mt-[1px] shrink-0 text-[10px] font-semibold uppercase text-muted-foreground/35">
+                  {entry.kind}
+                </span>
+                <PathDisplay
+                  path={entry.path}
+                  className="min-w-0 break-all font-mono text-[11px]"
+                />
               </div>
             ))}
           </div>
@@ -2494,7 +2227,7 @@ function ToolResultDisplay({
               total: details.total,
               offset: details.offset,
               hasMore: details.hasMore,
-            }).concat(fileRootTags(details.root))}
+            }).concat(fileScopeTags(details))}
           />
         </ToolSurface>
         <ToolSurface className="max-h-56 overflow-auto">
@@ -2519,7 +2252,7 @@ function ToolResultDisplay({
         <ToolSurface>
           <MetaTags
             tags={[
-              ...fileRootTags(details.root),
+              ...fileScopeTags(details),
               { label: "mode", value: details.outputMode },
               { label: "matches", value: String(details.matchCount) },
               { label: "files", value: String(details.fileCount) },
@@ -2536,7 +2269,10 @@ function ToolResultDisplay({
                   key={file.path}
                   className="space-y-1 rounded-[8px] px-1.5 py-1 even:bg-black/[0.02] dark:even:bg-white/[0.03]"
                 >
-                  <PathDisplay path={file.path} className="block break-all font-mono text-[11px] leading-[1.5]" />
+                  <PathDisplay
+                    path={file.path}
+                    className="block break-all font-mono text-[11px] leading-[1.5]"
+                  />
                   <MetaTags
                     tags={[
                       { label: "count", value: String(file.count) },
@@ -2552,16 +2288,26 @@ function ToolResultDisplay({
         ) : (
           <ToolSurface className="max-h-64 overflow-auto space-y-2">
             {details.matches.map((match, index) => (
-              <div key={`${match.path}:${match.line}:${index}`} className="rounded-[8px] border border-black/[0.05] bg-white/[0.55] p-2 dark:border-white/[0.06] dark:bg-white/[0.03]">
+              <div
+                key={`${match.path}:${match.line}:${index}`}
+                className="rounded-[8px] border border-black/[0.05] bg-white/[0.55] p-2 dark:border-white/[0.06] dark:bg-white/[0.03]"
+              >
                 <div className="flex items-start gap-2">
-                  <PathDisplay path={match.path} className="min-w-0 break-all font-mono text-[11px] leading-[1.5]" />
+                  <PathDisplay
+                    path={match.path}
+                    className="min-w-0 break-all font-mono text-[11px] leading-[1.5]"
+                  />
                   <span className="shrink-0 rounded bg-black/[0.04] px-1.5 py-[1px] text-[10px] font-semibold text-muted-foreground/60 dark:bg-white/[0.05]">
                     line {match.line}
                   </span>
                 </div>
-                {match.before.length > 0 ? <CodePreview text={match.before.join("\n")} maxChars={1500} /> : null}
+                {match.before.length > 0 ? (
+                  <CodePreview text={match.before.join("\n")} maxChars={1500} />
+                ) : null}
                 <CodePreview text={match.text} maxChars={1500} />
-                {match.after.length > 0 ? <CodePreview text={match.after.join("\n")} maxChars={1500} /> : null}
+                {match.after.length > 0 ? (
+                  <CodePreview text={match.after.join("\n")} maxChars={1500} />
+                ) : null}
               </div>
             ))}
           </ToolSurface>
@@ -2570,15 +2316,51 @@ function ToolResultDisplay({
     );
   }
 
-  if (kind === "delegate_agent") {
-    return null;
+  if (kind === "subagent_batch") {
+    const details = result.details as SubagentBatchDetails;
+    if (details.status !== "rejected" && result.isError !== true) {
+      // The successful parent batch is rendered as per-agent cards.
+      return null;
+    }
+    const issues = details.issues ?? [];
+    return (
+      <ToolSurface className="space-y-2">
+        <MetaTags
+          tags={[
+            { label: "agent", value: "rejected" },
+            { label: "issues", value: String(issues.length) },
+          ]}
+        />
+        <div className="text-[12px] font-semibold leading-[1.45] text-foreground/90">
+          Agent call rejected — no subagents were started
+        </div>
+        {issues.length > 0 ? (
+          <CodePreview
+            text={issues
+              .map(
+                (item, index) =>
+                  `${index + 1}. [${item.code}]${item.agentId ? ` agent=${item.agentId}` : ""} ${item.message}`,
+              )
+              .join("\n")}
+            maxChars={2400}
+          />
+        ) : (
+          <CodePreview
+            text={result.content
+              .map((block) => (block.type === "text" ? block.text : ""))
+              .join("\n")}
+            maxChars={2400}
+          />
+        )}
+      </ToolSurface>
+    );
   }
 
-  if (kind === "delegate_agent_item") {
-    const details = result.details as DelegateAgentCardResultDetails;
+  if (kind === "subagent_card") {
+    const details = result.details as SubagentCardDetails;
     const agent = details.agent;
-    const agentDisplayName = agent.name || agent.agentName || agent.id;
-    const agentTask = getDelegateAgentTask(agent);
+    const agentDisplayName = agent.name || agent.id;
+    const agentTask = getSubagentTask(agent);
     const tags: MetaTag[] = [
       { label: "agent", value: `${details.index + 1}/${details.total}` },
       { label: "status", value: agent.status },
@@ -2586,10 +2368,10 @@ function ToolResultDisplay({
     if (agent.mode === "worktree") {
       tags.push({ label: "mode", value: agent.mode });
     }
-    if (shouldShowDelegateApplyStatus(agent) && agent.applyStatus) {
+    if (shouldShowSubagentApplyStatus(agent) && agent.applyStatus) {
       tags.push({ label: "apply", value: agent.applyStatus });
     }
-    if (shouldShowDelegateCleanupStatus(agent) && agent.worktreeCleanupStatus) {
+    if (shouldShowSubagentCleanupStatus(agent) && agent.worktreeCleanupStatus) {
       tags.push({ label: "cleanup", value: agent.worktreeCleanupStatus });
     }
 
@@ -2598,8 +2380,8 @@ function ToolResultDisplay({
     const showUntrackedFiles = agent.applyStatus !== "applied" && untrackedFiles.length > 0;
     const showCandidateArtifacts = Boolean(
       candidateArtifacts.length > 0 &&
-        (agent.taskIntent === "document_generation" ||
-          (agent.applySkippedReason && agent.applySkippedReason !== "no_changes")),
+        agent.applySkippedReason &&
+        agent.applySkippedReason !== "no_changes",
     );
 
     return (
@@ -2619,16 +2401,18 @@ function ToolResultDisplay({
               <span className="text-muted-foreground">task</span> {agentTask}
             </div>
           ) : null}
-          {shouldShowDelegateWorktreeLocation(agent) ? (
+          {shouldShowSubagentWorktreeLocation(agent) ? (
             <div className="break-all text-[10px] text-muted-foreground/70">
-              {agent.branchName ? `${agent.branchName} | ` : ""}{agent.worktreeRoot}
+              {agent.branchName ? `${agent.branchName} | ` : ""}
+              {agent.worktreeRoot}
             </div>
           ) : null}
-          {agent.diffStat ? (
-            <CodePreview text={agent.diffStat} maxChars={1200} />
-          ) : null}
+          {agent.diffStat ? <CodePreview text={agent.diffStat} maxChars={1200} /> : null}
           {showUntrackedFiles ? (
-            <CodePreview text={`untracked:\n${untrackedFiles.map((file) => `- ${file}`).join("\n")}`} maxChars={1200} />
+            <CodePreview
+              text={`untracked:\n${untrackedFiles.map((file) => `- ${file}`).join("\n")}`}
+              maxChars={1200}
+            />
           ) : null}
           {agent.worktreeStatusError ? (
             <CodePreview text={agent.worktreeStatusError} maxChars={1200} />
@@ -2642,21 +2426,45 @@ function ToolResultDisplay({
             <CodePreview text={`fallback reason:\n${agent.applyFallbackReason}`} maxChars={1200} />
           ) : null}
           {agent.applyCopiedFiles && agent.applyCopiedFiles.length > 0 ? (
-            <CodePreview text={`copied:\n${agent.applyCopiedFiles.map((file) => `- ${file}`).join("\n")}`} maxChars={1200} />
+            <CodePreview
+              text={`copied:\n${agent.applyCopiedFiles.map((file) => `- ${file}`).join("\n")}`}
+              maxChars={1200}
+            />
           ) : null}
           {agent.applyDeletedFiles && agent.applyDeletedFiles.length > 0 ? (
-            <CodePreview text={`deleted:\n${agent.applyDeletedFiles.map((file) => `- ${file}`).join("\n")}`} maxChars={1200} />
+            <CodePreview
+              text={`deleted:\n${agent.applyDeletedFiles.map((file) => `- ${file}`).join("\n")}`}
+              maxChars={1200}
+            />
           ) : null}
           {agent.applyConflictFiles && agent.applyConflictFiles.length > 0 ? (
-            <CodePreview text={`apply conflicts:\n${agent.applyConflictFiles.map((file) => `- ${file}`).join("\n")}`} maxChars={1200} />
+            <CodePreview
+              text={`apply conflicts:\n${agent.applyConflictFiles.map((file) => `- ${file}`).join("\n")}`}
+              maxChars={1200}
+            />
           ) : null}
           {agent.worktreeCleanupError ? (
-            <CodePreview text={`worktree cleanup failed:\n${agent.worktreeCleanupError}`} maxChars={1200} />
+            <CodePreview
+              text={`worktree cleanup failed:\n${agent.worktreeCleanupError}`}
+              maxChars={1200}
+            />
           ) : agent.worktreeCleanupReason && agent.worktreeCleanupStatus === "retained" ? (
-            <CodePreview text={`worktree retained: ${agent.worktreeCleanupReason}`} maxChars={1200} />
+            <CodePreview
+              text={`worktree retained: ${agent.worktreeCleanupReason}`}
+              maxChars={1200}
+            />
           ) : null}
           {showCandidateArtifacts ? (
-            <CodePreview text={`candidate artifacts:\n${candidateArtifacts.map((file) => `- ${file}`).join("\n")}`} maxChars={1200} />
+            <CodePreview
+              text={`candidate artifacts:\n${candidateArtifacts.map((file) => `- ${file}`).join("\n")}`}
+              maxChars={1200}
+            />
+          ) : null}
+          {agent.persistenceWarnings && agent.persistenceWarnings.length > 0 ? (
+            <CodePreview
+              text={`persistence warning:\n${agent.persistenceWarnings.map((item) => `- ${item}`).join("\n")}`}
+              maxChars={1200}
+            />
           ) : null}
           {agent.error ? (
             <CodePreview text={agent.error} maxChars={1200} />
@@ -2669,9 +2477,9 @@ function ToolResultDisplay({
   }
 
   if (kind === "subagent_message") {
-    const details = result.details as SubagentMessageResultDetails;
-    const from = details.senderDisplayName || details.senderAgentId;
-    const to = details.recipientDisplayName || details.recipientAgentId;
+    const details = result.details as SubagentMessageDetails;
+    const from = details.senderName || details.senderId;
+    const to = details.recipientName || details.recipientId;
     return (
       <ToolSurface className="space-y-2">
         <MetaTags
@@ -2777,13 +2585,12 @@ function ToolCallItem({
     !isRedactedToolContent &&
     (item.toolCall.name === "Image" || builtinResultKind === "display_image");
   const [open, setOpen] = useState(readOnly || isRedactedToolContent ? false : shouldAutoOpen);
-  const isDelegateAgentCard = isDelegateAgentCardToolCall(item.toolCall);
+  const isSubagentCard = isSubagentCardToolCall(item.toolCall);
   const hasArgs = Object.keys(item.toolCall.arguments || {}).length > 0;
-  const isStreamingFilePreviewTool =
-    item.toolCall.name === "Write" || item.toolCall.name === "Edit";
+  const isStreamingFilePreviewTool = FILE_TOOL_TEXT_FIELDS[item.toolCall.name] !== undefined;
   const shouldShowArgs =
     !isRedactedToolContent &&
-    (!isDelegateAgentCard || !result) &&
+    (!isSubagentCard || !result) &&
     (isStreamingFilePreviewTool ? !result : hasArgs);
   const isBash = item.toolCall.name === "Bash";
   const bashCmd =
@@ -2791,14 +2598,19 @@ function ToolCallItem({
       ? item.toolCall.arguments.command.trim()
       : "";
   const firstLine = bashCmd ? bashCmd.split("\n")[0] : "";
-  const toolArgsSummary = isRedactedToolContent || isBash
-    ? ""
-    : isDelegateAgentCard
-      ? getDelegateAgentInlineSummary(item)
-      : summarizeToolCall(item.toolCall, {
-          includeName: false,
-          includeManagerAction: false,
-        });
+  const toolArgsSummary =
+    isRedactedToolContent || isBash
+      ? ""
+      : isSubagentCard
+        ? getSubagentInlineSummary(item)
+        : summarizeToolCall(item.toolCall, {
+            includeName: false,
+            includeManagerAction: false,
+          });
+  const fileChangeStats = useMemo(
+    () => (isRedactedToolContent ? undefined : deriveFileChangeStats(item.toolCall)),
+    [isRedactedToolContent, item.toolCall],
+  );
   const meta = getToolMeta(item.toolCall.name);
   const ToolIcon = meta.Icon;
   const title = isRedactedToolContent
@@ -2868,13 +2680,20 @@ function ToolCallItem({
 
         {isBash && firstLine ? (
           <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/55">
-            <span className="text-muted-foreground/30">$</span>
-            {" "}{firstLine.length > 48 ? `${firstLine.slice(0, 48)}…` : firstLine}
+            <span className="text-muted-foreground/30">$</span>{" "}
+            {firstLine.length > 48 ? `${firstLine.slice(0, 48)}…` : firstLine}
           </span>
         ) : toolArgsSummary ? (
-          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/55" title={toolArgsSummary}>
+          <span
+            className="min-w-0 truncate font-mono text-[11px] text-muted-foreground/55"
+            title={toolArgsSummary}
+          >
             {toolArgsSummary}
           </span>
+        ) : null}
+
+        {fileChangeStats ? (
+          <FileChangeBadge added={fileChangeStats.added} removed={fileChangeStats.removed} />
         ) : null}
       </div>
 
@@ -3051,10 +2870,7 @@ function ToolTraceGroup(props: {
   );
   const composition = useMemo(() => getToolGroupComposition(items), [items]);
   const dominantToolName = useMemo(() => getDominantToolName(items), [items]);
-  const allBash = useMemo(
-    () => items.every((item) => item.toolCall.name === "Bash"),
-    [items],
-  );
+  const allBash = useMemo(() => items.every((item) => item.toolCall.name === "Bash"), [items]);
   const meta = useMemo(
     () => (allBash ? getToolMeta("Bash") : getToolMeta(dominantToolName)),
     [allBash, dominantToolName],
@@ -3163,9 +2979,7 @@ function ToolTraceGroup(props: {
               variant="grouped"
               readOnly={readOnly}
               redactToolContent={redactToolContent}
-              isRunning={Boolean(
-                item.toolCall.id && runningToolCallIds.includes(item.toolCall.id),
-              )}
+              isRunning={Boolean(item.toolCall.id && runningToolCallIds.includes(item.toolCall.id))}
             />
           ))}
         </div>
@@ -3186,6 +3000,7 @@ function RoundContent(props: {
   toolStatusVariant?: "default" | "compaction";
   runningToolCallIds?: string[];
   thinkingOpen?: boolean;
+  renderMode?: "streaming" | "static";
   readOnly?: boolean;
   redactToolContent?: boolean;
 }) {
@@ -3201,10 +3016,10 @@ function RoundContent(props: {
     toolStatusVariant,
     runningToolCallIds,
     thinkingOpen,
+    renderMode,
     readOnly = false,
     redactToolContent = false,
-  } =
-    props;
+  } = props;
   const groupedBlocks = useMemo(() => groupRoundBlocks(round.blocks), [round.blocks]);
   const hasContent =
     groupedBlocks.some((block) => {
@@ -3217,7 +3032,8 @@ function RoundContent(props: {
         return true;
       }
       return block.text.trim().length > 0;
-    }) || (isActive && isLive);
+    }) ||
+    (isActive && isLive);
   const normalizedToolStatus =
     isActive && isLive ? normalizeLiveToolStatus(toolStatus ?? null) : null;
   const isCompactionStatus = toolStatusVariant === "compaction";
@@ -3303,7 +3119,7 @@ function RoundContent(props: {
             <ToolTraceGroup
               key={block.key}
               items={block.items}
-              runningToolCallIds={isLive ? runningToolCallIds ?? [] : []}
+              runningToolCallIds={isLive ? (runningToolCallIds ?? []) : []}
               readOnly={readOnly}
               redactToolContent={redactToolContent}
             />
@@ -3328,13 +3144,16 @@ function RoundContent(props: {
             content={block.text}
             className="font-openai-chat"
             isAnimating={Boolean(isLive && isActive)}
+            renderMode={renderMode}
             showCaret={Boolean(isLive && isActive && isStreaming)}
             readOnly={readOnly}
           />
         );
       })}
 
-      {showUsage ? <UsagePanel usage={round.meta?.usage} contextWindow={usageContextWindow} /> : null}
+      {showUsage ? (
+        <UsagePanel usage={round.meta?.usage} contextWindow={usageContextWindow} />
+      ) : null}
     </div>
   );
 }
@@ -3354,6 +3173,10 @@ export function AssistantBubble(props: {
   // tool indicators, streaming mode) stays intact and the article does not
   // re-render in static mode.
   isStreaming?: boolean;
+  // Fixed Streamdown render mode for every round in this bubble: live-born
+  // entries keep "streaming" forever (even after they fold into committed
+  // history), history-born entries render "static". Never flips per entry.
+  renderMode?: "streaming" | "static";
   toolStatus?: string | null;
   toolStatusVariant?: "default" | "compaction";
   readOnly?: boolean;
@@ -3365,6 +3188,7 @@ export function AssistantBubble(props: {
     usageContextWindow,
     isLive,
     isStreaming = isLive,
+    renderMode,
     toolStatus,
     toolStatusVariant,
     readOnly = false,
@@ -3386,6 +3210,7 @@ export function AssistantBubble(props: {
             isLive={isLive}
             isStreaming={isStreaming}
             isActive={isLive && idx === rounds.length - 1}
+            renderMode={renderMode}
             toolStatus={idx === rounds.length - 1 ? toolStatus : null}
             toolStatusVariant={idx === rounds.length - 1 ? toolStatusVariant : "default"}
             runningToolCallIds={round.runningToolCallIds ?? []}

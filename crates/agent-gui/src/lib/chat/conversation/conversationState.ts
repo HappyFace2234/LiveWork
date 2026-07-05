@@ -239,9 +239,7 @@ function getMessageStableId(
 function appendHashPart(parts: string[], value: unknown) {
   const text = String(value ?? "");
   const byteLength =
-    typeof TextEncoder === "function"
-      ? new TextEncoder().encode(text).length
-      : text.length;
+    typeof TextEncoder === "function" ? new TextEncoder().encode(text).length : text.length;
   parts.push(`${byteLength}:${text}`);
 }
 

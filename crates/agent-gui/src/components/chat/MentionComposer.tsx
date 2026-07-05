@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   type ClipboardEvent,
@@ -29,6 +28,7 @@ import {
   formatMarkdownReferenceDestination,
 } from "../../lib/chat/messages/mentionReferences";
 import { cn } from "../../lib/shared/utils";
+import { invokeFs } from "../../lib/tools/fsBackend";
 import { ClipboardPaste, Copy, ScanText, Scissors } from "../icons";
 import { getFileTypeIcon, getFileTypeIconSvg } from "./fileTypeIcons";
 import { mentionChipClassName } from "./mentionChipStyles";
@@ -676,8 +676,10 @@ function hasLegacyImeKeyboardSignal(event: KeyboardEvent<HTMLDivElement>) {
   return nativeEvent.keyCode === 229 || nativeEvent.which === 229;
 }
 
+const LARGE_PASTE_COUNT_FORMAT = new Intl.NumberFormat();
+
 function formatLargePasteCount(value: number) {
-  return new Intl.NumberFormat().format(value);
+  return LARGE_PASTE_COUNT_FORMAT.format(value);
 }
 
 function parseCommitMentionNumber(value: string | null) {
@@ -1020,6 +1022,15 @@ function detectMention(root: HTMLElement, skillsEnabled: boolean): MentionContex
     textNode: node as Text,
     triggerOffset: triggerIdx,
   };
+}
+
+function mentionContextEquals(a: MentionContext, b: MentionContext) {
+  return (
+    a.trigger === b.trigger &&
+    a.query === b.query &&
+    a.textNode === b.textNode &&
+    a.triggerOffset === b.triggerOffset
+  );
 }
 
 function createFileMentionChip(path: string, kind: FileMentionKind) {
@@ -1715,6 +1726,7 @@ export const MentionComposer = memo(
     const composerContextMenuRef = useRef<HTMLDivElement>(null);
     const composerContextMenuRangeRef = useRef<Range | null>(null);
     const commitTooltipCloseTimerRef = useRef<number | null>(null);
+    const commitTooltipChipRef = useRef<HTMLElement | null>(null);
     const [isEmpty, setIsEmpty] = useState(true);
     const lastIsEmptyRef = useRef(true);
     const isComposingRef = useRef(false);
@@ -1732,6 +1744,11 @@ export const MentionComposer = memo(
       commit: MentionComposerCommitMention;
       rect: DOMRect;
     } | null>(null);
+
+    const closeCommitTooltip = useCallback(() => {
+      commitTooltipChipRef.current = null;
+      setCommitTooltip(null);
+    }, []);
 
     const closeComposerContextMenu = useCallback(() => {
       composerContextMenuRangeRef.current = null;
@@ -1765,6 +1782,9 @@ export const MentionComposer = memo(
     const mentionSessionRequestSeqRef = useRef(0);
     const mentionActiveRef = useRef(false);
     const mentionSessionQueryRef = useRef("");
+    const mentionFetchRef = useRef<{ trigger: MentionContext["trigger"]; query: string } | null>(
+      null,
+    );
 
     // ---- Mention state ----
     const [mentionCtx, setMentionCtx] = useState<MentionContext | null>(null);
@@ -1773,6 +1793,7 @@ export const MentionComposer = memo(
     const resetMentionSession = useCallback(() => {
       mentionSessionRequestSeqRef.current += 1;
       mentionSessionQueryRef.current = "";
+      mentionFetchRef.current = null;
       setMentionSessionEntries([]);
       setMentionSessionLoading(false);
       setMentionSessionError(null);
@@ -1789,6 +1810,7 @@ export const MentionComposer = memo(
       (ctx: MentionContext) => {
         const requestSeq = ++mentionSessionRequestSeqRef.current;
         mentionSessionQueryRef.current = ctx.query;
+        mentionFetchRef.current = { trigger: ctx.trigger, query: normalizeMentionQuery(ctx.query) };
         setMentionSessionEntries([]);
         setMentionSessionLoading(ctx.trigger === "file" && Boolean(normalizedWorkdir));
         setMentionSessionError(null);
@@ -1800,7 +1822,7 @@ export const MentionComposer = memo(
           return;
         }
 
-        invoke<MentionListResponse>("fs_mention_list", {
+        invokeFs<MentionListResponse>("fs_mention_list", {
           workdir: normalizedWorkdir,
           max_results: MENTION_INDEX_MAX_RESULTS,
           query: ctx.query,
@@ -2054,22 +2076,31 @@ export const MentionComposer = memo(
       const el = editorRef.current;
       if (!el) return;
       const applyContext = (ctx: MentionContext | null) => {
-        if (ctx) {
-          if (!mentionActiveRef.current) {
-            mentionActiveRef.current = true;
-            mentionSessionQueryRef.current = ctx.query;
-            setMentionCtx(ctx);
-            setHighlightIdx(0);
-            startMentionSession(ctx);
-            return;
+        if (!ctx) {
+          if (mentionActiveRef.current) {
+            closeMentionSession();
           }
-          setMentionCtx(ctx);
-          if (ctx.query !== mentionSessionQueryRef.current) {
-            mentionSessionQueryRef.current = ctx.query;
-            setHighlightIdx(0);
-          }
-        } else if (mentionActiveRef.current) {
-          closeMentionSession();
+          return;
+        }
+        setMentionCtx((prev) => (prev && mentionContextEquals(prev, ctx) ? prev : ctx));
+        if (!mentionActiveRef.current) {
+          mentionActiveRef.current = true;
+          setHighlightIdx(0);
+          startMentionSession(ctx);
+          return;
+        }
+        if (ctx.query === mentionSessionQueryRef.current) return;
+        mentionSessionQueryRef.current = ctx.query;
+        setHighlightIdx(0);
+        // The backend filters entries by the query used at fetch time, so the
+        // cached snapshot only narrows further; refetch once that breaks.
+        const fetched = mentionFetchRef.current;
+        if (
+          fetched &&
+          (fetched.trigger !== ctx.trigger ||
+            !normalizeMentionQuery(ctx.query).startsWith(fetched.query))
+        ) {
+          startMentionSession(ctx);
         }
       };
 
@@ -2090,13 +2121,16 @@ export const MentionComposer = memo(
           return normalizeSerializedText(serializeChildren(el, largePastesRef.current));
         },
         getDraft: buildDraft,
-        hasContent: () => !buildDraft().isEmpty,
+        hasContent: () => {
+          const el = editorRef.current;
+          return el != null && !editorTextIsEmpty(el);
+        },
         setText: (text: string) => {
           const el = editorRef.current;
           if (!el) return;
           el.innerHTML = "";
           largePastesRef.current.clear();
-          setCommitTooltip(null);
+          closeCommitTooltip();
           closeComposerContextMenu();
           if (isLargePasteText(text)) {
             insertLargePaste(text);
@@ -2111,7 +2145,7 @@ export const MentionComposer = memo(
           if (!el) return;
           el.innerHTML = "";
           largePastesRef.current.clear();
-          setCommitTooltip(null);
+          closeCommitTooltip();
           closeComposerContextMenu();
 
           for (const segment of draft.segments) {
@@ -2171,7 +2205,7 @@ export const MentionComposer = memo(
           if (!el) return;
           el.innerHTML = "";
           largePastesRef.current.clear();
-          setCommitTooltip(null);
+          closeCommitTooltip();
           closeComposerContextMenu();
           closeMentionSession();
           refreshEmptyState();
@@ -2180,6 +2214,7 @@ export const MentionComposer = memo(
       }),
       [
         buildDraft,
+        closeCommitTooltip,
         closeComposerContextMenu,
         closeMentionSession,
         insertLargePaste,
@@ -2191,6 +2226,10 @@ export const MentionComposer = memo(
     const selectSuggestion = useCallback(
       (suggestion: MentionSuggestion) => {
         if (!mentionCtx) return;
+        if (!mentionCtx.textNode.isConnected) {
+          closeMentionSession();
+          return;
+        }
         if (suggestion.type === "skill") {
           insertSkillMentionChip(mentionCtx, suggestion.skill);
         } else {
@@ -2341,7 +2380,7 @@ export const MentionComposer = memo(
         if (!el) return;
 
         closeMentionSession();
-        setCommitTooltip(null);
+        closeCommitTooltip();
 
         const selection = window.getSelection();
         let selectedText = "";
@@ -2367,8 +2406,24 @@ export const MentionComposer = memo(
           hasContent: !editorTextIsEmpty(el),
         });
       },
-      [closeMentionSession],
+      [closeCommitTooltip, closeMentionSession],
     );
+
+    // Large-paste chips can be removed by native editing paths (select +
+    // delete, cut); drop their map entries so the pasted text is released.
+    const pruneDetachedLargePastes = useCallback(() => {
+      const el = editorRef.current;
+      const pastes = largePastesRef.current;
+      if (!el || pastes.size === 0) return;
+      const attached = new Set<string>();
+      el.querySelectorAll(`[${LARGE_PASTE_TAG_ATTR}]`).forEach((chip) => {
+        const id = chip.getAttribute(LARGE_PASTE_TAG_ATTR);
+        if (id) attached.add(id);
+      });
+      for (const id of pastes.keys()) {
+        if (!attached.has(id)) pastes.delete(id);
+      }
+    }, []);
 
     const handleInput = useCallback(() => {
       closeComposerContextMenu();
@@ -2377,11 +2432,12 @@ export const MentionComposer = memo(
         removeStaleCaretAnchorsAroundSelection(el);
         normalizeCaretAfterChip(el);
       }
+      pruneDetachedLargePastes();
       refreshEmptyState();
       if (!isComposingRef.current) {
         refreshMention();
       }
-    }, [closeComposerContextMenu, refreshEmptyState, refreshMention]);
+    }, [closeComposerContextMenu, pruneDetachedLargePastes, refreshEmptyState, refreshMention]);
 
     const handleKeyUp = useCallback(
       (e: KeyboardEvent<HTMLDivElement>) => {
@@ -2413,24 +2469,28 @@ export const MentionComposer = memo(
       }
     }, [refreshMention]);
 
-    const updateCommitTooltipFromTarget = useCallback((target: EventTarget | null) => {
-      const editor = editorRef.current;
-      if (!(target instanceof Element) || !editor) {
-        setCommitTooltip(null);
-        return;
-      }
-      const chip = target.closest<HTMLElement>(`[${COMMIT_MENTION_SHA_ATTR}]`);
-      if (!chip || !editor.contains(chip)) {
-        setCommitTooltip(null);
-        return;
-      }
-      const commit = commitMentionFromElement(chip);
-      if (!commit) {
-        setCommitTooltip(null);
-        return;
-      }
-      setCommitTooltip({ commit, rect: chip.getBoundingClientRect() });
-    }, []);
+    const updateCommitTooltipFromTarget = useCallback(
+      (target: EventTarget | null) => {
+        const editor = editorRef.current;
+        const chip =
+          target instanceof Element && editor
+            ? target.closest<HTMLElement>(`[${COMMIT_MENTION_SHA_ATTR}]`)
+            : null;
+        if (!chip || !editor?.contains(chip)) {
+          closeCommitTooltip();
+          return;
+        }
+        if (commitTooltipChipRef.current === chip) return;
+        const commit = commitMentionFromElement(chip);
+        if (!commit) {
+          closeCommitTooltip();
+          return;
+        }
+        commitTooltipChipRef.current = chip;
+        setCommitTooltip({ commit, rect: chip.getBoundingClientRect() });
+      },
+      [closeCommitTooltip],
+    );
 
     const cancelCommitTooltipClose = useCallback(() => {
       if (commitTooltipCloseTimerRef.current === null) return;
@@ -2442,9 +2502,9 @@ export const MentionComposer = memo(
       cancelCommitTooltipClose();
       commitTooltipCloseTimerRef.current = window.setTimeout(() => {
         commitTooltipCloseTimerRef.current = null;
-        setCommitTooltip(null);
+        closeCommitTooltip();
       }, 120);
-    }, [cancelCommitTooltipClose]);
+    }, [cancelCommitTooltipClose, closeCommitTooltip]);
 
     useEffect(() => cancelCommitTooltipClose, [cancelCommitTooltipClose]);
 
@@ -2656,8 +2716,14 @@ export const MentionComposer = memo(
       closeComposerContextMenu();
       closeMentionSession();
       cancelCommitTooltipClose();
-      setCommitTooltip(null);
-    }, [cancelCommitTooltipClose, closeComposerContextMenu, closeMentionSession, setBusy]);
+      closeCommitTooltip();
+    }, [
+      cancelCommitTooltipClose,
+      closeCommitTooltip,
+      closeComposerContextMenu,
+      closeMentionSession,
+      setBusy,
+    ]);
 
     return (
       <div ref={wrapperRef} className="relative w-full min-w-0 max-w-full flex-1">

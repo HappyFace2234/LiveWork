@@ -1,13 +1,12 @@
 import { useState } from "react";
-
+import { HubBackdrop, HubHeader } from "../../components/hub/HubChrome";
 import { Cloud, McpLogo, Plug, Plus, Server, Sparkles } from "../../components/icons";
 import { Button } from "../../components/ui/button";
 import { useLocale } from "../../i18n";
+import { type AppSettings, type McpServerConfig, updateMcp } from "../../lib/settings";
+import { cn } from "../../lib/shared/utils";
 import { McpRegistryBrowser } from "./McpRegistryBrowser";
 import { McpServerEditModal, McpServersForm } from "./McpServersForm";
-import { type AppSettings, type McpServerConfig, updateMcp } from "../../lib/settings";
-import { HubBackdrop, HubHeader } from "../../components/hub/HubChrome";
-import { cn } from "../../lib/shared/utils";
 
 type McpHubPageProps = {
   settings: AppSettings;
@@ -19,9 +18,7 @@ type McpHubPageProps = {
 
 type McpHubView = "installed" | "store";
 
-type EditingState =
-  | { mode: "add" }
-  | { mode: "edit"; idx: number; server: McpServerConfig };
+type EditingState = { mode: "add" } | { mode: "edit"; idx: number; server: McpServerConfig };
 
 export function McpHubPage(props: McpHubPageProps) {
   const { settings, setSettings, sidebarOpen, onOpenSidebar } = props;
@@ -48,9 +45,7 @@ export function McpHubPage(props: McpHubPageProps) {
       if (editing?.mode === "edit") {
         const targetIdx = editing.idx;
         return updateMcp(prev, {
-          servers: prev.mcp.servers.map((item, index) =>
-            index === targetIdx ? server : item,
-          ),
+          servers: prev.mcp.servers.map((item, index) => (index === targetIdx ? server : item)),
         });
       }
       return updateMcp(prev, {
@@ -79,7 +74,7 @@ export function McpHubPage(props: McpHubPageProps) {
               className={cn(
                 "hub-panel-enter relative overflow-hidden rounded-2xl border backdrop-blur-xl",
                 ready
-                  ? "border-border/50 bg-background/75 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_8px_24px_-18px_rgba(15,23,42,0.18)]"
+                  ? "border-border/50 bg-background/75 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_8px_24px_-18px_rgba(15,23,42,0.18)] dark:border-white/[0.09] dark:bg-white/[0.05] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset,0_8px_24px_-18px_rgba(0,0,0,0.6)]"
                   : "border-border/40 bg-background/60",
               )}
             >
@@ -89,7 +84,7 @@ export function McpHubPage(props: McpHubPageProps) {
                     className={cn(
                       "relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border transition-colors",
                       ready
-                        ? "border-border/50 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+                        ? "border-border/50 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                         : "border-border/40 bg-muted/40 text-muted-foreground",
                     )}
                   >
@@ -142,7 +137,7 @@ export function McpHubPage(props: McpHubPageProps) {
 
             {/* Tab bar */}
             <div className="hub-panel-enter flex items-center justify-between gap-3">
-              <div className="inline-flex shrink-0 rounded-2xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset]">
+              <div className="inline-flex shrink-0 rounded-2xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                 {[
                   {
                     value: "installed" as const,
@@ -167,7 +162,7 @@ export function McpHubPage(props: McpHubPageProps) {
                       className={cn(
                         "relative inline-flex h-9 items-center justify-center gap-2 rounded-xl px-4 text-[12.5px] font-medium transition-all",
                         active
-                          ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_12px_-8px_rgba(15,23,42,0.18)] ring-1 ring-border/45"
+                          ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_12px_-8px_rgba(15,23,42,0.18)] ring-1 ring-border/45 dark:bg-white/[0.08] dark:ring-white/[0.09] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_12px_-8px_rgba(0,0,0,0.55)]"
                           : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
                       )}
                     >

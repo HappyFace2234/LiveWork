@@ -830,6 +830,45 @@ test("DeepSeek DSML stream wrapper keeps empty premature message_stop streams as
   assert.match(final.errorMessage, /Anthropic stream ended before message_stop/);
 });
 
+test("DeepSeek DSML stream wrapper salvages a half-streamed native tool call without a toolcall_end", async () => {
+  // Contract the tool-call argument guard relies on: a native tool call cut
+  // off by a recoverable stream end is committed into `done` but never gets a
+  // `toolcall_end` event, so downstream integrity checks can refuse it.
+  const truncatedCall = createToolCall("call_00_cut", "Write", { path: "test2" });
+  const assistant = createAssistantWithContent([truncatedCall]);
+  const wrapped = wrapDeepSeekDsmlToolCallStream({
+    async *[Symbol.asyncIterator]() {
+      yield { type: "start", partial: { ...assistant, content: [] } };
+      yield { type: "toolcall_start", contentIndex: 0, partial: assistant };
+      yield {
+        type: "toolcall_delta",
+        contentIndex: 0,
+        delta: '{"path": "test2',
+        partial: assistant,
+      };
+      throw new Error("Anthropic stream ended before message_stop");
+    },
+    async result() {
+      return assistant;
+    },
+  });
+
+  const events = [];
+  for await (const event of wrapped) {
+    events.push(event);
+  }
+
+  assert.equal(events.at(-1)?.type, "done");
+  assert.equal(
+    events.some((event) => event.type === "toolcall_end"),
+    false,
+  );
+  const doneMessage = events.at(-1).message;
+  const salvagedToolCall = doneMessage.content.find((block) => block.type === "toolCall");
+  assert.ok(salvagedToolCall);
+  assert.equal(salvagedToolCall.id, "call_00_cut");
+});
+
 test("streamAssistantMessage replies to recovered DeepSeek DSML tool calls before continuing", async () => {
   const streamQueue = [
     createSourceStream([

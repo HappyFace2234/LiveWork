@@ -195,8 +195,13 @@ struct KeepAwakeHandle;
 #[cfg(all(target_os = "macos", not(test)))]
 impl KeepAwakeHandle {
     fn start() -> Result<Self, String> {
+        // `-w <pid>` binds the assertion to this process: if the app crashes
+        // without running stop(), caffeinate exits on its own instead of
+        // blocking system sleep until reboot.
         let child = Command::new("caffeinate")
             .arg("-i")
+            .arg("-w")
+            .arg(std::process::id().to_string())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

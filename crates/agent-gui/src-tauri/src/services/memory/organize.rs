@@ -179,9 +179,9 @@ impl MemoryStore {
         let next_status = args.status.unwrap_or(current.status);
         let next_started_at = args.started_at.or(current.started_at);
         let next_finished_at = args.finished_at.or(current.finished_at);
-        let next_trimmed_protocol = args.trimmed_protocol.unwrap_or(current.trimmed_protocol);
-        let trimmed_protocol_json = serde_json::to_string(&next_trimmed_protocol)
-            .map_err(|e| format!("serialize organizer trimmed protocol failed: {e}"))?;
+        let next_report = args.report.unwrap_or(current.report);
+        let trimmed_protocol_json = serde_json::to_string(&next_report)
+            .map_err(|e| format!("serialize organizer run report failed: {e}"))?;
 
         tx.execute(
             r#"
@@ -200,7 +200,15 @@ impl MemoryStore {
                 parse_failures = ?13,
                 error = ?14,
                 final_summary = ?15,
-                trimmed_protocol_json = ?16
+                trimmed_protocol_json = ?16,
+                phase = ?17,
+                final_count = ?18,
+                compression_ratio = ?19,
+                compression_target = ?20,
+                dry_run = ?21,
+                token_usage_total = ?22,
+                quota_headroom_at_start = ?23,
+                override_reviewed = ?24
             WHERE run_id = ?1
             "#,
             params![
@@ -220,6 +228,19 @@ impl MemoryStore {
                 args.error.or(current.error),
                 args.final_summary.or(current.final_summary),
                 trimmed_protocol_json,
+                args.phase.or(current.phase),
+                args.final_count.unwrap_or(current.final_count),
+                args.compression_ratio.or(current.compression_ratio),
+                args.compression_target.or(current.compression_target),
+                if args.dry_run.unwrap_or(current.dry_run) { 1 } else { 0 },
+                args.token_usage_total.unwrap_or(current.token_usage_total),
+                args.quota_headroom_at_start
+                    .or(current.quota_headroom_at_start),
+                if args.override_reviewed.unwrap_or(current.override_reviewed) {
+                    1
+                } else {
+                    0
+                },
             ],
         )
         .map_err(|e| format!("更新 memory organize run 失败：{e}"))?;
@@ -250,7 +271,9 @@ impl MemoryStore {
                            claimed_at, model_json, scope, mode, input_count, cluster_count,
                            safe_applied, review_skipped, created_count, updated_count,
                            deleted_count, merged_count, parse_failures, error, final_summary,
-                           trimmed_protocol_json
+                           trimmed_protocol_json, phase, final_count, compression_ratio,
+                           compression_target, dry_run, token_usage_total,
+                           quota_headroom_at_start, override_reviewed
                     FROM memory_organize_runs
                     WHERE status = ?1
                     ORDER BY created_at DESC
@@ -270,7 +293,9 @@ impl MemoryStore {
                            claimed_at, model_json, scope, mode, input_count, cluster_count,
                            safe_applied, review_skipped, created_count, updated_count,
                            deleted_count, merged_count, parse_failures, error, final_summary,
-                           trimmed_protocol_json
+                           trimmed_protocol_json, phase, final_count, compression_ratio,
+                           compression_target, dry_run, token_usage_total,
+                           quota_headroom_at_start, override_reviewed
                     FROM memory_organize_runs
                     ORDER BY created_at DESC
                     LIMIT ?1
@@ -394,7 +419,15 @@ fn row_to_organize_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryOrgani
         parse_failures: row.get(19)?,
         error: row.get(20)?,
         final_summary: row.get(21)?,
-        trimmed_protocol: parse_json_value(Some(trimmed_protocol_json), json!({})),
+        phase: row.get(23)?,
+        final_count: row.get(24)?,
+        compression_ratio: row.get(25)?,
+        compression_target: row.get(26)?,
+        dry_run: row.get::<_, i64>(27)? != 0,
+        token_usage_total: row.get(28)?,
+        quota_headroom_at_start: row.get(29)?,
+        override_reviewed: row.get::<_, i64>(30)? != 0,
+        report: parse_json_value(Some(trimmed_protocol_json), json!({})),
     })
 }
 
@@ -417,7 +450,9 @@ fn load_organize_run_by_id(
                claimed_at, model_json, scope, mode, input_count, cluster_count,
                safe_applied, review_skipped, created_count, updated_count,
                deleted_count, merged_count, parse_failures, error, final_summary,
-               trimmed_protocol_json
+               trimmed_protocol_json, phase, final_count, compression_ratio,
+               compression_target, dry_run, token_usage_total,
+               quota_headroom_at_start, override_reviewed
         FROM memory_organize_runs
         WHERE run_id = ?1
         "#,
@@ -435,7 +470,9 @@ fn find_active_organize_run(conn: &Connection) -> Result<Option<MemoryOrganizeRu
                claimed_at, model_json, scope, mode, input_count, cluster_count,
                safe_applied, review_skipped, created_count, updated_count,
                deleted_count, merged_count, parse_failures, error, final_summary,
-               trimmed_protocol_json
+               trimmed_protocol_json, phase, final_count, compression_ratio,
+               compression_target, dry_run, token_usage_total,
+               quota_headroom_at_start, override_reviewed
         FROM memory_organize_runs
         WHERE status = 'running'
         ORDER BY started_at ASC, created_at ASC
@@ -455,7 +492,9 @@ fn find_blocking_organize_run(conn: &Connection) -> Result<Option<MemoryOrganize
                claimed_at, model_json, scope, mode, input_count, cluster_count,
                safe_applied, review_skipped, created_count, updated_count,
                deleted_count, merged_count, parse_failures, error, final_summary,
-               trimmed_protocol_json
+               trimmed_protocol_json, phase, final_count, compression_ratio,
+               compression_target, dry_run, token_usage_total,
+               quota_headroom_at_start, override_reviewed
         FROM memory_organize_runs
         WHERE status IN ('pending', 'running')
         ORDER BY created_at ASC

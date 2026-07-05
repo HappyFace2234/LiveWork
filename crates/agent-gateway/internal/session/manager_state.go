@@ -53,6 +53,7 @@ type syncHub struct {
 	chatQueueMu          sync.Mutex
 	nextChatQueueSubID   int
 	chatQueueSubscribers map[int]chan *gatewayv1.ChatQueueEvent
+	chatQueueSnapshots   map[string]chatQueueSnapshotRecord
 }
 
 func newSyncHub() *syncHub {
@@ -64,26 +65,7 @@ func newSyncHub() *syncHub {
 		terminalStreamSubscribers: make(map[int]chan *gatewayv1.TerminalStreamFrame),
 		sftpSubscribers:           make(map[int]chan *gatewayv1.SftpEvent),
 		chatQueueSubscribers:      make(map[int]chan *gatewayv1.ChatQueueEvent),
+		chatQueueSnapshots:        make(map[string]chatQueueSnapshotRecord),
 	}
 }
 
-type chatRunStore struct {
-	chatCommandMu          sync.Mutex
-	chatMu                 sync.Mutex
-	eventStore             ChatEventStore
-	nextChatRunSubID       int
-	nextChatRunEpoch       int64
-	chatRuns               map[string]*chatRun
-	chatRunByConversation  map[string]string
-	chatRunByClientRequest map[string]string
-	historyActiveRuns      map[string]activeHistoryRun
-}
-
-func newChatRunStore() *chatRunStore {
-	return &chatRunStore{
-		chatRuns:               make(map[string]*chatRun),
-		chatRunByConversation:  make(map[string]string),
-		chatRunByClientRequest: make(map[string]string),
-		historyActiveRuns:      make(map[string]activeHistoryRun),
-	}
-}

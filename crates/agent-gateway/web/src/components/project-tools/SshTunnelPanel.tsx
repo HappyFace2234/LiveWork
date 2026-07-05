@@ -49,7 +49,9 @@ type SshLatencyState = {
 
 type PendingSshCreate = {
   hostId: string;
-  existingSessionIds: Set<string>;
+  // Set once the create RPC returns a prompt: later prompt answers are tied to
+  // this create flow by the prompt id instead of guessing by host.
+  promptId: string | null;
 };
 
 type SshTunnelPanelProps = {
@@ -184,9 +186,6 @@ function HostMetaTags(props: { host: SshHostConfig }) {
   if (host.privateKeyPassphraseConfigured) {
     tags.push(t("settings.sshPrivateKeyPassphraseConfigured"));
   }
-  if (hostHasProxy(host)) {
-    tags.push(t("settings.sshAdvancedProxy"));
-  }
   if (tags.length === 0) return null;
   return (
     <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -228,14 +227,15 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
   const [createTitle, setCreateTitle] = useState("");
   const [createSftpEnabled, setCreateSftpEnabled] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [closingSessionId, setClosingSessionId] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [closingSessionIds, setClosingSessionIds] = useState<ReadonlySet<string>>(new Set());
+  // Create-page failures and list-page failures surface in their own views;
+  // a close error must not appear under the create form and vice versa.
+  const [createError, setCreateError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState<TerminalSshPrompt | null>(null);
   const [promptAnswer, setPromptAnswer] = useState("");
   const [answeringPrompt, setAnsweringPrompt] = useState(false);
-  const [latencyBySessionId, setLatencyBySessionId] = useState<Record<string, SshLatencyState>>(
-    {},
-  );
+  const [latencyBySessionId, setLatencyBySessionId] = useState<Record<string, SshLatencyState>>({});
   const latencyRequestsRef = useRef<Set<string>>(new Set());
   const pendingCreateRef = useRef<PendingSshCreate | null>(null);
   const onSshSessionsReconcileRef = useRef(onSshSessionsReconcile);
@@ -254,6 +254,12 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     [projectPathKey, sshSessions],
   );
   const visibleSessions = scope === "project" ? projectSshSessions : sshSessions;
+  const visibleSessionsRef = useRef(visibleSessions);
+  visibleSessionsRef.current = visibleSessions;
+  const visibleSessionsKey = useMemo(
+    () => visibleSessions.map((session) => session.id).join("\n"),
+    [visibleSessions],
+  );
   const canCreateInScope = scope === "project";
   const createHosts = canCreateInScope ? associatedHosts : [];
   const hasCreateHosts = createHosts.length > 0;
@@ -352,26 +358,34 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
   }, [visibleSessions]);
 
   useEffect(() => {
-    const connectedSshSessions = visibleSessions.filter(
-      (session) => sshSessionConnected(session) && session.kind === "ssh",
-    );
-    if (connectedSshSessions.length === 0) return;
-    connectedSshSessions.forEach(refreshSessionLatency);
-    const timer = window.setInterval(() => {
-      connectedSshSessions.forEach(refreshSessionLatency);
-    }, 10_000);
+    // Latency probes only run while the tab is visible. The interval callback
+    // reads the latest session list from a ref so reconcile-produced array
+    // identities don't rebuild the timer; the id join key only retriggers an
+    // immediate refresh when membership actually changes.
+    if (!active) return;
+    const refreshConnectedLatencies = () => {
+      for (const session of visibleSessionsRef.current) {
+        if (session.kind === "ssh" && sshSessionConnected(session)) {
+          refreshSessionLatency(session);
+        }
+      }
+    };
+    refreshConnectedLatencies();
+    const timer = window.setInterval(refreshConnectedLatencies, 10_000);
     return () => window.clearInterval(timer);
-  }, [refreshSessionLatency, visibleSessions]);
+  }, [active, refreshSessionLatency, visibleSessionsKey]);
 
+  // Ends the create flow's form/pending state only. It deliberately never
+  // touches the prompt: while a prompt is open its lifecycle belongs to the
+  // prompt handlers (submit/cancel), so a concurrent flow finish can't yank an
+  // auth dialog out from under the user.
   const finishCreateFlow = useCallback(() => {
     if (!pendingCreateRef.current) return;
     pendingCreateRef.current = null;
-    setPrompt(null);
-    setPromptAnswer("");
     setCreateTitle("");
     setCreateSftpEnabled(false);
     setCreating(false);
-    setError(null);
+    setCreateError(null);
     setView("list");
   }, []);
 
@@ -382,19 +396,6 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     },
     [finishCreateFlow, onSessionSnapshot],
   );
-
-  useEffect(() => {
-    const pending = pendingCreateRef.current;
-    if (!pending) return;
-    const createdSession = sshSessions.find(
-      (session) =>
-        session.ssh?.hostId === pending.hostId &&
-        !pending.existingSessionIds.has(session.id) &&
-        sessionBelongsToProject(session, projectPathKey),
-    );
-    if (!createdSession) return;
-    finishCreateFlow();
-  }, [finishCreateFlow, projectPathKey, sshSessions]);
 
   const toggleHost = (hostId: string) => {
     const current = associatedHostIds.filter((id) => hosts.some((host) => host.id === id));
@@ -408,10 +409,10 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     if (!selectedCreateHost || !canCreate) return;
     pendingCreateRef.current = {
       hostId: selectedCreateHost.id,
-      existingSessionIds: new Set(sshSessions.map((session) => session.id)),
+      promptId: null,
     };
     setCreating(true);
-    setError(null);
+    setCreateError(null);
     void client
       .createSsh({
         cwd,
@@ -422,18 +423,28 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
       })
       .then((result) => {
         if (result.prompt) {
-          setPrompt(result.prompt);
-          setPromptAnswer("");
-          setView("list");
+          const pending = pendingCreateRef.current;
+          if (pending && pending.hostId === selectedCreateHost.id) {
+            pendingCreateRef.current = { ...pending, promptId: result.prompt.id };
+            setPrompt(result.prompt);
+            setPromptAnswer("");
+            setView("list");
+          } else {
+            // The flow this prompt belongs to is gone; don't surface an
+            // ownerless auth dialog — release it server-side instead.
+            void client.cancelSshPrompt(result.prompt.id).catch(() => undefined);
+          }
           return;
         }
+        // The create RPC identifies our session directly via the returned
+        // snapshot — never by matching "some new session on this host".
         if (result.snapshot) {
           finishCreatedSnapshot(result.snapshot);
         }
       })
       .catch((err) => {
         pendingCreateRef.current = null;
-        setError(err instanceof Error ? err.message : String(err));
+        setCreateError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => setCreating(false));
   }, [
@@ -445,7 +456,6 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     finishCreatedSnapshot,
     projectPathKey,
     selectedCreateHost,
-    sshSessions,
   ]);
 
   const handleSubmitPrompt = useCallback(() => {
@@ -453,7 +463,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     const hostKeyPrompt = prompt.kind === "hostKey";
     if (!hostKeyPrompt && !promptAnswer.trim()) return;
     setAnsweringPrompt(true);
-    setError(null);
+    setListError(null);
     void client
       .answerSshPrompt({
         promptId: prompt.id,
@@ -462,6 +472,10 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
       })
       .then((result) => {
         if (result.prompt) {
+          const pending = pendingCreateRef.current;
+          if (pending) {
+            pendingCreateRef.current = { ...pending, promptId: result.prompt.id };
+          }
           setPrompt(result.prompt);
           setPromptAnswer("");
           return;
@@ -472,7 +486,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
           finishCreatedSnapshot(result.snapshot);
         }
       })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => setListError(err instanceof Error ? err.message : String(err)))
       .finally(() => setAnsweringPrompt(false));
   }, [answeringPrompt, client, finishCreatedSnapshot, prompt, promptAnswer]);
 
@@ -487,7 +501,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
 
   const handleCloseSession = useCallback(
     async (session: TerminalSession) => {
-      if (closingSessionId === session.id) return;
+      if (closingSessionIds.has(session.id)) return;
       const title = sessionTitle(session, t("projectTools.sshTunnelTitle"));
       const confirmed = await requestCloseSessionConfirm({
         title: t("projectTools.confirmCloseSshSession"),
@@ -499,8 +513,8 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
         tone: "destructive",
       });
       if (!confirmed) return;
-      setClosingSessionId(session.id);
-      setError(null);
+      setClosingSessionIds((current) => new Set(current).add(session.id));
+      setListError(null);
       void client
         .close(session.id, session.projectPathKey)
         .then(() => onSessionClosed(session.id))
@@ -509,11 +523,18 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
             onSessionClosed(session.id);
             return;
           }
-          setError(errorMessage(err));
+          setListError(errorMessage(err));
         })
-        .finally(() => setClosingSessionId((current) => (current === session.id ? "" : current)));
+        .finally(() =>
+          setClosingSessionIds((current) => {
+            if (!current.has(session.id)) return current;
+            const next = new Set(current);
+            next.delete(session.id);
+            return next;
+          }),
+        );
     },
-    [client, closingSessionId, onSessionClosed, requestCloseSessionConfirm, t],
+    [client, closingSessionIds, onSessionClosed, requestCloseSessionConfirm, t],
   );
 
   const listActive = view === "list";
@@ -564,10 +585,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
     const state = latencyBySessionId[session.id];
     if (state?.failed) return t("projectTools.sshTunnelLatencyUnknown");
     if (state?.latencyMs) {
-      return t("projectTools.sshTunnelLatencyValue").replace(
-        "{ms}",
-        String(state.latencyMs),
-      );
+      return t("projectTools.sshTunnelLatencyValue").replace("{ms}", String(state.latencyMs));
     }
     if (state?.loading) return t("projectTools.sshTunnelLatencyChecking");
     return t("projectTools.sshTunnelLatencyUnknown");
@@ -642,6 +660,11 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                         <span className="shrink-0 rounded-md bg-muted/70 px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
                           {authLabel(host, t)}
                         </span>
+                        {hostHasProxy(host) ? (
+                          <span className="shrink-0 rounded-md bg-muted/70 px-1.5 py-0.5 text-[10.5px] font-medium text-muted-foreground">
+                            {t("settings.sshAdvancedProxy")}
+                          </span>
+                        ) : null}
                       </div>
                       <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
                         {endpointLabel(host)}
@@ -813,7 +836,9 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                   value={createTitle}
                   onChange={(event) => setCreateTitle(event.currentTarget.value)}
                   className="h-10 w-full rounded-lg border border-border/70 bg-background/80 px-3 text-[11px] text-foreground outline-none transition-colors placeholder:text-[11px] placeholder:text-muted-foreground/70 focus-visible:border-emerald-500/50 focus-visible:ring-1 focus-visible:ring-emerald-500/20"
-                  placeholder={selectedCreateHost?.name || t("projectTools.sshTunnelTabTitlePlaceholder")}
+                  placeholder={
+                    selectedCreateHost?.name || t("projectTools.sshTunnelTabTitlePlaceholder")
+                  }
                 />
               </label>
 
@@ -854,9 +879,9 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                 </div>
               ) : null}
 
-              {error ? (
+              {createError ? (
                 <div className="rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                  {error}
+                  {createError}
                 </div>
               ) : null}
             </div>
@@ -871,7 +896,12 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
               >
                 {t("projectTools.sshTunnelCreateCancel")}
               </Button>
-              <Button type="submit" size="sm" className="h-8 rounded-lg px-3 text-xs" disabled={!canCreate}>
+              <Button
+                type="submit"
+                size="sm"
+                className="h-8 rounded-lg px-3 text-xs"
+                disabled={!canCreate}
+              >
                 {creating ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                 {creating
                   ? t("projectTools.sshTunnelConnecting")
@@ -892,9 +922,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
               <div className="truncate text-sm font-semibold tracking-tight text-foreground">
                 {t("projectTools.sshTunnelTitle")}
               </div>
-              <div className="truncate text-xs text-muted-foreground">
-                {statusText}
-              </div>
+              <div className="truncate text-xs text-muted-foreground">{statusText}</div>
             </div>
             {canShowCreateButton ? (
               <button
@@ -961,9 +989,9 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          {error ? (
+          {listError ? (
             <div className="mb-3 rounded-lg border border-destructive/20 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-              {error}
+              {listError}
             </div>
           ) : null}
 
@@ -1009,7 +1037,7 @@ export function SshTunnelPanel(props: SshTunnelPanelProps) {
                 const title = sessionTitle(session, t("projectTools.sshTunnelTitle"));
                 const endpoint = sessionEndpointLabel(session);
                 const projectLabel = sessionProjectLabel(session);
-                const closing = closingSessionId === session.id;
+                const closing = closingSessionIds.has(session.id);
                 const sshStatus = sshSessionStatus(session);
                 const connected = sshSessionConnected(session);
                 return (

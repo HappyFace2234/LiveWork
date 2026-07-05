@@ -222,7 +222,6 @@ export function AgentsSection(props: SettingsSectionProps) {
                       </div>
                     </div>
                   </div>
-
                 </div>
               );
             })}

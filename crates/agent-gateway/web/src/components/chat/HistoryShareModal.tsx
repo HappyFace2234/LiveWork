@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, Eye, EyeOff, Link2, Loader2, Share2, X } from "../icons";
-
 import type { ChatHistorySummary } from "../../lib/chat/chatHistory";
 import type { HistoryShareStatus } from "../../lib/gatewayTypes";
 import { buildHistoryShareUrl } from "../../lib/historyShare";
-import { cn } from "../../lib/shared/utils";
 import { useModalMotion } from "../../lib/shared/modalMotion";
+import { cn } from "../../lib/shared/utils";
+import { Check, Copy, Eye, EyeOff, Link2, Loader2, Share2, X } from "../icons";
 import { Button } from "../ui/button";
 
 type HistoryShareModalProps = {
@@ -69,11 +68,7 @@ function RedactionPicker(props: {
   );
 }
 
-function ShareSwitch(props: {
-  checked: boolean;
-  disabled: boolean;
-  onToggle: () => void;
-}) {
+function ShareSwitch(props: { checked: boolean; disabled: boolean; onToggle: () => void }) {
   const { checked, disabled, onToggle } = props;
   return (
     <button
@@ -163,7 +158,10 @@ export function HistoryShareModal({
             </div>
             <div className="min-w-0">
               <div className="text-sm font-semibold text-foreground">分享会话</div>
-              <div className="mt-1 truncate text-xs text-muted-foreground" title={conversation.title}>
+              <div
+                className="mt-1 truncate text-xs text-muted-foreground"
+                title={conversation.title}
+              >
                 {conversation.title}
               </div>
             </div>
@@ -216,11 +214,7 @@ export function HistoryShareModal({
                       : "border-border/60 bg-background text-muted-foreground",
                   )}
                 >
-                  {redactToolContent ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
+                  {redactToolContent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </div>
                 <div className="min-w-0 flex-1">
                   <span className="text-sm font-medium text-foreground">工具调用脱敏</span>

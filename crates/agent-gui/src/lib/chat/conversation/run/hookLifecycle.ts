@@ -1,10 +1,8 @@
-import type { HookLifecycleEventType } from "../../../settings";
+import type { HookEvent } from "../../../automation";
 
 export type ConversationHookLifecycle = {
-  queue: (event: HookLifecycleEventType) => void;
   startAgent: () => void;
   startTurn: (round: number) => void;
-  messageUpdated: () => void;
   assistantMessageCompleted: (round: number, toolCallCount: number) => void;
   toolExecutionStarted: () => void;
   toolResultReceived: (round: number) => void;
@@ -14,7 +12,7 @@ export type ConversationHookLifecycle = {
 };
 
 export function createConversationHookLifecycle(
-  dispatch: (event: HookLifecycleEventType) => void,
+  dispatch: (event: HookEvent) => void,
 ): ConversationHookLifecycle {
   let agentStarted = false;
   let agentEnded = false;
@@ -25,14 +23,10 @@ export function createConversationHookLifecycle(
   let messageEnded = false;
   const pendingToolExecutions = new Map<number, number>();
 
-  const queue = (event: HookLifecycleEventType) => {
-    dispatch(event);
-  };
-
   const ensureMessageEnded = () => {
     if (!messageStarted || messageEnded) return;
     messageEnded = true;
-    queue("message_end");
+    dispatch("message_end");
   };
 
   const endTurn = (round: number) => {
@@ -40,15 +34,14 @@ export function createConversationHookLifecycle(
     ensureMessageEnded();
     turnEnded = true;
     pendingToolExecutions.delete(round);
-    queue("turn_end");
+    dispatch("turn_end");
   };
 
   return {
-    queue,
     startAgent() {
       if (agentStarted) return;
       agentStarted = true;
-      queue("agent_start");
+      dispatch("agent_start");
     },
     startTurn(round: number) {
       activeRound = round;
@@ -56,11 +49,8 @@ export function createConversationHookLifecycle(
       turnEnded = false;
       messageStarted = true;
       messageEnded = false;
-      queue("turn_start");
-      queue("message_start");
-    },
-    messageUpdated() {
-      queue("message_update");
+      dispatch("turn_start");
+      dispatch("message_start");
     },
     assistantMessageCompleted(round: number, toolCallCount: number) {
       ensureMessageEnded();
@@ -70,11 +60,10 @@ export function createConversationHookLifecycle(
       }
     },
     toolExecutionStarted() {
-      queue("tool_execution_start");
+      dispatch("tool_execution_start");
     },
     toolResultReceived(round: number) {
-      queue("tool_execution_update");
-      queue("tool_execution_end");
+      dispatch("tool_execution_end");
       const remaining = (pendingToolExecutions.get(round) ?? 1) - 1;
       if (remaining <= 0) {
         endTurn(round);
@@ -90,7 +79,7 @@ export function createConversationHookLifecycle(
         endTurn(activeRound);
       }
       agentEnded = true;
-      queue("agent_end");
+      dispatch("agent_end");
     },
   };
 }

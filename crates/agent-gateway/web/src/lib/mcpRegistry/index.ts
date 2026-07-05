@@ -75,9 +75,7 @@ export const MCP_REGISTRY_SOURCE_OPTIONS: Array<{
 ];
 
 function asRecord(value: unknown): RawRecord {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as RawRecord
-    : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as RawRecord) : {};
 }
 
 function asArray(value: unknown): unknown[] {
@@ -104,13 +102,12 @@ function asBoolean(value: unknown): boolean {
 }
 
 function uniqueStrings(values: Array<string | undefined>) {
-  return Array.from(
-    new Set(values.map((value) => value?.trim()).filter(Boolean) as string[]),
-  );
+  return Array.from(new Set(values.map((value) => value?.trim()).filter(Boolean) as string[]));
 }
 
 function normalizeLimit(limit: unknown) {
-  const value = typeof limit === "number" && Number.isFinite(limit) ? Math.floor(limit) : DEFAULT_LIMIT;
+  const value =
+    typeof limit === "number" && Number.isFinite(limit) ? Math.floor(limit) : DEFAULT_LIMIT;
   return Math.max(1, Math.min(48, value));
 }
 
@@ -146,7 +143,7 @@ async function fetchJson(
 
 function slugifyServerId(input: string) {
   const parts = input.split("/").filter(Boolean);
-  const leaf = input.includes("/") ? parts[parts.length - 1] ?? input : input;
+  const leaf = input.includes("/") ? (parts[parts.length - 1] ?? input) : input;
   const normalized = leaf
     .trim()
     .toLowerCase()
@@ -195,11 +192,13 @@ function makeConfigInput(
 }
 
 function inputValue(input: RawRecord) {
-  return asConfigString(input.value)
-    ?? asConfigString(input.default)
-    ?? asConfigString(input.example)
-    ?? asConfigString(asArray(input.examples)[0])
-    ?? asConfigString(input.placeholder);
+  return (
+    asConfigString(input.value) ??
+    asConfigString(input.default) ??
+    asConfigString(input.example) ??
+    asConfigString(asArray(input.examples)[0]) ??
+    asConfigString(input.placeholder)
+  );
 }
 
 function recordFromInputs(
@@ -276,9 +275,16 @@ function pushTemplateRequirements(
   }
 }
 
-function makeDraft(server: McpServerConfig, requiredConfig: McpRegistryConfigInput[], warnings: string[] = []): McpRegistryInstallDraft {
-  const dedupedRequired = requiredConfig.filter((item, index, array) =>
-    array.findIndex((candidate) => candidate.name === item.name && candidate.target === item.target) === index,
+function makeDraft(
+  server: McpServerConfig,
+  requiredConfig: McpRegistryConfigInput[],
+  warnings: string[] = [],
+): McpRegistryInstallDraft {
+  const dedupedRequired = requiredConfig.filter(
+    (item, index, array) =>
+      array.findIndex(
+        (candidate) => candidate.name === item.name && candidate.target === item.target,
+      ) === index,
   );
   const status = dedupedRequired.length > 0 ? "needs_config" : "ready";
   return {
@@ -321,19 +327,25 @@ function buildRemoteDraft(
   }
 
   const headers = recordFromInputs(asArray(transport.headers), "header", requiredConfig);
-  return makeDraft({
-    id: slugifyServerId(baseName),
-    enabled: true,
-    transport: type,
-    command: "",
-    args: [],
-    url,
-    headers,
-    timeoutMs: 60_000,
-  }, requiredConfig);
+  return makeDraft(
+    {
+      id: slugifyServerId(baseName),
+      enabled: true,
+      transport: type,
+      command: "",
+      args: [],
+      url,
+      headers,
+      timeoutMs: 60_000,
+    },
+    requiredConfig,
+  );
 }
 
-function buildOfficialPackageDraft(baseName: string, pkg: RawRecord): McpRegistryInstallDraft | undefined {
+function buildOfficialPackageDraft(
+  baseName: string,
+  pkg: RawRecord,
+): McpRegistryInstallDraft | undefined {
   const transport = asRecord(pkg.transport);
   if (transportType(transport) !== "stdio") {
     return undefined;
@@ -355,16 +367,19 @@ function buildOfficialPackageDraft(baseName: string, pkg: RawRecord): McpRegistr
     ...argsFromInputs(asArray(pkg.packageArguments), requiredConfig),
   ];
   const env = recordFromInputs(asArray(pkg.environmentVariables), "env", requiredConfig);
-  return makeDraft({
-    id: slugifyServerId(baseName),
-    enabled: true,
-    transport: "stdio",
-    command,
-    args,
-    env,
-    url: "",
-    timeoutMs: 60_000,
-  }, requiredConfig);
+  return makeDraft(
+    {
+      id: slugifyServerId(baseName),
+      enabled: true,
+      transport: "stdio",
+      command,
+      args,
+      env,
+      url: "",
+      timeoutMs: 60_000,
+    },
+    requiredConfig,
+  );
 }
 
 function pickOfficialDraft(server: RawRecord): McpRegistryInstallDraft | undefined {
@@ -404,7 +419,7 @@ function normalizeOfficialCard(raw: unknown): McpRegistryCard | null {
     id: `official:${name}:${versionLabel}`,
     sourceId: name,
     name,
-    displayName: name.includes("/") ? name.split("/").filter(Boolean).slice(-1)[0] ?? name : name,
+    displayName: name.includes("/") ? (name.split("/").filter(Boolean).slice(-1)[0] ?? name) : name,
     description: asString(server.description) ?? "",
     homepageUrl: asString(server.websiteUrl) ?? asString(server.homepage),
     repositoryUrl: asString(repository.url),
@@ -427,32 +442,31 @@ function configInputsFromJsonSchema(
   const record = asRecord(schema);
   const properties = asRecord(record.properties);
   const required = new Set(asArray(record.required).map(asString).filter(Boolean) as string[]);
-  return Object.entries(properties)
-    .map(([name, raw]) => {
-      const property = asRecord(raw);
-      const from = asRecord(property["x-from"]);
-      const headerName = asString(from.header);
-      const queryName = asString(from.query);
-      const envName = asString(from.env);
-      const argumentName = asString(from.argument) ?? asString(from.arg);
-      const target: McpRegistryConfigInput["target"] = headerName
-        ? "header"
-        : envName
-          ? "env"
-          : argumentName
-            ? "argument"
-            : fallbackTarget;
-      const targetName = headerName ?? envName ?? argumentName ?? queryName ?? name;
-      return {
-        name,
-        targetName,
-        label: asString(property.title) ?? name,
-        description: asString(property.description),
-        required: required.has(name),
-        secret: /token|secret|key|password/i.test(name),
-        target,
-      };
-    });
+  return Object.entries(properties).map(([name, raw]) => {
+    const property = asRecord(raw);
+    const from = asRecord(property["x-from"]);
+    const headerName = asString(from.header);
+    const queryName = asString(from.query);
+    const envName = asString(from.env);
+    const argumentName = asString(from.argument) ?? asString(from.arg);
+    const target: McpRegistryConfigInput["target"] = headerName
+      ? "header"
+      : envName
+        ? "env"
+        : argumentName
+          ? "argument"
+          : fallbackTarget;
+    const targetName = headerName ?? envName ?? argumentName ?? queryName ?? name;
+    return {
+      name,
+      targetName,
+      label: asString(property.title) ?? name,
+      description: asString(property.description),
+      required: required.has(name),
+      secret: /token|secret|key|password/i.test(name),
+      target,
+    };
+  });
 }
 
 function envRecordFromJsonSchema(schema: unknown) {
@@ -482,7 +496,9 @@ function envRecordFromJsonSchema(schema: unknown) {
 
   if (Object.keys(properties).length === 0) {
     for (const [name, raw] of Object.entries(record)) {
-      if (["type", "required", "properties", "value", "default", "example", "examples"].includes(name)) {
+      if (
+        ["type", "required", "properties", "value", "default", "example", "examples"].includes(name)
+      ) {
         continue;
       }
       const resolved = asConfigString(raw);
@@ -501,16 +517,19 @@ function buildManualStdioDraft(
 ): McpRegistryInstallDraft | undefined {
   const normalizedPackage = packageName.trim();
   if (!normalizedPackage) return undefined;
-  return makeDraft({
-    id: slugifyServerId(baseName),
-    enabled: false,
-    transport: "stdio",
-    command: "npx",
-    args: ["-y", normalizedPackage],
-    env,
-    url: "",
-    timeoutMs: 60_000,
-  }, requiredConfig);
+  return makeDraft(
+    {
+      id: slugifyServerId(baseName),
+      enabled: false,
+      transport: "stdio",
+      command: "npx",
+      args: ["-y", normalizedPackage],
+      env,
+      url: "",
+      timeoutMs: 60_000,
+    },
+    requiredConfig,
+  );
 }
 
 function normalizeSmitherySearchCard(raw: unknown): McpRegistryCard | null {
@@ -536,7 +555,8 @@ function normalizeSmitherySearchCard(raw: unknown): McpRegistryCard | null {
       asBoolean(item.bySmithery) ? "smithery" : undefined,
     ]),
     transportHints: asBoolean(item.remote) || asBoolean(item.isDeployed) ? ["http"] : [],
-    installUnavailableReason: asBoolean(item.remote) || asBoolean(item.isDeployed) ? undefined : "manual",
+    installUnavailableReason:
+      asBoolean(item.remote) || asBoolean(item.isDeployed) ? undefined : "manual",
     scoreLabel: useCount !== undefined ? `${useCount}` : undefined,
     detailUrl: homepageUrl,
   };
@@ -547,33 +567,41 @@ function normalizeSmitheryDetail(card: McpRegistryCard, raw: unknown): McpRegist
   const connections = asArray(item.connections);
   const httpConnection = connections
     .map(asRecord)
-    .find((connection) => asString(connection.type) === "http" && asString(connection.deploymentUrl));
+    .find(
+      (connection) => asString(connection.type) === "http" && asString(connection.deploymentUrl),
+    );
   const stdioConnection = connections
     .map(asRecord)
     .find((connection) => asString(connection.type) === "stdio");
   const deploymentUrl = asString(item.deploymentUrl) ?? asString(httpConnection?.deploymentUrl);
   const requiredConfig = configInputsFromJsonSchema(httpConnection?.configSchema);
   const httpDraft = deploymentUrl
-    ? makeDraft({
-        id: slugifyServerId(card.name),
-        enabled: true,
-        transport: "http",
-        command: "",
-        args: [],
-        url: deploymentUrl,
-        timeoutMs: 60_000,
-      }, requiredConfig)
+    ? makeDraft(
+        {
+          id: slugifyServerId(card.name),
+          enabled: true,
+          transport: "http",
+          command: "",
+          args: [],
+          url: deploymentUrl,
+          timeoutMs: 60_000,
+        },
+        requiredConfig,
+      )
     : undefined;
   const stdioDraft = stdioConnection
-    ? makeDraft({
-        id: slugifyServerId(card.name),
-        enabled: true,
-        transport: "stdio",
-        command: "npx",
-        args: ["-y", "@smithery/cli@latest", "run", card.sourceId],
-        url: "",
-        timeoutMs: 60_000,
-      }, configInputsFromJsonSchema(stdioConnection.configSchema, "config"))
+    ? makeDraft(
+        {
+          id: slugifyServerId(card.name),
+          enabled: true,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "@smithery/cli@latest", "run", card.sourceId],
+          url: "",
+          timeoutMs: 60_000,
+        },
+        configInputsFromJsonSchema(stdioConnection.configSchema, "config"),
+      )
     : undefined;
   const installDraft = httpDraft ?? stdioDraft;
 
@@ -595,12 +623,15 @@ function normalizeGlamaCard(raw: unknown): McpRegistryCard | null {
   const name = asString(item.name) ?? asString(item.slug) ?? id;
   if (!id || !name) return null;
   const repository = asRecord(item.repository);
-  const envInputs = configInputsFromJsonSchema(item.environmentVariablesJsonSchema).map((input) => ({
-    ...input,
-    target: "env" as const,
-  }));
+  const envInputs = configInputsFromJsonSchema(item.environmentVariablesJsonSchema).map(
+    (input) => ({
+      ...input,
+      target: "env" as const,
+    }),
+  );
   const env = envRecordFromJsonSchema(item.environmentVariablesJsonSchema);
-  const packageName = asString(item.packageName) ?? asString(item.npmPackage) ?? asString(item.slug) ?? name;
+  const packageName =
+    asString(item.packageName) ?? asString(item.npmPackage) ?? asString(item.slug) ?? name;
   const manualDraft = buildManualStdioDraft(name, packageName, envInputs, env);
   const attributes = asArray(item.attributes).map(asString).filter(Boolean) as string[];
   return {
@@ -658,7 +689,9 @@ async function searchSmithery(params: SearchMcpRegistryParams): Promise<McpRegis
     totalPages !== undefined && currentPage < totalPages ? String(currentPage + 1) : undefined;
   return {
     source: "smithery",
-    items: asArray(json.servers).map(normalizeSmitherySearchCard).filter(Boolean) as McpRegistryCard[],
+    items: asArray(json.servers)
+      .map(normalizeSmitherySearchCard)
+      .filter(Boolean) as McpRegistryCard[],
     nextCursor,
     totalCount: asNumber(pagination.totalCount),
   };
@@ -679,7 +712,9 @@ async function searchGlama(params: SearchMcpRegistryParams): Promise<McpRegistry
   };
 }
 
-export async function searchMcpRegistry(params: SearchMcpRegistryParams): Promise<McpRegistrySearchResult> {
+export async function searchMcpRegistry(
+  params: SearchMcpRegistryParams,
+): Promise<McpRegistrySearchResult> {
   switch (params.source) {
     case "official":
       return searchOfficial(params);
@@ -714,7 +749,10 @@ export function withUniqueMcpServerId(
   draft: McpRegistryInstallDraft,
   existingServers: McpServerConfig[],
 ): McpRegistryInstallDraft {
-  const id = createUniqueMcpServerId(draft.server.id || draft.server.command || draft.server.url, existingServers.map((server) => server.id));
+  const id = createUniqueMcpServerId(
+    draft.server.id || draft.server.command || draft.server.url,
+    existingServers.map((server) => server.id),
+  );
   return {
     ...draft,
     server: {
@@ -751,16 +789,11 @@ function replaceUrlConfigValue(url: string, input: McpRegistryConfigInput, value
   }
 }
 
-function replaceArgumentConfigValue(
-  args: string[],
-  input: McpRegistryConfigInput,
-  value: string,
-) {
+function replaceArgumentConfigValue(args: string[], input: McpRegistryConfigInput, value: string) {
   const names = uniqueStrings([input.targetName, input.name]);
-  const placeholderIndex = args.findIndex((arg) =>
-    arg === "..." ||
-    arg.includes("...") ||
-    names.some((name) => arg.includes(`{${name}}`)),
+  const placeholderIndex = args.findIndex(
+    (arg) =>
+      arg === "..." || arg.includes("...") || names.some((name) => arg.includes(`{${name}}`)),
   );
   if (placeholderIndex < 0) {
     return [...args, value];
@@ -771,7 +804,7 @@ function replaceArgumentConfigValue(
   for (const name of names) {
     next = next.split(`{${name}}`).join(value);
   }
-  return args.map((arg, index) => index === placeholderIndex ? next : arg);
+  return args.map((arg, index) => (index === placeholderIndex ? next : arg));
 }
 
 function readConfigArg(args: string[]) {
@@ -792,7 +825,7 @@ function asRecordFromJson(value: unknown): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
+      ? (parsed as Record<string, unknown>)
       : {};
   } catch {
     return {};
@@ -821,11 +854,7 @@ function upsertConfigArg(args: string[], config: Record<string, unknown>) {
   return [...args, "--config", serialized];
 }
 
-function replaceConfigArgValue(
-  args: string[],
-  input: McpRegistryConfigInput,
-  value: string,
-) {
+function replaceConfigArgValue(args: string[], input: McpRegistryConfigInput, value: string) {
   const targetName = input.targetName ?? input.name;
   return upsertConfigArg(args, {
     ...readConfigArg(args),

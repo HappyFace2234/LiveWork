@@ -1,13 +1,20 @@
 import {
+  type MutableRefObject,
   memo,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
   useRef,
   useState,
-  type MutableRefObject,
-  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  MentionComposer,
+  type MentionComposerHandle,
+  type MentionComposerSkill,
+} from "../../components/chat/MentionComposer";
+import { GitBranchSelector } from "../../components/git/GitBranchSelector";
 import {
   Brain,
   ChevronDown,
@@ -24,13 +31,6 @@ import {
   Trash2,
   X,
 } from "../../components/icons";
-
-import {
-  MentionComposer,
-  type MentionComposerHandle,
-  type MentionComposerSkill,
-} from "../../components/chat/MentionComposer";
-import { GitBranchSelector } from "../../components/git/GitBranchSelector";
 import { Button } from "../../components/ui/button";
 import {
   Select,
@@ -40,17 +40,15 @@ import {
   SelectValue,
 } from "../../components/ui/select";
 import { useLocale } from "../../i18n";
-import {
-  formatUploadedFileSize,
-  type PendingUploadedFile,
-} from "../../lib/chat/uploadedFiles";
-import { cn } from "../../lib/shared/utils";
+import { formatUploadedFileSize, type PendingUploadedFile } from "../../lib/chat/uploadedFiles";
 import type { GitClient } from "../../lib/git/types";
 import {
-  DEFAULT_CHAT_RUNTIME_CONTROLS,
   type ChatRuntimeControls,
+  DEFAULT_CHAT_RUNTIME_CONTROLS,
   type ReasoningLevel,
 } from "../../lib/settings";
+import { cn } from "../../lib/shared/utils";
+import type { WorkspaceActivityClient } from "../../lib/workspace-activity/types";
 
 const REASONING_I18N_KEYS: Record<ReasoningLevel, string> = {
   off: "settings.reasoning.off",
@@ -161,6 +159,19 @@ export type ChatQueueTurnPreview = {
   fileCount: number;
 };
 
+type QueueScrollbarState = {
+  visible: boolean;
+  thumbHeight: number;
+  thumbTop: number;
+};
+
+const QUEUE_SCROLLBAR_MIN_THUMB_HEIGHT = 24;
+const DEFAULT_QUEUE_SCROLLBAR_STATE: QueueScrollbarState = {
+  visible: false,
+  thumbHeight: QUEUE_SCROLLBAR_MIN_THUMB_HEIGHT,
+  thumbTop: 0,
+};
+
 export const ChatComposerBar = memo(function ChatComposerBar(props: {
   composerRef: MutableRefObject<MentionComposerHandle | null>;
   isSending: boolean;
@@ -175,7 +186,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   gitClient?: GitClient | null;
   gitWriteEnabled?: boolean;
   gitDisabledMessage?: string;
-  onGitChanged?: (workdir: string) => void;
+  workspaceActivityClient?: WorkspaceActivityClient | null;
   onSend: () => void;
   onStop: () => void;
   onPrepareChatRuntime?: () => void;
@@ -205,7 +216,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
     gitClient,
     gitWriteEnabled = true,
     gitDisabledMessage,
-    onGitChanged,
+    workspaceActivityClient,
     onSend,
     onStop,
     onPrepareChatRuntime,
@@ -224,13 +235,30 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   const { t } = useLocale();
   const [composerIsEmpty, setComposerIsEmpty] = useState(true);
   const composerLayerRef = useRef<HTMLDivElement | null>(null);
+  const queuePanelRef = useRef<HTMLDivElement | null>(null);
+  const queueListRef = useRef<HTMLUListElement | null>(null);
+  const queueScrollbarTrackRef = useRef<HTMLDivElement | null>(null);
+  const queueScrollbarDragRef = useRef<{
+    pointerId: number;
+    startScrollTop: number;
+    startY: number;
+  } | null>(null);
   const queueHadTurnsRef = useRef(false);
   const [queueCollapsed, setQueueCollapsed] = useState(false);
+  const [queueScrollbar, setQueueScrollbar] = useState<QueueScrollbarState>(
+    DEFAULT_QUEUE_SCROLLBAR_STATE,
+  );
   const uploadDisabled = isInputDisabled || isUploadingFiles || !isAgentMode || !workdir;
   const controlsDisabled = isInputDisabled;
   const hasSendableDraft = !composerIsEmpty || pendingUploadedFiles.length > 0;
   const thinkingSupported = reasoningOptions.length > 0;
   const sendDisabled = isInputDisabled || isUploadingFiles || !hasSendableDraft;
+  const canQueueDraftWhileSending = isSending && !sendDisabled;
+  const primaryActionTitle = canQueueDraftWhileSending
+    ? t("chat.queue.addToQueue")
+    : isSending
+      ? t("chat.stopGeneration")
+      : t("chat.sendMessage");
   const selectedReasoning = reasoningOptions.includes(chatRuntimeControls.reasoning)
     ? chatRuntimeControls.reasoning
     : DEFAULT_CHAT_RUNTIME_CONTROLS.reasoning;
@@ -245,6 +273,107 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
     setQueueCollapsed((current) => !current);
   }, []);
 
+  const shouldShowQueueScrollbar = !queueCollapsed && queuedTurns.length > 2;
+
+  const updateQueueScrollbar = useCallback(() => {
+    const list = queueListRef.current;
+    if (!list || !shouldShowQueueScrollbar) {
+      setQueueScrollbar((current) => (current.visible ? DEFAULT_QUEUE_SCROLLBAR_STATE : current));
+      return;
+    }
+
+    const { clientHeight, scrollHeight, scrollTop } = list;
+    const trackHeight = Math.max(clientHeight, QUEUE_SCROLLBAR_MIN_THUMB_HEIGHT);
+    const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+    const thumbHeight =
+      maxScrollTop <= 1
+        ? trackHeight
+        : Math.min(
+            trackHeight,
+            Math.max(
+              QUEUE_SCROLLBAR_MIN_THUMB_HEIGHT,
+              Math.round((clientHeight / scrollHeight) * trackHeight),
+            ),
+          );
+    const maxThumbTop = Math.max(0, trackHeight - thumbHeight);
+    const thumbTop = maxScrollTop <= 1 ? 0 : Math.round((scrollTop / maxScrollTop) * maxThumbTop);
+
+    setQueueScrollbar((current) => {
+      if (current.visible && current.thumbHeight === thumbHeight && current.thumbTop === thumbTop) {
+        return current;
+      }
+      return { visible: true, thumbHeight, thumbTop };
+    });
+  }, [shouldShowQueueScrollbar]);
+
+  const scrollQueueToThumbPosition = useCallback(
+    (clientY: number) => {
+      const list = queueListRef.current;
+      const track = queueScrollbarTrackRef.current;
+      if (!list || !track || !shouldShowQueueScrollbar) return;
+
+      const rect = track.getBoundingClientRect();
+      const maxThumbTop = Math.max(1, rect.height - queueScrollbar.thumbHeight);
+      const nextThumbTop = Math.min(
+        Math.max(clientY - rect.top - queueScrollbar.thumbHeight / 2, 0),
+        maxThumbTop,
+      );
+      const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+      list.scrollTop = (nextThumbTop / maxThumbTop) * maxScrollTop;
+      updateQueueScrollbar();
+    },
+    [queueScrollbar.thumbHeight, shouldShowQueueScrollbar, updateQueueScrollbar],
+  );
+
+  const handleQueueScrollbarPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!shouldShowQueueScrollbar || event.button !== 0) return;
+      const list = queueListRef.current;
+      const track = queueScrollbarTrackRef.current;
+      if (!list || !track) return;
+
+      event.preventDefault();
+      const target = event.target as HTMLElement;
+      if (!target.closest(".chat-queue-scrollbar-thumb")) {
+        scrollQueueToThumbPosition(event.clientY);
+      }
+
+      queueScrollbarDragRef.current = {
+        pointerId: event.pointerId,
+        startScrollTop: list.scrollTop,
+        startY: event.clientY,
+      };
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [shouldShowQueueScrollbar, scrollQueueToThumbPosition],
+  );
+
+  const handleQueueScrollbarPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = queueScrollbarDragRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) return;
+
+      const list = queueListRef.current;
+      const track = queueScrollbarTrackRef.current;
+      if (!list || !track) return;
+
+      const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+      const maxThumbTop = Math.max(1, track.clientHeight - queueScrollbar.thumbHeight);
+      list.scrollTop =
+        drag.startScrollTop + ((event.clientY - drag.startY) / maxThumbTop) * maxScrollTop;
+      updateQueueScrollbar();
+    },
+    [queueScrollbar.thumbHeight, updateQueueScrollbar],
+  );
+
+  const handleQueueScrollbarPointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = queueScrollbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    queueScrollbarDragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
+
   useEffect(() => {
     const hasQueuedTurns = queuedTurns.length > 0;
     if (hasQueuedTurns && !queueHadTurnsRef.current) {
@@ -254,10 +383,28 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
   }, [queuedTurns.length]);
 
   useEffect(() => {
-    if (
-      reasoningOptions.length > 0 &&
-      reasoningOptions.includes(chatRuntimeControls.reasoning)
-    ) {
+    const list = queueListRef.current;
+    if (!list) {
+      updateQueueScrollbar();
+      return;
+    }
+
+    updateQueueScrollbar();
+    list.addEventListener("scroll", updateQueueScrollbar, { passive: true });
+    const resizeObserver =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateQueueScrollbar);
+    resizeObserver?.observe(list);
+    window.addEventListener("resize", updateQueueScrollbar);
+
+    return () => {
+      list.removeEventListener("scroll", updateQueueScrollbar);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateQueueScrollbar);
+    };
+  }, [updateQueueScrollbar]);
+
+  useEffect(() => {
+    if (reasoningOptions.length > 0 && reasoningOptions.includes(chatRuntimeControls.reasoning)) {
       return;
     }
     if (
@@ -280,9 +427,11 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
     }
 
     const updateComposerOverlayHeight = () => {
+      const composerLayerHeight = composerLayer.getBoundingClientRect().height;
+      const queueHeight = queuePanelRef.current?.getBoundingClientRect().height ?? 0;
       chatFrame.style.setProperty(
         "--gateway-chat-composer-overlay-height",
-        `${Math.ceil(composerLayer.getBoundingClientRect().height)}px`,
+        `${Math.ceil(Math.max(0, composerLayerHeight - queueHeight))}px`,
       );
     };
 
@@ -348,6 +497,7 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
 
         {queuedTurns.length > 0 ? (
           <div
+            ref={queuePanelRef}
             className={cn(
               "relative z-30 mx-auto mb-[-1px] w-[calc(100%-1.5rem)] max-w-[720px] overflow-visible rounded-t-lg rounded-b-none border border-b-0 border-black/[0.055] bg-white/70 p-1 shadow-[0_8px_24px_-18px_rgba(15,23,42,0.24),inset_0_1px_0_rgba(255,255,255,0.72)] backdrop-blur-2xl backdrop-saturate-[165%] transition-[padding] duration-200 ease-out dark:border-white/[0.10] dark:bg-white/[0.06] dark:shadow-[0_8px_24px_-18px_rgba(0,0,0,0.72),inset_0_1px_0_rgba(255,255,255,0.08)]",
               queueCollapsed && "px-1 py-0.5",
@@ -378,8 +528,17 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
                   : "mt-1 grid-rows-[1fr] opacity-100",
               )}
             >
-              <div className="min-h-0 overflow-hidden">
-                <ul className="flex max-h-[76px] min-w-0 flex-col gap-1 overflow-x-hidden overflow-y-auto pr-0.5">
+              <div className="relative min-h-0 overflow-hidden">
+                <ul
+                  ref={queueListRef}
+                  data-scrollable={queuedTurns.length > 2 ? "true" : "false"}
+                  className={cn(
+                    "chat-queue-scroll flex min-w-0 flex-col gap-1 overflow-x-hidden",
+                    queuedTurns.length > 2
+                      ? "h-[76px] overflow-y-scroll pr-3"
+                      : "max-h-[76px] overflow-y-hidden pr-1",
+                  )}
+                >
                   {queuedTurns.map((item, index) => (
                     <li
                       key={item.id}
@@ -452,6 +611,25 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
                     </li>
                   ))}
                 </ul>
+                {shouldShowQueueScrollbar ? (
+                  <div
+                    ref={queueScrollbarTrackRef}
+                    aria-hidden
+                    className="chat-queue-scrollbar"
+                    onPointerCancel={handleQueueScrollbarPointerUp}
+                    onPointerDown={handleQueueScrollbarPointerDown}
+                    onPointerMove={handleQueueScrollbarPointerMove}
+                    onPointerUp={handleQueueScrollbarPointerUp}
+                  >
+                    <div
+                      className="chat-queue-scrollbar-thumb"
+                      style={{
+                        height: `${queueScrollbar.thumbHeight}px`,
+                        transform: `translateY(${queueScrollbar.thumbTop}px)`,
+                      }}
+                    />
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
@@ -625,10 +803,10 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
               <GitBranchSelector
                 workdir={workdir}
                 gitClient={gitClient}
+                workspaceActivityClient={workspaceActivityClient}
                 disabled={controlsDisabled}
                 canWrite={gitWriteEnabled}
                 disabledMessage={gitDisabledMessage}
-                onChanged={() => onGitChanged?.(workdir)}
               />
             </div>
 
@@ -636,33 +814,47 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
               <Button
                 disabled={isSending ? false : sendDisabled}
                 onClick={() => {
+                  if (canQueueDraftWhileSending) {
+                    onSend();
+                    return;
+                  }
                   if (isSending) {
                     onStop();
                     return;
                   }
-                  if (isInputDisabled) return;
+                  if (sendDisabled) return;
                   onSend();
                 }}
                 size="icon"
-                title={isSending ? t("chat.stopGeneration") : t("chat.sendMessage")}
-                aria-label={isSending ? t("chat.stopGeneration") : t("chat.sendMessage")}
+                title={primaryActionTitle}
+                aria-label={primaryActionTitle}
                 style={
-                  isSending
+                  canQueueDraftWhileSending
                     ? {
-                        backgroundColor: "hsl(var(--destructive))",
+                        backgroundColor: "hsl(160 84% 39%)",
                         backgroundImage: "none",
-                        color: "hsl(var(--destructive-foreground))",
+                        color: "white",
                       }
-                    : undefined
+                    : isSending
+                      ? {
+                          backgroundColor: "hsl(var(--destructive))",
+                          backgroundImage: "none",
+                          color: "hsl(var(--destructive-foreground))",
+                        }
+                      : undefined
                 }
                 className={cn(
                   "h-8 w-8 shrink-0 rounded-full shadow-[0_1px_2px_rgba(15,23,42,0.12)] transition-all",
-                  isSending
-                    ? "hover:opacity-90 active:scale-95"
-                    : "disabled:opacity-100 [&:not(:disabled)]:bg-foreground [&:not(:disabled)]:text-background [&:not(:disabled)]:hover:bg-foreground/85 [&:not(:disabled)]:hover:shadow-[0_4px_14px_-2px_rgba(15,23,42,0.28)] [&:not(:disabled)]:active:scale-95 disabled:bg-foreground/10 disabled:text-foreground/35",
+                  canQueueDraftWhileSending
+                    ? "hover:brightness-105 hover:shadow-[0_8px_18px_-8px_rgba(5,150,105,0.72)] active:scale-95"
+                    : isSending
+                      ? "hover:opacity-90 active:scale-95"
+                      : "disabled:opacity-100 [&:not(:disabled)]:bg-foreground [&:not(:disabled)]:text-background [&:not(:disabled)]:hover:bg-foreground/85 [&:not(:disabled)]:hover:shadow-[0_4px_14px_-2px_rgba(15,23,42,0.28)] [&:not(:disabled)]:active:scale-95 disabled:bg-foreground/10 disabled:text-foreground/35",
                 )}
               >
-                {isSending ? (
+                {canQueueDraftWhileSending ? (
+                  <Send className="h-3.5 w-3.5" />
+                ) : isSending ? (
                   <Square className="h-3 w-3 fill-current" />
                 ) : (
                   <Send className="h-3.5 w-3.5" />

@@ -759,7 +759,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
               className={cn(
                 "hub-panel-enter relative overflow-hidden rounded-2xl border backdrop-blur-xl",
                 skillsEnabled
-                  ? "border-border/50 bg-background/75 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_8px_24px_-18px_rgba(15,23,42,0.18)]"
+                  ? "border-border/50 bg-background/75 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_8px_24px_-18px_rgba(15,23,42,0.18)] dark:border-white/[0.09] dark:bg-white/[0.05] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset,0_8px_24px_-18px_rgba(0,0,0,0.6)]"
                   : "border-border/40 bg-background/60",
               )}
             >
@@ -769,7 +769,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                     className={cn(
                       "relative flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border transition-colors",
                       skillsEnabled
-                        ? "border-border/50 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+                        ? "border-border/50 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                         : "border-border/40 bg-muted/40 text-muted-foreground",
                     )}
                   >
@@ -872,7 +872,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
             </div>
 
             <div className="hub-panel-enter flex items-center justify-between gap-3">
-              <div className="inline-flex shrink-0 rounded-2xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset]">
+              <div className="inline-flex shrink-0 rounded-2xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                 {[
                   {
                     value: "installed" as const,
@@ -897,7 +897,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                       className={cn(
                         "relative inline-flex h-9 items-center justify-center gap-2 rounded-xl px-4 text-[12.5px] font-medium transition-all",
                         active
-                          ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_12px_-8px_rgba(15,23,42,0.18)] ring-1 ring-border/45"
+                          ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_12px_-8px_rgba(15,23,42,0.18)] ring-1 ring-border/45 dark:bg-white/[0.08] dark:ring-white/[0.09] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_12px_-8px_rgba(0,0,0,0.55)]"
                           : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
                       )}
                     >
@@ -1048,7 +1048,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                       className={cn(
                                         "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-all",
                                         checked
-                                          ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+                                          ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                                           : "border-border/30 bg-muted/50 text-muted-foreground group-hover:border-border/50 group-hover:bg-background/70 group-hover:text-foreground/85",
                                       )}
                                     >
@@ -1069,33 +1069,6 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                         onClick={(event) => event.stopPropagation()}
                                         onKeyDown={(event) => event.stopPropagation()}
                                       >
-                                        <ConfirmDeletePopover
-                                          name={skill.name}
-                                          onConfirm={() => void deleteSkill(skill)}
-                                        >
-                                          {(open) => (
-                                            <button
-                                              type="button"
-                                              disabled={deleteDisabled}
-                                              onClick={(event) => {
-                                                event.stopPropagation();
-                                                open();
-                                              }}
-                                              className={cn(
-                                                "flex h-6 w-6 items-center justify-center rounded-md border border-border/35 bg-background/65 text-muted-foreground transition-all",
-                                                "hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive",
-                                                "disabled:cursor-not-allowed disabled:opacity-60",
-                                              )}
-                                              title={t("settings.skillsHubDeleteSkill")}
-                                            >
-                                              {deleting ? (
-                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                              ) : (
-                                                <Trash2 className="h-3.5 w-3.5" />
-                                              )}
-                                            </button>
-                                          )}
-                                        </ConfirmDeletePopover>
                                         <label className="relative flex h-5 w-5 shrink-0 cursor-pointer items-center justify-center">
                                           <input
                                             type="checkbox"
@@ -1114,7 +1087,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                               "pointer-events-none flex h-5 w-5 items-center justify-center rounded-md border transition-all",
                                               "peer-focus-visible:outline-hidden peer-focus-visible:ring-2 peer-focus-visible:ring-foreground/15",
                                               checked
-                                                ? "border-foreground/80 bg-foreground/85 text-background shadow-[0_2px_6px_-2px_rgba(15,23,42,0.35)]"
+                                                ? "border-foreground/80 bg-foreground/85 text-background shadow-[0_2px_6px_-2px_rgba(15,23,42,0.35)] dark:shadow-[0_2px_6px_-2px_rgba(0,0,0,0.6)]"
                                                 : "border-border bg-background group-hover:border-foreground/40",
                                             )}
                                           >
@@ -1136,9 +1109,54 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                     ) : null}
                                   </div>
 
-                                  <div className="mt-2.5 flex items-center gap-1 border-t border-border/30 pt-2 text-[10.5px] text-muted-foreground/70">
+                                  <div className="mt-2.5 flex min-h-8 items-center gap-1 border-t border-border/30 pt-2 text-[10.5px] text-muted-foreground/70">
                                     <FileText className="h-3 w-3 shrink-0" />
                                     <span className="truncate">{skill.skillFile}</span>
+                                    {!alwaysEnabled ? (
+                                      <div
+                                        className="ml-auto shrink-0"
+                                        onClick={(event) => event.stopPropagation()}
+                                        onKeyDown={(event) => event.stopPropagation()}
+                                      >
+                                        <ConfirmDeletePopover
+                                          name={skill.name}
+                                          onConfirm={() => void deleteSkill(skill)}
+                                        >
+                                          {(open) => (
+                                            <button
+                                              type="button"
+                                              disabled={deleteDisabled}
+                                              onClick={(event) => {
+                                                event.stopPropagation();
+                                                open();
+                                              }}
+                                              className={cn(
+                                                "flex h-6 w-6 items-center justify-center rounded-md border border-border/35 bg-background/65 text-muted-foreground transition-all",
+                                                "hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive",
+                                                "disabled:cursor-not-allowed",
+                                                // Hover-revealed on pointer devices; keyboard focus and
+                                                // touch (no hover — webui mobile) keep it reachable.
+                                                deleting
+                                                  ? "pointer-events-auto opacity-100"
+                                                  : cn(
+                                                      "pointer-events-none opacity-0 group-hover:pointer-events-auto focus-visible:pointer-events-auto [@media(hover:none)]:pointer-events-auto",
+                                                      deleteDisabled
+                                                        ? "group-hover:opacity-60 focus-visible:opacity-60 [@media(hover:none)]:opacity-60"
+                                                        : "group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100",
+                                                    ),
+                                              )}
+                                              title={t("settings.skillsHubDeleteSkill")}
+                                            >
+                                              {deleting ? (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                              ) : (
+                                                <Trash2 className="h-3.5 w-3.5" />
+                                              )}
+                                            </button>
+                                          )}
+                                        </ConfirmDeletePopover>
+                                      </div>
+                                    ) : null}
                                   </div>
                                 </>
                               );
@@ -1151,7 +1169,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                     type="button"
                                     aria-label={`${t("settings.skillsInstalledPreviewOpen")}: ${skill.name}`}
                                     onClick={() => openInstalledSkillPreview(skill)}
-                                    className="hub-skill-card skill-card-enter group flex h-full w-full cursor-pointer flex-col rounded-2xl border border-border/50 bg-background/75 p-3.5 text-left backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_18px_-12px_rgba(15,23,42,0.16)] transition-all hover:-translate-y-0.5 hover:border-border/60 hover:bg-background/85 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15"
+                                    className="hub-skill-card skill-card-enter group flex h-full w-full cursor-pointer flex-col rounded-2xl border border-border/50 bg-background/75 p-3.5 text-left backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_18px_-12px_rgba(15,23,42,0.16)] transition-all hover:-translate-y-0.5 hover:border-border/60 hover:bg-background/85 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.08] dark:bg-white/[0.05] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_4px_18px_-12px_rgba(0,0,0,0.5)] dark:hover:border-white/[0.12] dark:hover:bg-white/[0.07] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15"
                                   >
                                     {card}
                                   </button>
@@ -1173,8 +1191,8 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                     "hub-skill-card skill-card-enter group flex h-full w-full flex-col rounded-2xl border p-3.5 text-left transition-all",
                                     "cursor-pointer backdrop-blur-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15",
                                     checked
-                                      ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)]"
-                                      : "border-border/35 bg-background/55 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/70 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)]",
+                                      ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)] dark:border-white/[0.10] dark:bg-white/[0.07] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_18px_-12px_rgba(0,0,0,0.55)]"
+                                      : "border-border/35 bg-background/55 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/70 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.05] dark:bg-white/[0.03] dark:hover:border-white/[0.10] dark:hover:bg-white/[0.06] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)]",
                                   )}
                                 >
                                   {card}
@@ -1288,12 +1306,12 @@ function InstalledSkillPreviewDrawer(props: {
     >
       <aside
         className={cn(
-          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
+          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover/95 dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
           closing ? "skills-drawer-panel-closing" : "skills-drawer-panel",
         )}
       >
         <div className="flex items-start gap-3 border-b border-border/40 px-5 py-4">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
             {alwaysEnabled ? <Lock className="h-5 w-5" /> : <SkillIcon className="h-7 w-7" />}
           </div>
           <div className="min-w-0 flex-1">
@@ -1332,7 +1350,7 @@ function InstalledSkillPreviewDrawer(props: {
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           <div className="flex flex-col gap-4">
             <div className="grid gap-3">
-              <div className="rounded-2xl border border-border/40 bg-background/70 p-3.5 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+              <div className="rounded-2xl border border-border/40 bg-background/70 p-3.5 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.07] dark:bg-white/[0.05] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset]">
                 <div className="flex items-start gap-3">
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/45 bg-background/80 text-foreground/75">
                     <SkillIcon className="h-5 w-5" />
@@ -1348,7 +1366,7 @@ function InstalledSkillPreviewDrawer(props: {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-border/40 bg-background/60 p-3.5 shadow-[0_1px_0_rgba(255,255,255,0.5)_inset]">
+              <div className="rounded-2xl border border-border/40 bg-background/60 p-3.5 shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                 <div className="flex items-start gap-3">
                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/40 bg-muted/35 text-muted-foreground">
                     <BookOpen className="h-3.5 w-3.5" />
@@ -1583,7 +1601,7 @@ function SkillsStoreView(props: {
             className="h-10 w-full rounded-xl border border-border/40 bg-background/60 pl-10 pr-3 text-[13px] outline-hidden backdrop-blur-xl transition-all placeholder:text-muted-foreground/60 focus:border-border/60 focus:bg-background/85 focus:ring-2 focus:ring-foreground/10"
           />
         </div>
-        <div className="flex max-w-full shrink-0 items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] lg:self-auto">
+        <div className="flex max-w-full shrink-0 items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] lg:self-auto">
           {STORE_SORT_OPTIONS.map((option) => {
             const active = sort === option.value;
             return (
@@ -1596,7 +1614,7 @@ function SkillsStoreView(props: {
                   "h-8 shrink-0 whitespace-nowrap rounded-lg px-2.5 text-[11.5px] font-medium transition-all",
                   "disabled:cursor-not-allowed disabled:opacity-45",
                   active
-                    ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] ring-1 ring-border/45"
+                    ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] ring-1 ring-border/45 dark:bg-white/[0.08] dark:ring-white/[0.09] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                     : "text-muted-foreground hover:bg-background/80 hover:text-foreground",
                 )}
               >
@@ -1695,8 +1713,8 @@ function SkillsStoreView(props: {
                     className={cn(
                       "skill-card-enter group flex h-full cursor-pointer flex-col rounded-2xl border p-3.5 text-left backdrop-blur-xl transition-all focus:outline-none focus:ring-2 focus:ring-foreground/10",
                       done
-                        ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)]"
-                        : "border-border/40 bg-background/60 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/75 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)]",
+                        ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)] dark:border-white/[0.10] dark:bg-white/[0.07] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_18px_-12px_rgba(0,0,0,0.55)]"
+                        : "border-border/40 bg-background/60 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/75 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.05] dark:bg-white/[0.03] dark:hover:border-white/[0.10] dark:hover:bg-white/[0.06] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)]",
                     )}
                   >
                     <div className="flex h-full flex-col gap-3">
@@ -1705,7 +1723,7 @@ function SkillsStoreView(props: {
                           className={cn(
                             "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-all",
                             done
-                              ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+                              ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                               : "border-border/30 bg-muted/50 text-muted-foreground group-hover:border-border/50 group-hover:bg-background/70 group-hover:text-foreground/85",
                           )}
                         >
@@ -1925,12 +1943,12 @@ function SkillsStorePreviewDrawer(props: {
     >
       <aside
         className={cn(
-          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
+          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover/95 dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
           closing ? "skills-drawer-panel-closing" : "skills-drawer-panel",
         )}
       >
         <div className="flex items-start gap-3 border-b border-border/40 px-5 py-4">
-          <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
             {detail?.ownerImage ? (
               <img
                 src={detail.ownerImage}

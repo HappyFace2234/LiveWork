@@ -64,12 +64,17 @@ message GatewayEnvelope {
     FsReadEditableTextRequest fs_read_editable_text = 62;
     FsReadWorkspaceImageRequest fs_read_workspace_image = 63;
     SftpRequest sftp_request = 64;
-    TunnelControlRequest tunnel_control = 67;
-    TunnelControlResponse tunnel_control_resp = 68;
-    TunnelFrame tunnel_frame = 69;
     SettingsResetSshKnownHostRequest settings_reset_ssh_known_host = 72;
     ChatQueueRequest chat_queue = 73;
+    TunnelStateSnapshot tunnel_state = 80;
+    TunnelMutation tunnel_mutation = 81;
+    TunnelFrame tunnel_frame = 82;
+    WorkspaceWatchRequest workspace_watch = 90;
   }
+
+  // Legacy tunnel control/frame payloads (pre-rewrite protocol) and the
+  // never-wired chat event replay request.
+  reserved 67, 68, 69, 74;
 }
 
 message AgentEnvelope {
@@ -120,14 +125,21 @@ message AgentEnvelope {
     SftpEvent sftp_event = 74;
     ChatQueueResponse chat_queue_resp = 75;
     ChatQueueEvent chat_queue_event = 76;
-    TunnelControlRequest tunnel_control = 67;
-    TunnelControlResponse tunnel_control_resp = 68;
-    TunnelFrame tunnel_frame = 69;
     ChatControlEvent chat_control = 70;
     RuntimeStatusEvent runtime_status = 71;
     SettingsResetSshKnownHostResponse settings_reset_ssh_known_host_resp = 72;
+    ChatRuntimeSnapshot chat_runtime_snapshot = 77;
+    TunnelDesiredState tunnel_desired = 80;
+    TunnelMutationResult tunnel_mutation_result = 81;
+    TunnelFrame tunnel_frame = 82;
+    TunnelProbeReport tunnel_probe_report = 83;
+    WorkspaceActivityEvent workspace_activity = 90;
     ErrorResponse error = 99;
   }
+
+  // Legacy tunnel control/frame payloads (pre-rewrite protocol) and the
+  // never-wired chat event replay response.
+  reserved 67, 68, 69, 78;
 }
 
 message ChatSelectedModel {
@@ -176,39 +188,81 @@ message UploadedImagePreviewResponse {
   string data = 2;
 }
 
-message TunnelControlRequest {
-  string action = 1;
-  string tunnel_id = 2;
-  string slug = 3;
-  string target_url = 4;
-  string name = 5;
-  uint32 ttl_seconds = 6;
-  int64 expires_at = 7;
-  string public_url = 8;
-  string public_base_url = 9;
-  string project_path_key = 10;
+// ---- Tunnel desired state (agent -> gateway) ----
+
+message TunnelSpec {
+  string id = 1;               // agent-generated, stable across restarts
+  string slug_hint = 2;        // last allocated slug; gateway honors when valid and unused
+  string name = 3;
+  string target_url = 4;       // http://localhost:PORT[/base]
+  int64 expires_at = 5;        // unix seconds, 0 = never
+  string project_path_key = 6;
 }
 
-message TunnelControlResponse {
-  string action = 1;
-  repeated TunnelSummary tunnels = 2;
-  TunnelSummary tunnel = 3;
-  string error_code = 4;
-  string error_message = 5;
+message TunnelDesiredState {
+  repeated TunnelSpec tunnels = 1;
+  uint64 revision = 2;         // agent-side monotonic
 }
 
-message TunnelSummary {
+// ---- Tunnel runtime snapshot (gateway -> agent, mirrored to /ws JSON) ----
+
+message TunnelHealth {
+  string status = 1;           // "ok" | "failed" | "unknown"
+  uint32 http_status = 2;      // local layer only
+  string error = 3;
+  int64 checked_at = 4;
+  uint32 rtt_ms = 5;           // relay layer only
+}
+
+message TunnelStatus {
   string id = 1;
   string slug = 2;
   string name = 3;
   string target_url = 4;
-  string public_url = 5;
+  string public_path = 5;      // "/t/{slug}/"; clients compose the full URL
   int64 created_at = 6;
   int64 expires_at = 7;
   uint32 active_connections = 8;
-  string status = 9;
-  string project_path_key = 10;
+  string project_path_key = 9;
+  TunnelHealth local = 10;     // agent -> local service reachability
 }
+
+message TunnelStateSnapshot {
+  repeated TunnelStatus tunnels = 1;
+  uint64 revision = 2;         // gateway-side monotonic
+  bool agent_online = 3;
+  TunnelHealth relay = 4;      // gateway <-> agent frame path
+}
+
+// ---- Tunnel mutations forwarded gateway -> agent (webui-originated) ----
+
+message TunnelMutation {
+  string action = 1;           // "create" | "update" | "close" | "check"
+  string tunnel_id = 2;        // update/close/check
+  string target_url = 3;
+  string name = 4;
+  optional uint32 ttl_seconds = 5; // absent on update = keep current expiry
+  string project_path_key = 6;
+}
+
+message TunnelMutationResult {
+  string tunnel_id = 1;
+  string error_code = 2;       // "" = ok; invalid_target|limit_exceeded|not_found|invalid_ttl
+  string error_message = 3;
+}
+
+// ---- Tunnel local-service probe results (agent -> gateway) ----
+
+message TunnelProbeResult {
+  string tunnel_id = 1;
+  TunnelHealth local = 2;
+}
+
+message TunnelProbeReport {
+  repeated TunnelProbeResult results = 1;
+}
+
+// ---- Tunnel data plane ----
 
 message TunnelHeader {
   string name = 1;
@@ -223,26 +277,53 @@ enum TunnelFrameKind {
   TUNNEL_FRAME_KIND_HTTP_RESPONSE_START = 4;
   TUNNEL_FRAME_KIND_HTTP_RESPONSE_BODY = 5;
   TUNNEL_FRAME_KIND_HTTP_RESPONSE_END = 6;
-  TUNNEL_FRAME_KIND_WS_OPEN = 7;
-  TUNNEL_FRAME_KIND_WS_FRAME = 8;
-  TUNNEL_FRAME_KIND_WS_CLOSE = 9;
-  TUNNEL_FRAME_KIND_ERROR = 10;
-  TUNNEL_FRAME_KIND_CANCEL = 11;
+  TUNNEL_FRAME_KIND_WS_DIAL = 7;
+  TUNNEL_FRAME_KIND_WS_DIAL_OK = 8;
+  TUNNEL_FRAME_KIND_WS_DIAL_ERROR = 9;
+  TUNNEL_FRAME_KIND_WS_FRAME = 10;
+  TUNNEL_FRAME_KIND_WS_CLOSE = 11;
+  TUNNEL_FRAME_KIND_ERROR = 12;
+  TUNNEL_FRAME_KIND_CANCEL = 13;
+  TUNNEL_FRAME_KIND_PING = 14;
+  TUNNEL_FRAME_KIND_PONG = 15;
+}
+
+enum TunnelWsMessageType {
+  TUNNEL_WS_MESSAGE_TYPE_UNSPECIFIED = 0;
+  TUNNEL_WS_MESSAGE_TYPE_TEXT = 1;
+  TUNNEL_WS_MESSAGE_TYPE_BINARY = 2;
 }
 
 message TunnelFrame {
   string stream_id = 1;
-  string tunnel_id = 2;
-  string slug = 3;
-  TunnelFrameKind kind = 4;
-  string method = 5;
-  string path = 6;
-  repeated TunnelHeader headers = 7;
-  uint32 status_code = 8;
-  bytes body = 9;
-  bool end_stream = 10;
-  string error = 11;
-  string ws_message_type = 12;
+  TunnelFrameKind kind = 2;
+  string target_url = 3;       // set on HTTP_REQUEST_START and WS_DIAL only
+  string method = 4;
+  string path = 5;             // path+query relative to the target base
+  repeated TunnelHeader headers = 6;
+  uint32 status = 7;
+  bytes body = 8;
+  string error = 9;
+  TunnelWsMessageType ws_message_type = 10;
+  string ws_subprotocol = 11;
+  uint32 ws_close_code = 12;
+  string ws_close_reason = 13;
+}
+
+// ---- Workspace activity watch (gateway -> agent declarative full set,
+// ---- agent -> gateway debounced change events) ----
+
+message WorkspaceWatchRequest {
+  repeated string workdirs = 1;  // full desired set; replaces the previous one
+}
+
+message WorkspaceActivityEvent {
+  string workdir = 1;
+  uint64 revision = 2;           // per-workdir monotonic within one agent process
+  bool fs = 3;                   // working-tree content changed
+  bool git = 4;                  // git state (HEAD/refs/index/...) changed
+  repeated string changed_paths = 5;  // relative to workdir, deduped, capped
+  bool truncated = 6;            // changed_paths hit the cap or is unknown
 }
 
 message MemoryManageRequest {
@@ -535,12 +616,37 @@ message ChatControlEvent {
   int64 seq = 9;
 }
 
+message ChatRuntimeSnapshot {
+  string conversation_id = 1;
+  string run_id = 2;
+  string client_request_id = 3;
+  string worker_id = 4;
+  string state = 5;
+  string cwd = 6;
+  int64 updated_at = 7;
+  int64 revision = 8;
+  string entries_json = 9;
+  string tool_status = 10;
+  bool tool_status_is_compaction = 11;
+}
+
 message RuntimeStatusEvent {
   string worker_id = 1;
   string state = 2;
   bool visible = 3;
   uint32 active_run_count = 4;
   int64 timestamp = 5;
+  repeated ChatRunReport active_runs = 6;
+  repeated ChatRunReport finished_runs = 7;
+}
+
+message ChatRunReport {
+  string run_id = 1;
+  string conversation_id = 2;
+  string state = 3;
+  string error_code = 4;
+  string message = 5;
+  int64 updated_at = 6;
 }
 
 message CronManageRequest {

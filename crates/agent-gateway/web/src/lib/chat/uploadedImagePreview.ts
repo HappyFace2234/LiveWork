@@ -48,10 +48,7 @@ export function readUploadedImagePreviewCache(
   return cacheKey ? readUploadedImagePreviewCacheByKey(cacheKey) : undefined;
 }
 
-function writeUploadedImagePreviewCache(
-  cacheKey: string,
-  entry: UploadedImagePreviewCacheEntry,
-) {
+function writeUploadedImagePreviewCache(cacheKey: string, entry: UploadedImagePreviewCacheEntry) {
   const previous = uploadedImagePreviewCache.get(cacheKey);
   if (previous?.src !== entry.src) {
     previous?.revoke?.();
@@ -77,10 +74,7 @@ function createLocalPreviewCacheEntry(file: File): UploadedImagePreviewCacheEntr
   const src = URL.createObjectURL(file);
   return {
     src,
-    revoke:
-      typeof URL.revokeObjectURL === "function"
-        ? () => URL.revokeObjectURL(src)
-        : undefined,
+    revoke: typeof URL.revokeObjectURL === "function" ? () => URL.revokeObjectURL(src) : undefined,
   };
 }
 

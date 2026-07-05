@@ -48,12 +48,9 @@ function normalizeClipboardFile(file: File, index: number) {
 }
 
 function clipboardFileKey(file: File) {
-  return [
-    file.name.trim() || "__clipboard_file__",
-    file.type,
-    file.size,
-    file.lastModified,
-  ].join("\u0000");
+  return [file.name.trim() || "__clipboard_file__", file.type, file.size, file.lastModified].join(
+    "\u0000",
+  );
 }
 
 function appendUniqueClipboardFile(files: File[], seen: Set<string>, file: File | null) {
@@ -109,10 +106,14 @@ export async function readClipboardFiles() {
     const type = item.types.find(isClipboardUploadMimeType);
     if (!type) continue;
     const blob = await item.getType(type);
-    const file = new File([blob], `clipboard-file-${files.length + 1}.${clipboardFileExtension(type)}`, {
-      type,
-      lastModified: Date.now(),
-    });
+    const file = new File(
+      [blob],
+      `clipboard-file-${files.length + 1}.${clipboardFileExtension(type)}`,
+      {
+        type,
+        lastModified: Date.now(),
+      },
+    );
     appendUniqueClipboardFile(files, seen, file);
   }
   return files;

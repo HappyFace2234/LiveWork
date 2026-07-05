@@ -56,14 +56,21 @@ func sendEnvelope(t *testing.T, conn *websocket.Conn, id string, typ string, pay
 
 func receiveEnvelope(t *testing.T, conn *websocket.Conn) wsEnvelope {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("set websocket read deadline: %v", err)
+	for {
+		if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("set websocket read deadline: %v", err)
+		}
+		var env wsEnvelope
+		if err := conn.ReadJSON(&env); err != nil {
+			t.Fatalf("receive websocket envelope: %v", err)
+		}
+		// tunnel.state is broadcast on auth and on unrelated state changes;
+		// tests assert on the envelopes they explicitly provoke.
+		if env.Type == "tunnel.state" {
+			continue
+		}
+		return env
 	}
-	var env wsEnvelope
-	if err := conn.ReadJSON(&env); err != nil {
-		t.Fatalf("receive websocket envelope: %v", err)
-	}
-	return env
 }
 
 func receiveEnvelopeWithID(t *testing.T, conn *websocket.Conn, id string) wsEnvelope {

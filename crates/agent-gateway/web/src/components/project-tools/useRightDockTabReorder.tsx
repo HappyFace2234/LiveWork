@@ -12,7 +12,7 @@ import {
   autoScrollTabsForPointer,
   getReorderedTabIdsFromPointer,
   reorderTabIdsByKeyboard,
-  tabOrderIdsEqual,
+  sameStringArray,
 } from "./rightDockModel";
 
 type TabDragState = {
@@ -114,31 +114,34 @@ export function useRightDockTabReorder(options: UseRightDockTabReorderOptions) {
     [onCommitTabOrder, onDraftTabOrderChange, orderedTabIds],
   );
 
-  const handleTabPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    const dragState = tabDragRef.current;
-    if (!dragState || dragState.pointerId !== event.pointerId) return;
+  const handleTabPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const dragState = tabDragRef.current;
+      if (!dragState || dragState.pointerId !== event.pointerId) return;
 
-    const deltaX = event.clientX - dragState.startX;
-    const deltaY = event.clientY - dragState.startY;
-    if (!dragState.hasMoved && Math.hypot(deltaX, deltaY) < 5) return;
-    if (!dragState.hasMoved) {
-      dragState.hasMoved = true;
-      dragState.previousUserSelect = document.body.style.userSelect;
-      document.body.style.userSelect = "none";
-      setDraggingTabId(dragState.draggedId);
-    }
+      const deltaX = event.clientX - dragState.startX;
+      const deltaY = event.clientY - dragState.startY;
+      if (!dragState.hasMoved && Math.hypot(deltaX, deltaY) < 5) return;
+      if (!dragState.hasMoved) {
+        dragState.hasMoved = true;
+        dragState.previousUserSelect = document.body.style.userSelect;
+        document.body.style.userSelect = "none";
+        setDraggingTabId(dragState.draggedId);
+      }
 
-    event.preventDefault();
-    autoScrollTabsForPointer(tabsScrollRef.current, event.clientX);
-    const nextOrder = getReorderedTabIdsFromPointer(
-      tabsScrollRef.current,
-      dragState.draggedId,
-      event.clientX,
-    );
-    if (!nextOrder || tabOrderIdsEqual(nextOrder, dragState.order)) return;
-    dragState.order = nextOrder;
-    onDraftTabOrderChange(nextOrder);
-  }, [onDraftTabOrderChange]);
+      event.preventDefault();
+      autoScrollTabsForPointer(tabsScrollRef.current, event.clientX);
+      const nextOrder = getReorderedTabIdsFromPointer(
+        tabsScrollRef.current,
+        dragState.draggedId,
+        event.clientX,
+      );
+      if (!nextOrder || sameStringArray(nextOrder, dragState.order)) return;
+      dragState.order = nextOrder;
+      onDraftTabOrderChange(nextOrder);
+    },
+    [onDraftTabOrderChange],
+  );
 
   const finishTabDrag = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {

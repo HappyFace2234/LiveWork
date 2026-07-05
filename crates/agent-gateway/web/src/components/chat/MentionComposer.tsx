@@ -1,7 +1,12 @@
-import { getFileTypeIcon, getFileTypeIconSvg } from "./fileTypeIcons";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
+  type ClipboardEvent,
+  type FocusEvent,
   forwardRef,
+  type KeyboardEvent,
+  type MouseEvent,
   memo,
+  type RefObject,
   useCallback,
   useEffect,
   useImperativeHandle,
@@ -9,26 +14,23 @@ import {
   useMemo,
   useRef,
   useState,
-  type ClipboardEvent,
-  type FocusEvent,
-  type KeyboardEvent,
-  type MouseEvent,
-  type RefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { useLocale } from "../../i18n";
 import {
   createFileMentionReference,
+  escapeMarkdownReferenceLabel,
   type FileMentionKind,
   type FileMentionReference,
   fileMentionDisplayName,
   fileMentionTitle,
   formatFileMentionToken,
+  formatMarkdownReferenceDestination,
 } from "../../lib/chat/mentionReferences";
 import { extractClipboardFiles } from "../../lib/clipboardFiles";
 import { cn } from "../../lib/shared/utils";
+import { invokeFs } from "../../lib/tools/fsBackend";
+import { getFileTypeIcon, getFileTypeIconSvg } from "./fileTypeIcons";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -196,33 +198,15 @@ const LARGE_PASTE_CHAR_THRESHOLD = 8_000;
 const LARGE_PASTE_LINE_THRESHOLD = 200;
 const LARGE_PASTE_PREVIEW_CHARS = 160;
 const CARET_ANCHOR_TEXT = "\u200B";
+const CARET_SPACER_TEXT = "\u00A0";
+const IME_ENTER_SUPPRESS_WINDOW_MS = 300;
+const IME_COMPOSITION_END_ENTER_TAIL_MS = 80;
 const GITHUB_ICON_SVG =
   '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.6 7.6 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>';
 
 /* ------------------------------------------------------------------ */
 /*  DOM helpers                                                        */
 /* ------------------------------------------------------------------ */
-
-function escapeMarkdownLinkLabel(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/]/g, "\\]");
-}
-
-function formatMarkdownLinkDestination(value: string) {
-  const normalized = value.replace(/\\/g, "/");
-  if (/[\s()<>]/.test(normalized)) {
-    return `<${normalized.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
-  }
-  return normalized;
-}
-
-function formatMentionReference(path: string, kind: "file" | "dir") {
-  const normalized = path.replace(/\\/g, "/");
-  const target = kind === "dir" && !normalized.endsWith("/") ? `${normalized}/` : normalized;
-  const labelPath = target.replace(/\/+$/, "");
-  const baseName = labelPath.split("/").pop() || labelPath || target;
-  const label = kind === "dir" ? `${baseName}/` : baseName;
-  return `[${escapeMarkdownLinkLabel(label)}](${formatMarkdownLinkDestination(target)})`;
-}
 
 function formatSkillMentionToken(skill: Pick<MentionComposerSkillMention, "name">) {
   return `$${skill.name}`;
@@ -235,7 +219,7 @@ function formatCommitMentionToken(
   const subject = commit.subject.trim() || shortSha;
   const label = `commit ${shortSha}: ${subject}`;
   if (commit.githubUrl?.trim()) {
-    return `[${escapeMarkdownLinkLabel(label)}](${formatMarkdownLinkDestination(commit.githubUrl.trim())})`;
+    return `[${escapeMarkdownReferenceLabel(label)}](${formatMarkdownReferenceDestination(commit.githubUrl.trim())})`;
   }
   return `${label} (${commit.sha})`;
 }
@@ -249,13 +233,17 @@ function formatGitFileMentionToken(
   const refLabel = file.refName || file.shortSha || file.commitSha.slice(0, 7);
   const label = `git file ${refLabel}: ${file.path}`;
   if (file.githubUrl?.trim()) {
-    return `[${escapeMarkdownLinkLabel(label)}](${formatMarkdownLinkDestination(file.githubUrl.trim())})`;
+    return `[${escapeMarkdownReferenceLabel(label)}](${formatMarkdownReferenceDestination(file.githubUrl.trim())})`;
   }
   return `${label} (${file.commitSha})`;
 }
 
 function removeCaretAnchors(value: string) {
   return value.split(CARET_ANCHOR_TEXT).join("");
+}
+
+function countCaretAnchors(value: string) {
+  return value.split(CARET_ANCHOR_TEXT).length - 1;
 }
 
 function normalizeSerializedText(value: string) {
@@ -387,8 +375,46 @@ function isLargePasteText(text: string) {
   return countLargePasteLines(text) >= LARGE_PASTE_LINE_THRESHOLD;
 }
 
+const LARGE_PASTE_COUNT_FORMAT = new Intl.NumberFormat();
+
 function formatLargePasteCount(value: number) {
-  return new Intl.NumberFormat().format(value);
+  return LARGE_PASTE_COUNT_FORMAT.format(value);
+}
+
+function isImeKeyboardEvent(event: KeyboardEvent<HTMLDivElement>) {
+  const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & {
+    isComposing?: boolean;
+    keyCode?: number;
+    which?: number;
+  };
+  return (
+    nativeEvent.isComposing === true ||
+    nativeEvent.keyCode === 229 ||
+    nativeEvent.which === 229 ||
+    event.key === "Process"
+  );
+}
+
+function isActiveImeKeyboardEvent(event: KeyboardEvent<HTMLDivElement>) {
+  const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & {
+    isComposing?: boolean;
+  };
+  return nativeEvent.isComposing === true || event.key === "Process";
+}
+
+function isEnterKeyboardEvent(event: KeyboardEvent<HTMLDivElement>) {
+  const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent;
+  return (
+    event.key === "Enter" || nativeEvent.code === "Enter" || nativeEvent.code === "NumpadEnter"
+  );
+}
+
+function hasLegacyImeKeyboardSignal(event: KeyboardEvent<HTMLDivElement>) {
+  const nativeEvent = event.nativeEvent as globalThis.KeyboardEvent & {
+    keyCode?: number;
+    which?: number;
+  };
+  return nativeEvent.keyCode === 229 || nativeEvent.which === 229;
 }
 
 function parseCommitMentionNumber(value: string | null) {
@@ -396,7 +422,9 @@ function parseCommitMentionNumber(value: string | null) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function normalizeCommitMention(commit: MentionComposerCommitMention): MentionComposerCommitMention {
+function normalizeCommitMention(
+  commit: MentionComposerCommitMention,
+): MentionComposerCommitMention {
   const sha = commit.sha.trim();
   const shortSha = (commit.shortSha || sha.slice(0, 7)).trim();
   return {
@@ -513,13 +541,18 @@ function isComposerChipElement(node: Node | null): node is HTMLElement {
 function createCaretAnchorText(afterRaw: string, options?: { ensureLeadingSpace?: boolean }) {
   const cleaned = removeCaretAnchors(afterRaw);
   const matchedWhitespace = cleaned.match(/^\s+/)?.[0] ?? "";
-  const leadingWhitespace = matchedWhitespace || (options?.ensureLeadingSpace === true ? " " : "");
+  const leadingWhitespace =
+    matchedWhitespace || (options?.ensureLeadingSpace === true ? CARET_SPACER_TEXT : "");
   const rest = cleaned.slice(matchedWhitespace.length);
-  const caretOffset =
-    leadingWhitespace.length > 0 ? leadingWhitespace.length : CARET_ANCHOR_TEXT.length;
+  if (leadingWhitespace.length > 0) {
+    return {
+      text: `${leadingWhitespace}${rest}`,
+      caretOffset: leadingWhitespace.length,
+    };
+  }
   return {
-    text: `${leadingWhitespace}${CARET_ANCHOR_TEXT}${rest}`,
-    caretOffset,
+    text: `${CARET_ANCHOR_TEXT}${rest}`,
+    caretOffset: CARET_ANCHOR_TEXT.length,
   };
 }
 
@@ -532,6 +565,29 @@ function placeCaretInTextNode(textNode: Text, offset: number) {
   sel?.addRange(range);
 }
 
+function removeStaleCaretAnchorsFromTextNode(textNode: Text, offset: number) {
+  if (!textNode.data.includes(CARET_ANCHOR_TEXT)) return false;
+
+  const cleaned = removeCaretAnchors(textNode.data);
+  if (cleaned.length === 0) return false;
+
+  const nextOffset = Math.max(0, offset - countCaretAnchors(textNode.data.slice(0, offset)));
+  textNode.data = cleaned;
+  placeCaretInTextNode(textNode, Math.min(nextOffset, cleaned.length));
+  return true;
+}
+
+function removeStaleCaretAnchorsAroundSelection(root: HTMLElement) {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return false;
+
+  const { startContainer: node, startOffset: offset } = sel.getRangeAt(0);
+  if (!root.contains(node) || node.nodeType !== Node.TEXT_NODE) return false;
+  if (isComposerChipElement(node.parentNode)) return false;
+
+  return removeStaleCaretAnchorsFromTextNode(node as Text, offset);
+}
+
 function ensureCaretAnchorAfterChip(chip: HTMLElement): { textNode: Text; offset: number } | null {
   const parent = chip.parentNode;
   if (!parent) return null;
@@ -539,14 +595,14 @@ function ensureCaretAnchorAfterChip(chip: HTMLElement): { textNode: Text; offset
   const next = chip.nextSibling;
   if (next?.nodeType === Node.TEXT_NODE) {
     const textNode = next as Text;
-    const anchor = createCaretAnchorText(textNode.data);
+    const anchor = createCaretAnchorText(textNode.data, { ensureLeadingSpace: true });
     if (textNode.data !== anchor.text) {
       textNode.data = anchor.text;
     }
     return { textNode, offset: anchor.caretOffset };
   }
 
-  const anchor = createCaretAnchorText("");
+  const anchor = createCaretAnchorText("", { ensureLeadingSpace: true });
   const textNode = document.createTextNode(anchor.text);
   parent.insertBefore(textNode, next);
   return { textNode, offset: anchor.caretOffset };
@@ -563,7 +619,7 @@ function normalizeCaretAfterChip(root: HTMLElement) {
   if (node.nodeType === Node.TEXT_NODE) {
     const textNode = node as Text;
     const before = textNode.data.slice(0, offset);
-    if (removeCaretAnchors(before).length === 0 && isComposerChipElement(textNode.previousSibling)) {
+    if (caretSpacerTextIsEmpty(before) && isComposerChipElement(textNode.previousSibling)) {
       const anchor = ensureCaretAnchorAfterChip(textNode.previousSibling);
       if (!anchor) return false;
       if (anchor.textNode !== textNode || anchor.offset !== offset) {
@@ -703,6 +759,15 @@ function detectMention(root: HTMLElement, skillsEnabled: boolean): MentionContex
   };
 }
 
+function mentionContextEquals(a: MentionContext, b: MentionContext) {
+  return (
+    a.trigger === b.trigger &&
+    a.query === b.query &&
+    a.textNode === b.textNode &&
+    a.triggerOffset === b.triggerOffset
+  );
+}
+
 function createFileMentionChip(path: string, kind: FileMentionKind) {
   const reference = createFileMentionReference(path, kind);
   if (!reference) return null;
@@ -802,7 +867,10 @@ function createCommitMentionChip(commitInput: MentionComposerCommitMention) {
   }
   chip.contentEditable = "false";
   chip.tabIndex = 0;
-  chip.setAttribute("aria-label", commit.subject ? `${commit.shortSha}: ${commit.subject}` : commit.shortSha);
+  chip.setAttribute(
+    "aria-label",
+    commit.subject ? `${commit.shortSha}: ${commit.subject}` : commit.shortSha,
+  );
   chip.className =
     "mention-chip inline-flex items-center gap-1 rounded bg-cyan-500/15 px-1.5 mx-0.5 text-cyan-800 dark:text-cyan-200 align-baseline whitespace-nowrap select-none";
 
@@ -938,8 +1006,47 @@ function scheduleComposerSelectionScroll(root: HTMLElement | null) {
   });
 }
 
+type ComposerChipBeforeCursor = {
+  chip: HTMLElement;
+  textNode?: Text;
+  offset?: number;
+};
+
+function caretSpacerTextIsEmpty(value: string) {
+  return removeCaretAnchors(value).replace(/[ \t\u00A0]/g, "").length === 0;
+}
+
+function isCaretAnchorTextNode(textNode: Text, beforeCursor: string) {
+  return (
+    beforeCursor.length === 0 ||
+    textNode.data.includes(CARET_ANCHOR_TEXT) ||
+    caretSpacerTextIsEmpty(beforeCursor)
+  );
+}
+
+function stripLeadingCaretAnchorText(value: string) {
+  const anchorIndex = value.indexOf(CARET_ANCHOR_TEXT);
+  if (anchorIndex < 0) return value.replace(/^[ \t\u00A0]/, "");
+  const beforeAnchor = value.slice(0, anchorIndex);
+  if (beforeAnchor.replace(/[ \t\u00A0]/g, "").length > 0) return value;
+  return removeCaretAnchors(value.slice(anchorIndex + CARET_ANCHOR_TEXT.length));
+}
+
+function childNodeIndex(parent: Node, child: Node) {
+  return Array.prototype.indexOf.call(parent.childNodes, child);
+}
+
+function placeCaretInNode(parent: Node, offset: number) {
+  const range = document.createRange();
+  range.setStart(parent, Math.min(Math.max(0, offset), parent.childNodes.length));
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(range);
+}
+
 /** Check if cursor is right after a mention chip, return that chip if so. */
-function chipBeforeCursor(root: HTMLElement): HTMLElement | null {
+function chipBeforeCursor(root: HTMLElement): ComposerChipBeforeCursor | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return null;
 
@@ -950,8 +1057,12 @@ function chipBeforeCursor(root: HTMLElement): HTMLElement | null {
   if (node.nodeType === Node.TEXT_NODE) {
     const textNode = node as Text;
     const before = textNode.data.slice(0, offset);
-    if (removeCaretAnchors(before).length === 0 && isComposerChipElement(textNode.previousSibling)) {
-      return textNode.previousSibling;
+    if (
+      caretSpacerTextIsEmpty(before) &&
+      isCaretAnchorTextNode(textNode, before) &&
+      isComposerChipElement(textNode.previousSibling)
+    ) {
+      return { chip: textNode.previousSibling, textNode, offset };
     }
   }
 
@@ -961,11 +1072,66 @@ function chipBeforeCursor(root: HTMLElement): HTMLElement | null {
     const el = node as HTMLElement;
     const childBefore = el.childNodes[offset - 1];
     if (isComposerChipElement(childBefore)) {
-      return childBefore;
+      return { chip: childBefore };
     }
   }
 
   return null;
+}
+
+function deleteChipBeforeCursor(
+  root: HTMLElement,
+  largePastes: Map<string, MentionComposerLargePaste>,
+) {
+  const target = chipBeforeCursor(root);
+  if (!target) return false;
+
+  const { chip, textNode, offset = 0 } = target;
+  const parent = chip.parentNode;
+  if (!parent) return false;
+
+  const largePasteId = chip.getAttribute(LARGE_PASTE_TAG_ATTR);
+  if (largePasteId) {
+    largePastes.delete(largePasteId);
+  }
+
+  const chipIndex = childNodeIndex(parent, chip);
+  let nextCaretTextNode: Text | null = null;
+
+  if (textNode?.parentNode === parent) {
+    const remainder = textNode.data.slice(offset);
+    textNode.data =
+      offset > 0 ? removeCaretAnchors(remainder) : stripLeadingCaretAnchorText(remainder);
+    if (textNode.data.length > 0) {
+      nextCaretTextNode = textNode;
+    } else {
+      textNode.remove();
+    }
+  } else if (chip.nextSibling?.nodeType === Node.TEXT_NODE) {
+    const nextTextNode = chip.nextSibling as Text;
+    nextTextNode.data = stripLeadingCaretAnchorText(nextTextNode.data);
+    if (nextTextNode.data.length > 0) {
+      nextCaretTextNode = nextTextNode;
+    } else {
+      nextTextNode.remove();
+    }
+  }
+
+  chip.remove();
+
+  if (nextCaretTextNode) {
+    placeCaretInTextNode(nextCaretTextNode, 0);
+  } else {
+    const previousNode = chipIndex > 0 ? (parent.childNodes[chipIndex - 1] ?? null) : null;
+    if (previousNode?.nodeType === Node.TEXT_NODE) {
+      const previousTextNode = previousNode as Text;
+      placeCaretInTextNode(previousTextNode, previousTextNode.data.length);
+    } else {
+      placeCaretInNode(parent, Math.min(chipIndex, parent.childNodes.length));
+    }
+  }
+
+  return true;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1039,9 +1205,7 @@ function Popup({
         {isLoading && (
           <div className="px-3 py-2 text-xs text-muted-foreground">Indexing files...</div>
         )}
-        {error && !isLoading && (
-          <div className="px-3 py-2 text-xs text-destructive">{error}</div>
-        )}
+        {error && !isLoading && <div className="px-3 py-2 text-xs text-destructive">{error}</div>}
         {suggestions.map((suggestion, i) => {
           const isSkill = suggestion.type === "skill";
           const entry = suggestion.type === "file" ? suggestion.entry : null;
@@ -1055,7 +1219,9 @@ function Popup({
           const subtitle = skill?.description ?? (dirPath ? `${dirPath}/` : "");
           return (
             <div
-              key={entry ? `${entry.kind}:${entry.path}` : `skill:${skill?.skillFile ?? skill?.name}`}
+              key={
+                entry ? `${entry.kind}:${entry.path}` : `skill:${skill?.skillFile ?? skill?.name}`
+              }
               ref={i === highlightIndex ? hlRef : undefined}
               className={cn(
                 "mention-popup-item group mx-1.5 flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1 text-[13px] leading-5 transition-all",
@@ -1074,11 +1240,15 @@ function Popup({
                   isSkill
                     ? "bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300"
                     : isDir
-                    ? "bg-amber-500/10 dark:bg-amber-400/15"
-                    : "bg-foreground/[0.04] dark:bg-white/[0.05]",
+                      ? "bg-amber-500/10 dark:bg-amber-400/15"
+                      : "bg-foreground/[0.04] dark:bg-white/[0.05]",
                 )}
               >
-                {Icon ? <Icon width={12} height={12} /> : <span className="text-[11px] font-semibold">$</span>}
+                {Icon ? (
+                  <Icon width={12} height={12} />
+                ) : (
+                  <span className="text-[11px] font-semibold">$</span>
+                )}
               </span>
               <span className="min-w-0 flex-1 truncate">
                 <span className="font-medium tracking-tight text-foreground/95">{title}</span>
@@ -1090,10 +1260,12 @@ function Popup({
                 <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/60">
                   skill
                 </span>
-              ) : isDir && (
-                <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/60">
-                  dir
-                </span>
+              ) : (
+                isDir && (
+                  <span className="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground/60">
+                    dir
+                  </span>
+                )
               )}
             </div>
           );
@@ -1118,7 +1290,10 @@ function formatCommitTooltipDate(value: string, locale: string) {
     minute: "2-digit",
   });
   const deltaSeconds = Math.round((date.getTime() - Date.now()) / 1000);
-  const units: Array<{ unit: "year" | "month" | "day" | "hour" | "minute" | "second"; seconds: number }> = [
+  const units: Array<{
+    unit: "year" | "month" | "day" | "hour" | "minute" | "second";
+    seconds: number;
+  }> = [
     { unit: "year", seconds: 365 * 24 * 60 * 60 },
     { unit: "month", seconds: 30 * 24 * 60 * 60 },
     { unit: "day", seconds: 24 * 60 * 60 },
@@ -1173,7 +1348,9 @@ function CommitMentionTooltip({
   const availableBelow = window.innerHeight - rect.bottom - 16;
   const placeAbove = availableAbove > 260 || availableAbove > availableBelow;
   const maxHeight = Math.max(120, Math.min(520, placeAbove ? availableAbove : availableBelow));
-  const top = placeAbove ? Math.max(8, rect.top - 8) : Math.min(window.innerHeight - 8, rect.bottom + 8);
+  const top = placeAbove
+    ? Math.max(8, rect.top - 8)
+    : Math.min(window.innerHeight - 8, rect.bottom + 8);
   const shortSha = commit.shortSha || commit.sha.slice(0, 7);
   const author = commit.authorName || t("chat.composer.commitTooltipUnknownAuthor");
   const date = formatCommitTooltipDate(commit.authorDate, locale);
@@ -1229,9 +1406,7 @@ function CommitMentionTooltip({
           ) : null}
         </div>
       </div>
-      <div className="mt-2 whitespace-pre-wrap break-words font-medium leading-snug">
-        {subject}
-      </div>
+      <div className="mt-2 whitespace-pre-wrap break-words font-medium leading-snug">{subject}</div>
       {messageBody ? (
         <div className="mt-1.5 whitespace-pre-wrap break-words leading-snug text-muted-foreground">
           {messageBody}
@@ -1239,7 +1414,9 @@ function CommitMentionTooltip({
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-tight">
         <span className="text-muted-foreground">{filesChangedLabel}</span>
-        <span className="font-medium text-emerald-600 dark:text-emerald-400">{insertionsLabel}</span>
+        <span className="font-medium text-emerald-600 dark:text-emerald-400">
+          {insertionsLabel}
+        </span>
         <span className="font-medium text-rose-600 dark:text-rose-400">{deletionsLabel}</span>
       </div>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-border/70 pt-1.5 text-[11px] leading-tight text-muted-foreground">
@@ -1268,737 +1445,857 @@ function CommitMentionTooltip({
 /*  MentionComposer                                                    */
 /* ------------------------------------------------------------------ */
 
-export const MentionComposer = memo(forwardRef<MentionComposerHandle, MentionComposerProps>(function MentionComposer({
-  onSend,
-  onEmptyChange,
-  onBusyChange,
-  onPasteFiles,
-  disabled = false,
-  placeholder = "",
-  workdir,
-  enabledSkills = [],
-  className,
-}: MentionComposerProps, ref) {
-  const editorRef = useRef<HTMLDivElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const commitTooltipCloseTimerRef = useRef<number | null>(null);
-  const [isEmpty, setIsEmpty] = useState(true);
-  const lastIsEmptyRef = useRef(true);
-  const isComposingRef = useRef(false);
-  const busyReleaseTimerRef = useRef<number | null>(null);
-  const isBusyRef = useRef(false);
-  const largePastesRef = useRef(new Map<string, MentionComposerLargePaste>());
-  const largePasteCounterRef = useRef(0);
-  const [commitTooltip, setCommitTooltip] = useState<{
-    commit: MentionComposerCommitMention;
-    rect: DOMRect;
-  } | null>(null);
+export const MentionComposer = memo(
+  forwardRef<MentionComposerHandle, MentionComposerProps>(function MentionComposer(
+    {
+      onSend,
+      onEmptyChange,
+      onBusyChange,
+      onPasteFiles,
+      disabled = false,
+      placeholder = "",
+      workdir,
+      enabledSkills = [],
+      className,
+    }: MentionComposerProps,
+    ref,
+  ) {
+    const editorRef = useRef<HTMLDivElement>(null);
+    const wrapperRef = useRef<HTMLDivElement>(null);
+    const commitTooltipCloseTimerRef = useRef<number | null>(null);
+    const commitTooltipChipRef = useRef<HTMLElement | null>(null);
+    const [isEmpty, setIsEmpty] = useState(true);
+    const lastIsEmptyRef = useRef(true);
+    const isComposingRef = useRef(false);
+    const compositionEnterKeyRef = useRef(false);
+    const lastCompositionEndAtRef = useRef(0);
+    const imeEnterSuppressUntilRef = useRef(0);
+    const busyReleaseTimerRef = useRef<number | null>(null);
+    const isBusyRef = useRef(false);
+    const largePastesRef = useRef(new Map<string, MentionComposerLargePaste>());
+    const largePasteCounterRef = useRef(0);
+    const [commitTooltip, setCommitTooltip] = useState<{
+      commit: MentionComposerCommitMention;
+      rect: DOMRect;
+    } | null>(null);
 
-  const setBusy = useCallback(
-    (nextBusy: boolean) => {
-      if (isBusyRef.current === nextBusy) return;
-      isBusyRef.current = nextBusy;
-      onBusyChange?.(nextBusy);
-    },
-    [onBusyChange],
-  );
+    const closeCommitTooltip = useCallback(() => {
+      commitTooltipChipRef.current = null;
+      setCommitTooltip(null);
+    }, []);
 
-  const scheduleBusyRelease = useCallback(() => {
-    if (busyReleaseTimerRef.current !== null) {
-      window.clearTimeout(busyReleaseTimerRef.current);
-    }
-    busyReleaseTimerRef.current = window.setTimeout(() => {
-      busyReleaseTimerRef.current = null;
-      setBusy(false);
-    }, 140);
-  }, [setBusy]);
+    const setBusy = useCallback(
+      (nextBusy: boolean) => {
+        if (isBusyRef.current === nextBusy) return;
+        isBusyRef.current = nextBusy;
+        onBusyChange?.(nextBusy);
+      },
+      [onBusyChange],
+    );
 
-  // ---- File list ----
-  const normalizedWorkdir = workdir.trim();
-  const [mentionSessionEntries, setMentionSessionEntries] = useState<MentionFileEntry[]>([]);
-  const [mentionSessionLoading, setMentionSessionLoading] = useState(false);
-  const [mentionSessionError, setMentionSessionError] = useState<string | null>(null);
-  const mentionSessionRequestSeqRef = useRef(0);
-  const mentionActiveRef = useRef(false);
-  const mentionSessionQueryRef = useRef("");
-
-  // ---- Mention state ----
-  const [mentionCtx, setMentionCtx] = useState<MentionContext | null>(null);
-  const [highlightIdx, setHighlightIdx] = useState(0);
-
-  const resetMentionSession = useCallback(() => {
-    mentionSessionRequestSeqRef.current += 1;
-    mentionSessionQueryRef.current = "";
-    setMentionSessionEntries([]);
-    setMentionSessionLoading(false);
-    setMentionSessionError(null);
-  }, []);
-
-  const closeMentionSession = useCallback(() => {
-    mentionActiveRef.current = false;
-    setMentionCtx(null);
-    setHighlightIdx(0);
-    resetMentionSession();
-  }, [resetMentionSession]);
-
-  const startMentionSession = useCallback(
-    (ctx: MentionContext) => {
-      const requestSeq = ++mentionSessionRequestSeqRef.current;
-      mentionSessionQueryRef.current = ctx.query;
-      setMentionSessionEntries([]);
-      setMentionSessionLoading(ctx.trigger === "file" && Boolean(normalizedWorkdir));
-      setMentionSessionError(null);
-
-      if (ctx.trigger === "skill") {
-        return;
-      }
-      if (!normalizedWorkdir) {
-        return;
-      }
-
-      invoke<MentionListResponse>("fs_mention_list", {
-        workdir: normalizedWorkdir,
-        max_results: MENTION_INDEX_MAX_RESULTS,
-        query: ctx.query,
-      })
-        .then((resp) => {
-          if (requestSeq !== mentionSessionRequestSeqRef.current) return;
-          setMentionSessionEntries(resp.entries);
-        })
-        .catch(() => {
-          if (requestSeq !== mentionSessionRequestSeqRef.current) return;
-          setMentionSessionEntries([]);
-          setMentionSessionError("Could not index files");
-        })
-        .finally(() => {
-          if (requestSeq !== mentionSessionRequestSeqRef.current) return;
-          setMentionSessionLoading(false);
-        });
-    },
-    [normalizedWorkdir],
-  );
-
-  const mentionSessionSearchIndex = useMemo<MentionSearchEntry[]>(
-    () =>
-      mentionSessionEntries.map((entry) => ({
-        entry,
-        searchPath: entry.path.toLowerCase(),
-      })),
-    [mentionSessionEntries],
-  );
-
-  useEffect(() => {
-    closeMentionSession();
-  }, [normalizedWorkdir, closeMentionSession]);
-
-  useEffect(() => {
-    return () => {
-      mentionSessionRequestSeqRef.current += 1;
+    const scheduleBusyRelease = useCallback(() => {
       if (busyReleaseTimerRef.current !== null) {
         window.clearTimeout(busyReleaseTimerRef.current);
       }
+      busyReleaseTimerRef.current = window.setTimeout(() => {
+        busyReleaseTimerRef.current = null;
+        setBusy(false);
+      }, 140);
+    }, [setBusy]);
+
+    // ---- File list ----
+    const normalizedWorkdir = workdir.trim();
+    const [mentionSessionEntries, setMentionSessionEntries] = useState<MentionFileEntry[]>([]);
+    const [mentionSessionLoading, setMentionSessionLoading] = useState(false);
+    const [mentionSessionError, setMentionSessionError] = useState<string | null>(null);
+    const mentionSessionRequestSeqRef = useRef(0);
+    const mentionActiveRef = useRef(false);
+    const mentionSessionQueryRef = useRef("");
+    const mentionFetchRef = useRef<{ trigger: MentionContext["trigger"]; query: string } | null>(
+      null,
+    );
+
+    // ---- Mention state ----
+    const [mentionCtx, setMentionCtx] = useState<MentionContext | null>(null);
+    const [highlightIdx, setHighlightIdx] = useState(0);
+
+    const resetMentionSession = useCallback(() => {
+      mentionSessionRequestSeqRef.current += 1;
+      mentionSessionQueryRef.current = "";
+      mentionFetchRef.current = null;
+      setMentionSessionEntries([]);
+      setMentionSessionLoading(false);
+      setMentionSessionError(null);
+    }, []);
+
+    const closeMentionSession = useCallback(() => {
+      mentionActiveRef.current = false;
+      setMentionCtx(null);
+      setHighlightIdx(0);
+      resetMentionSession();
+    }, [resetMentionSession]);
+
+    const startMentionSession = useCallback(
+      (ctx: MentionContext) => {
+        const requestSeq = ++mentionSessionRequestSeqRef.current;
+        mentionSessionQueryRef.current = ctx.query;
+        mentionFetchRef.current = { trigger: ctx.trigger, query: normalizeMentionQuery(ctx.query) };
+        setMentionSessionEntries([]);
+        setMentionSessionLoading(ctx.trigger === "file" && Boolean(normalizedWorkdir));
+        setMentionSessionError(null);
+
+        if (ctx.trigger === "skill") {
+          return;
+        }
+        if (!normalizedWorkdir) {
+          return;
+        }
+
+        invokeFs<MentionListResponse>("fs_mention_list", {
+          workdir: normalizedWorkdir,
+          max_results: MENTION_INDEX_MAX_RESULTS,
+          query: ctx.query,
+        })
+          .then((resp) => {
+            if (requestSeq !== mentionSessionRequestSeqRef.current) return;
+            setMentionSessionEntries(resp.entries);
+          })
+          .catch(() => {
+            if (requestSeq !== mentionSessionRequestSeqRef.current) return;
+            setMentionSessionEntries([]);
+            setMentionSessionError("Could not index files");
+          })
+          .finally(() => {
+            if (requestSeq !== mentionSessionRequestSeqRef.current) return;
+            setMentionSessionLoading(false);
+          });
+      },
+      [normalizedWorkdir],
+    );
+
+    const mentionSessionSearchIndex = useMemo<MentionSearchEntry[]>(
+      () =>
+        mentionSessionEntries.map((entry) => ({
+          entry,
+          searchPath: entry.path.toLowerCase(),
+        })),
+      [mentionSessionEntries],
+    );
+
+    useEffect(() => {
+      closeMentionSession();
+    }, [normalizedWorkdir, closeMentionSession]);
+
+    useEffect(() => {
+      return () => {
+        mentionSessionRequestSeqRef.current += 1;
+        if (busyReleaseTimerRef.current !== null) {
+          window.clearTimeout(busyReleaseTimerRef.current);
+        }
+        setBusy(false);
+      };
+    }, [setBusy]);
+
+    useEffect(() => {
+      if (!disabled) return;
+      closeMentionSession();
       setBusy(false);
-    };
-  }, [setBusy]);
+    }, [disabled, closeMentionSession, setBusy]);
 
-  useEffect(() => {
-    if (!disabled) return;
-    closeMentionSession();
-    setBusy(false);
-  }, [disabled, closeMentionSession, setBusy]);
+    const normalizedMentionQuery = mentionCtx ? normalizeMentionQuery(mentionCtx.query) : "";
+    const suggestions = useMemo<MentionSuggestion[]>(() => {
+      if (mentionCtx === null) {
+        return [];
+      }
 
-  const normalizedMentionQuery = mentionCtx ? normalizeMentionQuery(mentionCtx.query) : "";
-  const suggestions = useMemo<MentionSuggestion[]>(() => {
-    if (mentionCtx === null) {
-      return [];
-    }
+      if (mentionCtx.trigger === "skill") {
+        const next: MentionSuggestion[] = [];
+        for (const skill of enabledSkills) {
+          const haystack = `${skill.name}\n${skill.description}\n${skill.baseDir}`.toLowerCase();
+          if (normalizedMentionQuery && !haystack.includes(normalizedMentionQuery)) {
+            continue;
+          }
+          next.push({ type: "skill", skill });
+          if (next.length >= MAX_SUGGESTIONS) {
+            break;
+          }
+        }
+        return next;
+      }
 
-    if (mentionCtx.trigger === "skill") {
       const next: MentionSuggestion[] = [];
-      for (const skill of enabledSkills) {
-        const haystack = `${skill.name}\n${skill.description}\n${skill.baseDir}`.toLowerCase();
-        if (normalizedMentionQuery && !haystack.includes(normalizedMentionQuery)) {
+      for (const item of mentionSessionSearchIndex) {
+        if (normalizedMentionQuery && !item.searchPath.includes(normalizedMentionQuery)) {
           continue;
         }
-        next.push({ type: "skill", skill });
+        next.push({ type: "file", entry: item.entry });
         if (next.length >= MAX_SUGGESTIONS) {
           break;
         }
       }
       return next;
-    }
+    }, [enabledSkills, mentionCtx, mentionSessionSearchIndex, normalizedMentionQuery]);
 
-    const next: MentionSuggestion[] = [];
-    for (const item of mentionSessionSearchIndex) {
-      if (normalizedMentionQuery && !item.searchPath.includes(normalizedMentionQuery)) {
-        continue;
-      }
-      next.push({ type: "file", entry: item.entry });
-      if (next.length >= MAX_SUGGESTIONS) {
-        break;
-      }
-    }
-    return next;
-  }, [enabledSkills, mentionCtx, mentionSessionSearchIndex, normalizedMentionQuery]);
+    useEffect(() => {
+      setHighlightIdx((current) => {
+        if (suggestions.length === 0) return 0;
+        return Math.min(current, suggestions.length - 1);
+      });
+    }, [suggestions.length]);
 
-  useEffect(() => {
-    setHighlightIdx((current) => {
-      if (suggestions.length === 0) return 0;
-      return Math.min(current, suggestions.length - 1);
-    });
-  }, [suggestions.length]);
+    const popupLoading = mentionSessionLoading;
+    const popupError = suggestions.length === 0 ? mentionSessionError : null;
+    const popupEmptyLabel =
+      mentionCtx?.trigger === "skill" ? "No matching enabled Skills" : "No matching files";
+    const showEmpty =
+      mentionCtx !== null && !popupLoading && !popupError && suggestions.length === 0;
+    const popupVisible =
+      mentionCtx !== null &&
+      (popupLoading || Boolean(popupError) || suggestions.length > 0 || showEmpty);
 
-  const popupLoading = mentionSessionLoading;
-  const popupError = suggestions.length === 0 ? mentionSessionError : null;
-  const popupEmptyLabel =
-    mentionCtx?.trigger === "skill" ? "No matching enabled Skills" : "No matching files";
-  const showEmpty =
-    mentionCtx !== null &&
-    !popupLoading &&
-    !popupError &&
-    suggestions.length === 0;
-  const popupVisible =
-    mentionCtx !== null &&
-    (popupLoading || Boolean(popupError) || suggestions.length > 0 || showEmpty);
+    const applyEmptyState = useCallback(
+      (nextEmpty: boolean) => {
+        if (lastIsEmptyRef.current === nextEmpty) return;
+        lastIsEmptyRef.current = nextEmpty;
+        setIsEmpty(nextEmpty);
+        onEmptyChange?.(nextEmpty);
+      },
+      [onEmptyChange],
+    );
 
-  const applyEmptyState = useCallback(
-    (nextEmpty: boolean) => {
-      if (lastIsEmptyRef.current === nextEmpty) return;
-      lastIsEmptyRef.current = nextEmpty;
-      setIsEmpty(nextEmpty);
-      onEmptyChange?.(nextEmpty);
-    },
-    [onEmptyChange],
-  );
-
-  const refreshEmptyState = useCallback(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    applyEmptyState(editorTextIsEmpty(el));
-  }, [applyEmptyState]);
-
-  const buildDraft = useCallback((): MentionComposerDraft => {
-    const el = editorRef.current;
-    if (!el) {
-      return {
-        segments: [],
-        text: "",
-        textWithoutLargePastes: "",
-        largePastes: [],
-        skillMentions: [],
-        commitMentions: [],
-        gitFileMentions: [],
-        isEmpty: true,
-      };
-    }
-
-    const segments = serializeChildrenToSegments(el, largePastesRef.current);
-    const largePastes: MentionComposerLargePaste[] = [];
-    const skillMentions: MentionComposerSkillMention[] = [];
-    const commitMentions: MentionComposerCommitMention[] = [];
-    const gitFileMentions: MentionComposerGitFileMention[] = [];
-    const textParts: string[] = [];
-    const textWithoutLargePastesParts: string[] = [];
-    for (const segment of segments) {
-      if (segment.type === "text") {
-        textParts.push(segment.text);
-        textWithoutLargePastesParts.push(segment.text);
-      } else if (segment.type === "largePaste") {
-        largePastes.push(segment.paste);
-        textParts.push(segment.paste.text);
-      } else if (segment.type === "fileMention") {
-        const token = formatFileMentionToken(segment.reference);
-        textParts.push(token);
-        textWithoutLargePastesParts.push(token);
-      } else if (segment.type === "skillMention") {
-        skillMentions.push(segment.skill);
-        const token = formatSkillMentionToken(segment.skill);
-        textParts.push(token);
-        textWithoutLargePastesParts.push(token);
-      } else if (segment.type === "commitMention") {
-        commitMentions.push(segment.commit);
-        const token = formatCommitMentionToken(segment.commit);
-        textParts.push(token);
-        textWithoutLargePastesParts.push(token);
-      } else if (segment.type === "gitFileMention") {
-        gitFileMentions.push(segment.file);
-        const token = formatGitFileMentionToken(segment.file);
-        textParts.push(token);
-        textWithoutLargePastesParts.push(token);
-      }
-    }
-
-    const text = normalizeSerializedText(textParts.join(""));
-    const textWithoutLargePastes = normalizeSerializedText(textWithoutLargePastesParts.join(""));
-    return {
-      segments,
-      text,
-      textWithoutLargePastes,
-      largePastes,
-      skillMentions,
-      commitMentions,
-      gitFileMentions,
-      isEmpty: editorTextIsEmpty(el),
-    };
-  }, []);
-
-  const createLargePaste = useCallback((text: string): MentionComposerLargePaste => {
-    const index = largePasteCounterRef.current + 1;
-    largePasteCounterRef.current = index;
-    return {
-      id: `large-paste-${Date.now()}-${crypto.randomUUID()}`,
-      label: `Pasted text ${index}`,
-      text,
-      charCount: text.length,
-      lineCount: countLargePasteLines(text),
-      preview: normalizeLargePastePreview(text),
-    };
-  }, []);
-
-  const insertLargePaste = useCallback(
-    (text: string) => {
+    const refreshEmptyState = useCallback(() => {
       const el = editorRef.current;
       if (!el) return;
-      const paste = createLargePaste(text);
-      largePastesRef.current.set(paste.id, paste);
-      insertNodeAtCursor(el, createLargePasteChip(paste));
-      closeMentionSession();
-      refreshEmptyState();
-    },
-    [closeMentionSession, createLargePaste, refreshEmptyState],
-  );
+      applyEmptyState(editorTextIsEmpty(el));
+    }, [applyEmptyState]);
 
-  // ---- Mention detection (called after DOM updates) ----
-  const refreshMention = useCallback(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    const applyContext = (ctx: MentionContext | null) => {
-      if (ctx) {
+    const buildDraft = useCallback((): MentionComposerDraft => {
+      const el = editorRef.current;
+      if (!el) {
+        return {
+          segments: [],
+          text: "",
+          textWithoutLargePastes: "",
+          largePastes: [],
+          skillMentions: [],
+          commitMentions: [],
+          gitFileMentions: [],
+          isEmpty: true,
+        };
+      }
+
+      const segments = serializeChildrenToSegments(el, largePastesRef.current);
+      const largePastes: MentionComposerLargePaste[] = [];
+      const skillMentions: MentionComposerSkillMention[] = [];
+      const commitMentions: MentionComposerCommitMention[] = [];
+      const gitFileMentions: MentionComposerGitFileMention[] = [];
+      const textParts: string[] = [];
+      const textWithoutLargePastesParts: string[] = [];
+      for (const segment of segments) {
+        if (segment.type === "text") {
+          textParts.push(segment.text);
+          textWithoutLargePastesParts.push(segment.text);
+        } else if (segment.type === "largePaste") {
+          largePastes.push(segment.paste);
+          textParts.push(segment.paste.text);
+        } else if (segment.type === "fileMention") {
+          const token = formatFileMentionToken(segment.reference);
+          textParts.push(token);
+          textWithoutLargePastesParts.push(token);
+        } else if (segment.type === "skillMention") {
+          skillMentions.push(segment.skill);
+          const token = formatSkillMentionToken(segment.skill);
+          textParts.push(token);
+          textWithoutLargePastesParts.push(token);
+        } else if (segment.type === "commitMention") {
+          commitMentions.push(segment.commit);
+          const token = formatCommitMentionToken(segment.commit);
+          textParts.push(token);
+          textWithoutLargePastesParts.push(token);
+        } else if (segment.type === "gitFileMention") {
+          gitFileMentions.push(segment.file);
+          const token = formatGitFileMentionToken(segment.file);
+          textParts.push(token);
+          textWithoutLargePastesParts.push(token);
+        }
+      }
+
+      const text = normalizeSerializedText(textParts.join(""));
+      const textWithoutLargePastes = normalizeSerializedText(textWithoutLargePastesParts.join(""));
+      return {
+        segments,
+        text,
+        textWithoutLargePastes,
+        largePastes,
+        skillMentions,
+        commitMentions,
+        gitFileMentions,
+        isEmpty: editorTextIsEmpty(el),
+      };
+    }, []);
+
+    const createLargePaste = useCallback((text: string): MentionComposerLargePaste => {
+      const index = largePasteCounterRef.current + 1;
+      largePasteCounterRef.current = index;
+      return {
+        id: `large-paste-${Date.now()}-${crypto.randomUUID()}`,
+        label: `Pasted text ${index}`,
+        text,
+        charCount: text.length,
+        lineCount: countLargePasteLines(text),
+        preview: normalizeLargePastePreview(text),
+      };
+    }, []);
+
+    const insertLargePaste = useCallback(
+      (text: string) => {
+        const el = editorRef.current;
+        if (!el) return;
+        const paste = createLargePaste(text);
+        largePastesRef.current.set(paste.id, paste);
+        insertNodeAtCursor(el, createLargePasteChip(paste));
+        closeMentionSession();
+        refreshEmptyState();
+      },
+      [closeMentionSession, createLargePaste, refreshEmptyState],
+    );
+
+    // ---- Mention detection (called after DOM updates) ----
+    const refreshMention = useCallback(() => {
+      const el = editorRef.current;
+      if (!el) return;
+      const applyContext = (ctx: MentionContext | null) => {
+        if (!ctx) {
+          if (mentionActiveRef.current) {
+            closeMentionSession();
+          }
+          return;
+        }
+        setMentionCtx((prev) => (prev && mentionContextEquals(prev, ctx) ? prev : ctx));
         if (!mentionActiveRef.current) {
           mentionActiveRef.current = true;
-          mentionSessionQueryRef.current = ctx.query;
-          setMentionCtx(ctx);
           setHighlightIdx(0);
           startMentionSession(ctx);
           return;
         }
-        setMentionCtx(ctx);
-        if (ctx.query !== mentionSessionQueryRef.current) {
-          mentionSessionQueryRef.current = ctx.query;
-          setHighlightIdx(0);
+        if (ctx.query === mentionSessionQueryRef.current) return;
+        mentionSessionQueryRef.current = ctx.query;
+        setHighlightIdx(0);
+        // The backend filters entries by the query used at fetch time, so the
+        // cached snapshot only narrows further; refetch once that breaks.
+        const fetched = mentionFetchRef.current;
+        if (
+          fetched &&
+          (fetched.trigger !== ctx.trigger ||
+            !normalizeMentionQuery(ctx.query).startsWith(fetched.query))
+        ) {
+          startMentionSession(ctx);
         }
-      } else if (mentionActiveRef.current) {
-        closeMentionSession();
-      }
-    };
+      };
 
-    applyContext(detectMention(el, enabledSkills.length > 0));
-    window.requestAnimationFrame(() => {
-      const nextEl = editorRef.current;
-      if (!nextEl || document.activeElement !== nextEl) return;
-      applyContext(detectMention(nextEl, enabledSkills.length > 0));
-    });
-  }, [closeMentionSession, enabledSkills.length, startMentionSession]);
+      applyContext(detectMention(el, enabledSkills.length > 0));
+      window.requestAnimationFrame(() => {
+        const nextEl = editorRef.current;
+        if (!nextEl || document.activeElement !== nextEl) return;
+        applyContext(detectMention(nextEl, enabledSkills.length > 0));
+      });
+    }, [closeMentionSession, enabledSkills.length, startMentionSession]);
 
-  useImperativeHandle(
-    ref,
-    () => ({
-      getText: () => {
-        const el = editorRef.current;
-        if (!el) return "";
-        return normalizeSerializedText(serializeChildren(el, largePastesRef.current));
-      },
-      getDraft: buildDraft,
-      hasContent: () => !buildDraft().isEmpty,
-      setText: (text: string) => {
-        const el = editorRef.current;
-        if (!el) return;
-        el.innerHTML = "";
-        largePastesRef.current.clear();
-        setCommitTooltip(null);
-        if (isLargePasteText(text)) {
-          insertLargePaste(text);
-        } else {
-          el.innerText = text;
+    useImperativeHandle(
+      ref,
+      () => ({
+        getText: () => {
+          const el = editorRef.current;
+          if (!el) return "";
+          return normalizeSerializedText(serializeChildren(el, largePastesRef.current));
+        },
+        getDraft: buildDraft,
+        hasContent: () => {
+          const el = editorRef.current;
+          return el != null && !editorTextIsEmpty(el);
+        },
+        setText: (text: string) => {
+          const el = editorRef.current;
+          if (!el) return;
+          el.innerHTML = "";
+          largePastesRef.current.clear();
+          closeCommitTooltip();
+          if (isLargePasteText(text)) {
+            insertLargePaste(text);
+          } else {
+            el.innerText = text;
+            closeMentionSession();
+            refreshEmptyState();
+          }
+        },
+        setDraft: (draft: MentionComposerDraft) => {
+          const el = editorRef.current;
+          if (!el) return;
+          el.innerHTML = "";
+          largePastesRef.current.clear();
+          closeCommitTooltip();
+
+          if (draft.segments.length === 0 && draft.text) {
+            if (isLargePasteText(draft.text)) {
+              insertLargePaste(draft.text);
+              return;
+            }
+            el.innerText = draft.text;
+          } else {
+            for (const segment of draft.segments) {
+              if (segment.type === "largePaste") {
+                largePastesRef.current.set(segment.paste.id, segment.paste);
+                el.appendChild(createLargePasteChip(segment.paste));
+              } else if (segment.type === "fileMention") {
+                const chip = createFileMentionChip(segment.reference.path, segment.reference.kind);
+                if (chip) el.appendChild(chip);
+              } else if (segment.type === "skillMention") {
+                el.appendChild(createSkillMentionChip(segment.skill));
+              } else if (segment.type === "commitMention") {
+                el.appendChild(createCommitMentionChip(segment.commit));
+              } else if (segment.type === "gitFileMention") {
+                el.appendChild(createGitFileMentionChip(segment.file));
+              } else if (segment.text) {
+                el.appendChild(document.createTextNode(segment.text));
+              }
+            }
+            largePasteCounterRef.current = Math.max(
+              largePasteCounterRef.current,
+              largePastesRef.current.size,
+            );
+          }
+
+          ensureTrailingCaretAnchor(el);
           closeMentionSession();
           refreshEmptyState();
-        }
-      },
-      setDraft: (draft: MentionComposerDraft) => {
-        const el = editorRef.current;
-        if (!el) return;
-        el.innerHTML = "";
-        largePastesRef.current.clear();
-        setCommitTooltip(null);
+        },
+        insertFileMention: (path: string, kind: "file" | "dir") => {
+          const el = editorRef.current;
+          if (!el) return;
+          el.focus();
+          const chip = createFileMentionChip(path, kind);
+          if (!chip) return;
+          insertNodeAtCursor(el, chip, { ensureSpaceAfterNode: true });
+          closeMentionSession();
+          refreshEmptyState();
+        },
+        insertCommitMention: (commit: MentionComposerCommitMention) => {
+          const el = editorRef.current;
+          if (!el) return;
+          el.focus();
+          insertNodeAtCursor(el, createCommitMentionChip(commit), { ensureSpaceAfterNode: true });
+          closeMentionSession();
+          refreshEmptyState();
+        },
+        insertGitFileMention: (file: MentionComposerGitFileMention) => {
+          const el = editorRef.current;
+          if (!el) return;
+          el.focus();
+          insertNodeAtCursor(el, createGitFileMentionChip(file), { ensureSpaceAfterNode: true });
+          closeMentionSession();
+          refreshEmptyState();
+        },
+        clear: () => {
+          const el = editorRef.current;
+          if (!el) return;
+          el.innerHTML = "";
+          largePastesRef.current.clear();
+          closeCommitTooltip();
+          closeMentionSession();
+          refreshEmptyState();
+        },
+        focus: () => editorRef.current?.focus(),
+      }),
+      [buildDraft, closeCommitTooltip, closeMentionSession, insertLargePaste, refreshEmptyState],
+    );
 
-        if (draft.segments.length === 0 && draft.text) {
-          if (isLargePasteText(draft.text)) {
-            insertLargePaste(draft.text);
-            return;
-          }
-          el.innerText = draft.text;
+    // ---- Select suggestion ----
+    const selectSuggestion = useCallback(
+      (suggestion: MentionSuggestion) => {
+        if (!mentionCtx) return;
+        if (!mentionCtx.textNode.isConnected) {
+          closeMentionSession();
+          return;
+        }
+        if (suggestion.type === "skill") {
+          insertSkillMentionChip(mentionCtx, suggestion.skill);
         } else {
-          for (const segment of draft.segments) {
-            if (segment.type === "largePaste") {
-              largePastesRef.current.set(segment.paste.id, segment.paste);
-              el.appendChild(createLargePasteChip(segment.paste));
-            } else if (segment.type === "fileMention") {
-              const chip = createFileMentionChip(segment.reference.path, segment.reference.kind);
-              if (chip) el.appendChild(chip);
-            } else if (segment.type === "skillMention") {
-              el.appendChild(createSkillMentionChip(segment.skill));
-            } else if (segment.type === "commitMention") {
-              el.appendChild(createCommitMentionChip(segment.commit));
-            } else if (segment.type === "gitFileMention") {
-              el.appendChild(createGitFileMentionChip(segment.file));
-            } else if (segment.text) {
-              el.appendChild(document.createTextNode(segment.text));
-            }
-          }
-          largePasteCounterRef.current = Math.max(
-            largePasteCounterRef.current,
-            largePastesRef.current.size,
-          );
+          insertMentionChip(mentionCtx, suggestion.entry.path, suggestion.entry.kind);
         }
+        closeMentionSession();
+        refreshEmptyState();
+        editorRef.current?.focus();
+      },
+      [closeMentionSession, mentionCtx, refreshEmptyState],
+    );
 
-        ensureTrailingCaretAnchor(el);
-        closeMentionSession();
-        refreshEmptyState();
-      },
-      insertFileMention: (path: string, kind: "file" | "dir") => {
-        const el = editorRef.current;
-        if (!el) return;
-        el.focus();
-        const chip = createFileMentionChip(path, kind);
-        if (!chip) return;
-        insertNodeAtCursor(el, chip, { ensureSpaceAfterNode: true });
-        closeMentionSession();
-        refreshEmptyState();
-      },
-      insertCommitMention: (commit: MentionComposerCommitMention) => {
-        const el = editorRef.current;
-        if (!el) return;
-        el.focus();
-        insertNodeAtCursor(el, createCommitMentionChip(commit), { ensureSpaceAfterNode: true });
-        closeMentionSession();
-        refreshEmptyState();
-      },
-      insertGitFileMention: (file: MentionComposerGitFileMention) => {
-        const el = editorRef.current;
-        if (!el) return;
-        el.focus();
-        insertNodeAtCursor(el, createGitFileMentionChip(file), { ensureSpaceAfterNode: true });
-        closeMentionSession();
-        refreshEmptyState();
-      },
-      clear: () => {
-        const el = editorRef.current;
-        if (!el) return;
-        el.innerHTML = "";
-        largePastesRef.current.clear();
-        setCommitTooltip(null);
-        closeMentionSession();
-        refreshEmptyState();
-      },
-      focus: () => editorRef.current?.focus(),
-    }),
-    [buildDraft, closeMentionSession, insertLargePaste, refreshEmptyState],
-  );
-
-  // ---- Select suggestion ----
-  const selectSuggestion = useCallback(
-    (suggestion: MentionSuggestion) => {
-      if (!mentionCtx) return;
-      if (suggestion.type === "skill") {
-        insertSkillMentionChip(mentionCtx, suggestion.skill);
-      } else {
-        insertMentionChip(mentionCtx, suggestion.entry.path, suggestion.entry.kind);
+    // ---- Event handlers ----
+    // Large-paste chips can be removed by native editing paths (select +
+    // delete, cut); drop their map entries so the pasted text is released.
+    const pruneDetachedLargePastes = useCallback(() => {
+      const el = editorRef.current;
+      const pastes = largePastesRef.current;
+      if (!el || pastes.size === 0) return;
+      const attached = new Set<string>();
+      el.querySelectorAll(`[${LARGE_PASTE_TAG_ATTR}]`).forEach((chip) => {
+        const id = chip.getAttribute(LARGE_PASTE_TAG_ATTR);
+        if (id) attached.add(id);
+      });
+      for (const id of pastes.keys()) {
+        if (!attached.has(id)) pastes.delete(id);
       }
-      closeMentionSession();
+    }, []);
+
+    const handleInput = useCallback(() => {
+      const el = editorRef.current;
+      if (el) {
+        removeStaleCaretAnchorsAroundSelection(el);
+        normalizeCaretAfterChip(el);
+      }
+      pruneDetachedLargePastes();
       refreshEmptyState();
-      editorRef.current?.focus();
-    },
-    [closeMentionSession, mentionCtx, refreshEmptyState],
-  );
+      if (!isComposingRef.current) {
+        refreshMention();
+      }
+    }, [pruneDetachedLargePastes, refreshEmptyState, refreshMention]);
 
-  // ---- Event handlers ----
-  const handleInput = useCallback(() => {
-    const el = editorRef.current;
-    if (el) {
-      normalizeCaretAfterChip(el);
-    }
-    refreshEmptyState();
-    if (!isComposingRef.current) {
-      refreshMention();
-    }
-  }, [refreshEmptyState, refreshMention]);
+    const handleKeyUp = useCallback(
+      (e: KeyboardEvent<HTMLDivElement>) => {
+        if (disabled || isComposingRef.current || isImeKeyboardEvent(e)) return;
+        if (
+          e.key === "ArrowDown" ||
+          e.key === "ArrowUp" ||
+          e.key === "Tab" ||
+          e.key === "Enter" ||
+          e.key === "Escape"
+        ) {
+          return;
+        }
+        const el = editorRef.current;
+        if (el) {
+          removeStaleCaretAnchorsAroundSelection(el);
+          normalizeCaretAfterChip(el);
+        }
+        refreshMention();
+      },
+      [disabled, refreshMention],
+    );
 
-  const handleKeyUp = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
-    if (disabled || isComposingRef.current) return;
-    if (
-      e.key === "ArrowDown" ||
-      e.key === "ArrowUp" ||
-      e.key === "Tab" ||
-      e.key === "Enter" ||
-      e.key === "Escape"
-    ) {
-      return;
-    }
-    const el = editorRef.current;
-    if (el) {
-      normalizeCaretAfterChip(el);
-    }
-    refreshMention();
-  }, [disabled, refreshMention]);
+    const handleMouseUp = useCallback(() => {
+      const el = editorRef.current;
+      if (!el) return;
+      if (normalizeCaretAfterChip(el)) {
+        refreshMention();
+      }
+    }, [refreshMention]);
 
-  const handleMouseUp = useCallback(() => {
-    const el = editorRef.current;
-    if (!el) return;
-    if (normalizeCaretAfterChip(el)) {
-      refreshMention();
-    }
-  }, [refreshMention]);
+    const updateCommitTooltipFromTarget = useCallback(
+      (target: EventTarget | null) => {
+        const editor = editorRef.current;
+        const chip =
+          target instanceof Element && editor
+            ? target.closest<HTMLElement>(`[${COMMIT_MENTION_SHA_ATTR}]`)
+            : null;
+        if (!chip || !editor?.contains(chip)) {
+          closeCommitTooltip();
+          return;
+        }
+        if (commitTooltipChipRef.current === chip) return;
+        const commit = commitMentionFromElement(chip);
+        if (!commit) {
+          closeCommitTooltip();
+          return;
+        }
+        commitTooltipChipRef.current = chip;
+        setCommitTooltip({ commit, rect: chip.getBoundingClientRect() });
+      },
+      [closeCommitTooltip],
+    );
 
-  const updateCommitTooltipFromTarget = useCallback((target: EventTarget | null) => {
-    const editor = editorRef.current;
-    if (!(target instanceof Element) || !editor) {
-      setCommitTooltip(null);
-      return;
-    }
-    const chip = target.closest<HTMLElement>(`[${COMMIT_MENTION_SHA_ATTR}]`);
-    if (!chip || !editor.contains(chip)) {
-      setCommitTooltip(null);
-      return;
-    }
-    const commit = commitMentionFromElement(chip);
-    if (!commit) {
-      setCommitTooltip(null);
-      return;
-    }
-    setCommitTooltip({ commit, rect: chip.getBoundingClientRect() });
-  }, []);
-
-  const cancelCommitTooltipClose = useCallback(() => {
-    if (commitTooltipCloseTimerRef.current === null) return;
-    window.clearTimeout(commitTooltipCloseTimerRef.current);
-    commitTooltipCloseTimerRef.current = null;
-  }, []);
-
-  const scheduleCommitTooltipClose = useCallback(() => {
-    cancelCommitTooltipClose();
-    commitTooltipCloseTimerRef.current = window.setTimeout(() => {
+    const cancelCommitTooltipClose = useCallback(() => {
+      if (commitTooltipCloseTimerRef.current === null) return;
+      window.clearTimeout(commitTooltipCloseTimerRef.current);
       commitTooltipCloseTimerRef.current = null;
-      setCommitTooltip(null);
-    }, 120);
-  }, [cancelCommitTooltipClose]);
+    }, []);
 
-  useEffect(() => cancelCommitTooltipClose, [cancelCommitTooltipClose]);
-
-  const handleMouseMove = useCallback(
-    (event: MouseEvent<HTMLDivElement>) => {
+    const scheduleCommitTooltipClose = useCallback(() => {
       cancelCommitTooltipClose();
-      updateCommitTooltipFromTarget(event.target);
-    },
-    [cancelCommitTooltipClose, updateCommitTooltipFromTarget],
-  );
+      commitTooltipCloseTimerRef.current = window.setTimeout(() => {
+        commitTooltipCloseTimerRef.current = null;
+        closeCommitTooltip();
+      }, 120);
+    }, [cancelCommitTooltipClose, closeCommitTooltip]);
 
-  const handleFocus = useCallback(
-    (event: FocusEvent<HTMLDivElement>) => {
-      updateCommitTooltipFromTarget(event.target);
-    },
-    [updateCommitTooltipFromTarget],
-  );
+    useEffect(() => cancelCommitTooltipClose, [cancelCommitTooltipClose]);
 
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLDivElement>) => {
-      if (disabled) {
-        e.preventDefault();
-        return;
-      }
-      if (e.nativeEvent.isComposing || isComposingRef.current) {
-        return;
-      }
+    const handleMouseMove = useCallback(
+      (event: MouseEvent<HTMLDivElement>) => {
+        cancelCommitTooltipClose();
+        updateCommitTooltipFromTarget(event.target);
+      },
+      [cancelCommitTooltipClose, updateCommitTooltipFromTarget],
+    );
 
-      // Popup navigation
-      if (popupVisible && suggestions.length > 0) {
-        if (e.key === "ArrowDown") {
+    const handleFocus = useCallback(
+      (event: FocusEvent<HTMLDivElement>) => {
+        updateCommitTooltipFromTarget(event.target);
+      },
+      [updateCommitTooltipFromTarget],
+    );
+
+    const handleKeyDown = useCallback(
+      (e: KeyboardEvent<HTMLDivElement>) => {
+        if (disabled) {
           e.preventDefault();
-          setHighlightIdx((p) => (p + 1) % suggestions.length);
           return;
         }
-        if (e.key === "ArrowUp") {
-          e.preventDefault();
-          setHighlightIdx((p) => (p - 1 + suggestions.length) % suggestions.length);
-          return;
-        }
-        if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-          e.preventDefault();
-          if (suggestions[highlightIdx]) {
-            selectSuggestion(suggestions[highlightIdx]);
+        const isEnter = isEnterKeyboardEvent(e);
+        const isActiveCompositionKey = isComposingRef.current || isActiveImeKeyboardEvent(e);
+        const hasLegacyImeSignal = hasLegacyImeKeyboardSignal(e);
+
+        if (isActiveCompositionKey) {
+          if (isEnter && !e.shiftKey) {
+            compositionEnterKeyRef.current = true;
+            refreshEmptyState();
+            refreshMention();
+          } else {
+            compositionEnterKeyRef.current = false;
           }
           return;
         }
-      }
-      if (popupVisible && e.key === "Escape") {
-        e.preventDefault();
-        closeMentionSession();
-        return;
-      }
 
-      // Backspace: delete mention chip if cursor is right after one
-      if (e.key === "Backspace") {
-        const chip = chipBeforeCursor(editorRef.current!);
-        if (chip) {
+        if (isEnter && !e.shiftKey && imeEnterSuppressUntilRef.current >= performance.now()) {
           e.preventDefault();
-          const largePasteId = chip.getAttribute(LARGE_PASTE_TAG_ATTR);
-          if (largePasteId) {
-            largePastesRef.current.delete(largePasteId);
-          }
-          chip.remove();
+          imeEnterSuppressUntilRef.current = 0;
+          compositionEnterKeyRef.current = false;
+          lastCompositionEndAtRef.current = 0;
           refreshEmptyState();
           refreshMention();
           return;
         }
-      }
 
-      // Normal Enter → send
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        onSend();
-        return;
-      }
+        // Safari fires compositionend before the confirming Enter's keydown
+        // with isComposing already false — swallow that Enter via a short tail.
+        const compositionEndedAgoMs = performance.now() - lastCompositionEndAtRef.current;
+        if (
+          isEnter &&
+          !e.shiftKey &&
+          lastCompositionEndAtRef.current > 0 &&
+          compositionEndedAgoMs >= 0 &&
+          compositionEndedAgoMs <= IME_COMPOSITION_END_ENTER_TAIL_MS
+        ) {
+          e.preventDefault();
+          imeEnterSuppressUntilRef.current = 0;
+          compositionEnterKeyRef.current = false;
+          lastCompositionEndAtRef.current = 0;
+          refreshEmptyState();
+          refreshMention();
+          return;
+        }
 
-      // Shift+Enter → line break (normalise to <br>)
-      if (e.key === "Enter" && e.shiftKey) {
+        // Legacy keyCode 229 only filters non-Enter IME key noise; it must not
+        // block normal sending.
+        if (!isEnter && hasLegacyImeSignal) {
+          return;
+        }
+
+        // Popup navigation
+        if (popupVisible && suggestions.length > 0) {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setHighlightIdx((p) => (p + 1) % suggestions.length);
+            return;
+          }
+          if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setHighlightIdx((p) => (p - 1 + suggestions.length) % suggestions.length);
+            return;
+          }
+          if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+            e.preventDefault();
+            if (suggestions[highlightIdx]) {
+              selectSuggestion(suggestions[highlightIdx]);
+            }
+            return;
+          }
+        }
+        if (popupVisible && e.key === "Escape") {
+          e.preventDefault();
+          closeMentionSession();
+          return;
+        }
+
+        // Backspace: delete mention chip if cursor is right after one
+        if (e.key === "Backspace") {
+          const el = editorRef.current;
+          if (el && deleteChipBeforeCursor(el, largePastesRef.current)) {
+            e.preventDefault();
+            refreshEmptyState();
+            refreshMention();
+            return;
+          }
+        }
+
+        // Normal Enter → send
+        if (isEnter && !e.shiftKey) {
+          imeEnterSuppressUntilRef.current = 0;
+          compositionEnterKeyRef.current = false;
+          lastCompositionEndAtRef.current = 0;
+          e.preventDefault();
+          onSend();
+          return;
+        }
+
+        // Shift+Enter → line break (normalise to <br>)
+        if (isEnter && e.shiftKey) {
+          imeEnterSuppressUntilRef.current = 0;
+          compositionEnterKeyRef.current = false;
+          lastCompositionEndAtRef.current = 0;
+          e.preventDefault();
+          document.execCommand("insertLineBreak");
+          scheduleComposerSelectionScroll(editorRef.current);
+          refreshEmptyState();
+          refreshMention();
+          return;
+        }
+      },
+      [
+        popupVisible,
+        suggestions,
+        highlightIdx,
+        selectSuggestion,
+        disabled,
+        closeMentionSession,
+        onSend,
+        refreshEmptyState,
+        refreshMention,
+      ],
+    );
+
+    const handlePaste = useCallback(
+      (e: ClipboardEvent<HTMLDivElement>) => {
+        if (e.defaultPrevented) {
+          return;
+        }
+        if (disabled) {
+          e.preventDefault();
+          return;
+        }
+        const clipboardFiles = extractClipboardFiles(e.clipboardData);
+        if (clipboardFiles.length > 0) {
+          e.preventDefault();
+          onPasteFiles?.(clipboardFiles);
+          return;
+        }
         e.preventDefault();
-        document.execCommand("insertLineBreak");
-        scheduleComposerSelectionScroll(editorRef.current);
+        const text = e.clipboardData.getData("text/plain");
+        if (isLargePasteText(text)) {
+          insertLargePaste(text);
+          return;
+        }
+        document.execCommand("insertText", false, text);
         refreshEmptyState();
         refreshMention();
-        return;
-      }
-    },
-    [
-      popupVisible,
-      suggestions,
-      highlightIdx,
-      selectSuggestion,
-      disabled,
-      closeMentionSession,
-      onSend,
-      refreshEmptyState,
-      refreshMention,
-    ],
-  );
+      },
+      [disabled, insertLargePaste, onPasteFiles, refreshEmptyState, refreshMention],
+    );
 
-  const handlePaste = useCallback(
-    (e: ClipboardEvent<HTMLDivElement>) => {
-      if (e.defaultPrevented) {
-        return;
+    const handleCompositionStart = useCallback(() => {
+      isComposingRef.current = true;
+      compositionEnterKeyRef.current = false;
+      lastCompositionEndAtRef.current = 0;
+      imeEnterSuppressUntilRef.current = 0;
+      if (busyReleaseTimerRef.current !== null) {
+        window.clearTimeout(busyReleaseTimerRef.current);
+        busyReleaseTimerRef.current = null;
       }
-      if (disabled) {
-        e.preventDefault();
-        return;
+      setBusy(true);
+    }, [setBusy]);
+
+    const handleCompositionEnd = useCallback(() => {
+      isComposingRef.current = false;
+      lastCompositionEndAtRef.current = performance.now();
+      if (compositionEnterKeyRef.current) {
+        imeEnterSuppressUntilRef.current = performance.now() + IME_ENTER_SUPPRESS_WINDOW_MS;
+        compositionEnterKeyRef.current = false;
       }
-      const clipboardFiles = extractClipboardFiles(e.clipboardData);
-      if (clipboardFiles.length > 0) {
-        e.preventDefault();
-        onPasteFiles?.(clipboardFiles);
-        return;
+      const el = editorRef.current;
+      if (el) {
+        removeStaleCaretAnchorsAroundSelection(el);
       }
-      e.preventDefault();
-      const text = e.clipboardData.getData("text/plain");
-      if (isLargePasteText(text)) {
-        insertLargePaste(text);
-        return;
-      }
-      document.execCommand("insertText", false, text);
       refreshEmptyState();
       refreshMention();
-    },
-    [disabled, insertLargePaste, onPasteFiles, refreshEmptyState, refreshMention],
-  );
+      scheduleBusyRelease();
+    }, [refreshEmptyState, refreshMention, scheduleBusyRelease]);
 
-  const handleCompositionStart = useCallback(() => {
-    isComposingRef.current = true;
-    if (busyReleaseTimerRef.current !== null) {
-      window.clearTimeout(busyReleaseTimerRef.current);
-      busyReleaseTimerRef.current = null;
-    }
-    setBusy(true);
-  }, [setBusy]);
+    const handleBlur = useCallback(() => {
+      isComposingRef.current = false;
+      compositionEnterKeyRef.current = false;
+      lastCompositionEndAtRef.current = 0;
+      imeEnterSuppressUntilRef.current = 0;
+      if (busyReleaseTimerRef.current !== null) {
+        window.clearTimeout(busyReleaseTimerRef.current);
+        busyReleaseTimerRef.current = null;
+      }
+      setBusy(false);
+      closeMentionSession();
+      cancelCommitTooltipClose();
+      closeCommitTooltip();
+    }, [cancelCommitTooltipClose, closeCommitTooltip, closeMentionSession, setBusy]);
 
-  const handleCompositionEnd = useCallback(() => {
-    isComposingRef.current = false;
-    refreshEmptyState();
-    refreshMention();
-    scheduleBusyRelease();
-  }, [refreshEmptyState, refreshMention, scheduleBusyRelease]);
-
-  const handleBlur = useCallback(() => {
-    isComposingRef.current = false;
-    if (busyReleaseTimerRef.current !== null) {
-      window.clearTimeout(busyReleaseTimerRef.current);
-      busyReleaseTimerRef.current = null;
-    }
-    setBusy(false);
-    closeMentionSession();
-    cancelCommitTooltipClose();
-    setCommitTooltip(null);
-  }, [cancelCommitTooltipClose, closeMentionSession, setBusy]);
-
-  return (
-    <div ref={wrapperRef} className="relative w-full min-w-0 max-w-full flex-1">
-      {popupVisible && (
-        <Popup
-          anchorRef={wrapperRef}
-          suggestions={suggestions}
-          highlightIndex={highlightIdx}
-          isLoading={popupLoading}
-          error={popupError}
-          showEmpty={showEmpty}
-          emptyLabel={popupEmptyLabel}
-          onSelect={selectSuggestion}
-        />
-      )}
-      {commitTooltip ? (
-        <CommitMentionTooltip
-          commit={commitTooltip.commit}
-          rect={commitTooltip.rect}
-          onMouseEnter={cancelCommitTooltipClose}
-          onMouseLeave={scheduleCommitTooltipClose}
-        />
-      ) : null}
-      <div
-        ref={editorRef}
-        contentEditable={!disabled}
-        suppressContentEditableWarning
-        role="textbox"
-        aria-multiline
-        aria-placeholder={placeholder}
-        aria-disabled={disabled}
-        onInput={handleInput}
-        onKeyDown={handleKeyDown}
-        onKeyUp={handleKeyUp}
-        onFocus={handleFocus}
-        onMouseLeave={scheduleCommitTooltipClose}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onPaste={handlePaste}
-        onCompositionStart={handleCompositionStart}
-        onCompositionEnd={handleCompositionEnd}
-        onBlur={handleBlur}
-        className={cn(
-          "mention-composer min-h-[70px] max-h-[160px] w-full min-w-0 max-w-full overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] outline-hidden",
-          "text-sm",
-          isEmpty && "is-empty",
-          disabled && "cursor-not-allowed opacity-60",
-          className,
+    return (
+      <div ref={wrapperRef} className="relative w-full min-w-0 max-w-full flex-1">
+        {popupVisible && (
+          <Popup
+            anchorRef={wrapperRef}
+            suggestions={suggestions}
+            highlightIndex={highlightIdx}
+            isLoading={popupLoading}
+            error={popupError}
+            showEmpty={showEmpty}
+            emptyLabel={popupEmptyLabel}
+            onSelect={selectSuggestion}
+          />
         )}
-        data-placeholder={placeholder}
-      />
-    </div>
-  );
-}));
+        {commitTooltip ? (
+          <CommitMentionTooltip
+            commit={commitTooltip.commit}
+            rect={commitTooltip.rect}
+            onMouseEnter={cancelCommitTooltipClose}
+            onMouseLeave={scheduleCommitTooltipClose}
+          />
+        ) : null}
+        <div
+          ref={editorRef}
+          contentEditable={!disabled}
+          suppressContentEditableWarning
+          role="textbox"
+          aria-multiline
+          aria-placeholder={placeholder}
+          aria-disabled={disabled}
+          onInput={handleInput}
+          onKeyDown={handleKeyDown}
+          onKeyUp={handleKeyUp}
+          onFocus={handleFocus}
+          onMouseLeave={scheduleCommitTooltipClose}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onPaste={handlePaste}
+          onCompositionStart={handleCompositionStart}
+          onCompositionEnd={handleCompositionEnd}
+          onBlur={handleBlur}
+          className={cn(
+            "mention-composer min-h-[70px] max-h-[160px] w-full min-w-0 max-w-full overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] outline-hidden",
+            "text-sm",
+            isEmpty && "is-empty",
+            disabled && "cursor-not-allowed opacity-60",
+            className,
+          )}
+          data-placeholder={placeholder}
+        />
+      </div>
+    );
+  }),
+);
 
 MentionComposer.displayName = "MentionComposer";

@@ -2,9 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Check,
   Cloud,
   Copy,
-  Check,
   Eye,
   EyeOff,
   Globe,
@@ -43,7 +43,11 @@ function CopyButton({ value }: { value: string }) {
       onClick={handleCopy}
       className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
     >
-      {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? (
+        <Check className="h-3.5 w-3.5 text-emerald-500" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
     </button>
   );
 }
@@ -281,9 +285,7 @@ export function RemoteSection(props: SettingsSectionProps) {
           <AgentActivationSwitch
             checked={settings.remote.enabled}
             title={
-              settings.remote.enabled
-                ? t("settings.remoteDisable")
-                : t("settings.remoteEnable")
+              settings.remote.enabled ? t("settings.remoteDisable") : t("settings.remoteEnable")
             }
             onToggle={() =>
               updateRemoteSettings(setSettings, {
@@ -475,9 +477,7 @@ export function RemoteSection(props: SettingsSectionProps) {
         <div className="settings-card-row flex items-center justify-between gap-4 rounded-lg bg-muted/30 px-4 py-3">
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium">{t("settings.remoteWebGit")}</div>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {t("settings.remoteWebGitHint")}
-            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.remoteWebGitHint")}</p>
           </div>
           <span
             className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${

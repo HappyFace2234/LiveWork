@@ -99,7 +99,8 @@ mod tests {
                 parse_failures: Some(0),
                 error: None,
                 final_summary: Some("整理完成".to_string()),
-                trimmed_protocol: Some(json!({ "clusterSummaries": ["完成"] })),
+                report: Some(json!({ "clusterSummaries": ["完成"] })),
+                ..Default::default()
             })
             .expect("update run")
             .expect("updated run");
@@ -520,7 +521,7 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )
             .expect("schema version");
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         let meta_columns = table_columns(&conn, "memory_meta").expect("memory_meta columns");
         assert!(meta_columns.contains("archived"));
         let trigram_columns = table_columns(&conn, "memory_fts_tri").expect("trigram columns");
@@ -542,6 +543,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write memory");
 
@@ -596,6 +598,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write global memory");
         store
@@ -609,6 +612,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project memory");
         store
@@ -624,6 +628,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("append daily");
 
@@ -671,6 +676,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project a memory");
         store
@@ -684,6 +690,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project b memory");
 
@@ -744,6 +751,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write global memory");
         store
@@ -757,6 +765,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project a memory");
         store
@@ -770,6 +779,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project b memory");
 
@@ -850,6 +860,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write symlink project memory");
         assert!(store.projects_dir().join(&canonical_hash).exists());
@@ -925,6 +936,7 @@ mod tests {
                 actor: None,
                 conversation_id: Some("conversation-a".to_string()),
                 model: Some("model-a".to_string()),
+                evidence: None,
             })
             .expect("append daily");
         store
@@ -940,6 +952,7 @@ mod tests {
                 actor: None,
                 conversation_id: Some("conversation-b".to_string()),
                 model: Some("model-b".to_string()),
+                evidence: None,
             })
             .expect("append daily again");
 
@@ -987,6 +1000,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("append daily");
 
@@ -1024,6 +1038,7 @@ mod tests {
                 actor: None,
                 conversation_id: Some("conversation-old".to_string()),
                 model: Some("model-old".to_string()),
+                evidence: None,
             })
             .expect("append old daily");
 
@@ -1078,6 +1093,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write original trip plan");
 
@@ -1109,6 +1125,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: Some("conversation-merge".to_string()),
                 model: Some("model-merge".to_string()),
+                evidence: None,
             })
             .expect("merge update trip plan");
 
@@ -1147,6 +1164,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write original trip plan");
 
@@ -1165,6 +1183,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: Some("conversation-default-merge".to_string()),
                 model: Some("model-default-merge".to_string()),
+                evidence: None,
             })
             .expect("extractor update defaults to merge");
 
@@ -1206,6 +1225,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write low-confidence user memory");
 
@@ -1231,6 +1251,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: Some("conversation-confidence".to_string()),
                 model: Some("model-confidence".to_string()),
+                evidence: None,
             })
             .expect("confidence-only update");
 
@@ -1269,6 +1290,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write original trip plan");
 
@@ -1292,6 +1314,8 @@ mod tests {
                     ),
                     reason: None,
                     group_id: None,
+                    evidence: None,
+                    mode: None,
                 }]),
             })
             .expect("apply batch update");
@@ -1329,6 +1353,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write user memory");
         store
@@ -1344,6 +1369,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("append conflicting daily");
 
@@ -1394,6 +1420,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write memory");
 
@@ -1443,6 +1470,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write memory");
 
@@ -1502,6 +1530,7 @@ mod tests {
                         actor: None,
                         conversation_id: None,
                         model: None,
+                        evidence: None,
                     })
                     .expect("append daily from thread");
             }));
@@ -1561,6 +1590,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write global");
         store
@@ -1574,6 +1604,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project");
 
@@ -1611,6 +1642,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write unreviewed user");
         store
@@ -1624,6 +1656,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write unreviewed feedback");
         store
@@ -1637,6 +1670,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write unreviewed reference");
 
@@ -1670,6 +1704,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect_err("hard secret-like content should be blocked");
         assert!(hard.contains("risk_hard_blocked"));
@@ -1685,6 +1720,7 @@ mod tests {
                 actor: Some("tool".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("soft risk note should be stored as unreviewed");
         let read = store
@@ -1725,6 +1761,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project a");
         store
@@ -1738,6 +1775,7 @@ mod tests {
                 actor: None,
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project b");
 
@@ -1787,6 +1825,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write global");
         store
@@ -1813,6 +1852,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project a");
         store
@@ -1839,6 +1879,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write project b");
         store
@@ -1865,6 +1906,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write tool cleanup");
         store
@@ -1929,6 +1971,8 @@ mod tests {
                     body: Some("用户是计算机专业的大学生。".to_string()),
                     reason: None,
                     group_id: None,
+                    evidence: None,
+                    mode: None,
                 }]),
             })
             .expect("first extractor batch");
@@ -1965,6 +2009,8 @@ mod tests {
                     body: Some("用户是计算机专业的大学生，偏好工程化回答。".to_string()),
                     reason: None,
                     group_id: None,
+                    evidence: None,
+                    mode: None,
                 }]),
             })
             .expect("second extractor batch");
@@ -1986,6 +2032,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write organize target");
         store
@@ -1999,6 +2046,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write organize delete target");
 
@@ -2020,6 +2068,8 @@ mod tests {
                     body: Some("新内容".to_string()),
                     reason: Some("test update snapshot".to_string()),
                     group_id: None,
+                    evidence: None,
+                    mode: None,
                 }]),
             })
             .expect("organizer update batch");
@@ -2054,6 +2104,8 @@ mod tests {
                     body: None,
                     reason: Some("test delete snapshot".to_string()),
                     group_id: None,
+                    evidence: None,
+                    mode: None,
                 }]),
             })
             .expect("organizer delete batch");
@@ -2081,6 +2133,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write large target");
         store
@@ -2094,6 +2147,7 @@ mod tests {
                 actor: Some("extractor".to_string()),
                 conversation_id: None,
                 model: None,
+                evidence: None,
             })
             .expect("write large source");
 
@@ -2116,6 +2170,8 @@ mod tests {
                         body: Some("x".repeat(MAX_BODY_BYTES + 1)),
                         reason: Some("oversized grouped update".to_string()),
                         group_id: Some("merge-test-group".to_string()),
+                        evidence: None,
+                        mode: None,
                     },
                     MemoryDecisionArgs {
                         op: "delete".to_string(),
@@ -2127,6 +2183,8 @@ mod tests {
                         body: None,
                         reason: Some("merged into target".to_string()),
                         group_id: Some("merge-test-group".to_string()),
+                        evidence: None,
+                        mode: None,
                     },
                 ]),
             })
@@ -2153,4 +2211,411 @@ mod tests {
             })
             .expect("source should remain after grouped update failure");
     }
+
+    #[test]
+    fn write_with_evidence_applies_contract_and_renders_frontmatter() {
+        let store = test_store();
+
+        // high + sufficient quote stays high
+        let high = store
+            .write(MemoryWriteArgs {
+                slug: "pref-editor".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "user".to_string(),
+                description: "prefers vim".to_string(),
+                body: "User prefers vim keybindings.".to_string(),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: Some(MemoryEvidenceArgs {
+                    confidence: Some("high".to_string()),
+                    source_quote: Some("我一直用 vim 的键位".to_string()),
+                    reasoning: Some("explicit statement".to_string()),
+                    ..Default::default()
+                }),
+            })
+            .expect("write with evidence");
+        assert_eq!(high.applied_confidence.as_deref(), Some("high"));
+        assert_eq!(high.auto_downgraded, Some(false));
+
+        // high + short quote downgrades to medium
+        let downgraded = store
+            .write(MemoryWriteArgs {
+                slug: "pref-shell".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "user".to_string(),
+                description: "prefers zsh".to_string(),
+                body: "User prefers zsh.".to_string(),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: Some(MemoryEvidenceArgs {
+                    confidence: Some("high".to_string()),
+                    source_quote: Some("zsh".to_string()),
+                    ..Default::default()
+                }),
+            })
+            .expect("write with short quote");
+        assert_eq!(downgraded.applied_confidence.as_deref(), Some("medium"));
+        assert_eq!(downgraded.auto_downgraded, Some(true));
+
+        // medium + empty quote downgrades to low
+        let low = store
+            .write(MemoryWriteArgs {
+                slug: "pref-theme".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "user".to_string(),
+                description: "prefers dark theme".to_string(),
+                body: "User prefers dark theme.".to_string(),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: Some(MemoryEvidenceArgs {
+                    confidence: Some("medium".to_string()),
+                    ..Default::default()
+                }),
+            })
+            .expect("write with empty quote");
+        assert_eq!(low.applied_confidence.as_deref(), Some("low"));
+        assert_eq!(low.auto_downgraded, Some(true));
+
+        // the indexer must read the rendered frontmatter back (single parse path)
+        let read = store
+            .read(MemoryReadArgs {
+                slug: "pref-editor".to_string(),
+                scope: Some("global".to_string()),
+                workdir: None,
+                workdir_hash: None,
+                offset: None,
+                length: None,
+            })
+            .expect("read entry");
+        assert_eq!(read.meta.confidence, "high");
+        assert!(read.body.contains("confidence: high"));
+        assert!(read.body.contains("User prefers vim keybindings."));
+
+        // evidence-only update changes confidence without touching content
+        let evidence_only = store
+            .update(MemoryUpdateArgs {
+                slug: "pref-editor".to_string(),
+                scope: Some("global".to_string()),
+                workdir: None,
+                workdir_hash: None,
+                memory_type: None,
+                description: None,
+                body: None,
+                mode: Some("merge".to_string()),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: Some(MemoryEvidenceArgs {
+                    confidence: Some("medium".to_string()),
+                    source_quote: Some("其实我最近换 helix 了".to_string()),
+                    ..Default::default()
+                }),
+            })
+            .expect("evidence-only update");
+        assert_eq!(evidence_only.applied_confidence.as_deref(), Some("medium"));
+        let after = store
+            .read(MemoryReadArgs {
+                slug: "pref-editor".to_string(),
+                scope: Some("global".to_string()),
+                workdir: None,
+                workdir_hash: None,
+                offset: None,
+                length: None,
+            })
+            .expect("read after evidence-only update");
+        assert_eq!(after.meta.confidence, "medium");
+        assert!(after.body.contains("User prefers vim keybindings."));
+    }
+
+    #[test]
+    fn apply_batch_accept_flips_unreviewed() {
+        let store = test_store();
+        store
+            .write(MemoryWriteArgs {
+                slug: "team-workflow".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "feedback".to_string(),
+                description: "commit style".to_string(),
+                body: "Use conventional commits.".to_string(),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: None,
+            })
+            .expect("write unreviewed entry");
+
+        let response = store
+            .apply_batch(MemoryBatchArgs {
+                workdir: None,
+                conversation_id: None,
+                trigger: Some("memory-extraction".to_string()),
+                model: None,
+                local_date: None,
+                daily_append: None,
+                decisions: Some(vec![MemoryDecisionArgs {
+                    op: "accept".to_string(),
+                    slug: "team-workflow".to_string(),
+                    scope: Some("global".to_string()),
+                    workdir_hash: None,
+                    memory_type: None,
+                    description: None,
+                    body: None,
+                    reason: None,
+                    group_id: None,
+                    evidence: None,
+                    mode: None,
+                }]),
+            })
+            .expect("apply accept batch");
+        assert_eq!(response.updated, vec!["team-workflow".to_string()]);
+        assert!(response.warnings.is_empty());
+
+        let list = store
+            .list(MemoryListArgs {
+                scope: Some("global".to_string()),
+                workdir: None,
+                include_all_projects: None,
+                memory_type: None,
+                include_daily: None,
+                limit: None,
+                offset: None,
+            })
+            .expect("list entries");
+        let entry = list
+            .entries
+            .iter()
+            .find(|entry| entry.slug == "team-workflow")
+            .expect("entry present");
+        assert!(!entry.unreviewed);
+    }
+
+    #[test]
+    fn quota_summary_counts_scopes_and_unreviewed() {
+        let store = test_store();
+        store
+            .write(MemoryWriteArgs {
+                slug: "reviewed-entry".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "reference".to_string(),
+                description: "reviewed".to_string(),
+                body: "Reviewed entry.".to_string(),
+                actor: Some("user".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: None,
+            })
+            .expect("write reviewed");
+        store
+            .write(MemoryWriteArgs {
+                slug: "unreviewed-entry".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "user".to_string(),
+                description: "unreviewed".to_string(),
+                body: "Unreviewed entry.".to_string(),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: None,
+            })
+            .expect("write unreviewed");
+
+        let summary = store
+            .quota_summary(MemoryQuotaSummaryArgs { workdir: None })
+            .expect("quota summary");
+        assert_eq!(summary.scopes.len(), 1);
+        let global = &summary.scopes[0];
+        assert_eq!(global.scope, "global");
+        assert_eq!(global.used, 2);
+        assert_eq!(global.limit, MAX_SCOPE_ENTRIES);
+        assert_eq!(global.headroom, MAX_SCOPE_ENTRIES - 2);
+        assert_eq!(global.unreviewed_count, 1);
+        assert!(global.oldest_unreviewed_age_days.is_some());
+
+        let workdir = tempfile::tempdir().expect("workdir");
+        let workdir_path = workdir.path().to_string_lossy().to_string();
+        store
+            .write(MemoryWriteArgs {
+                slug: "project-entry".to_string(),
+                scope: "project".to_string(),
+                workdir: Some(workdir_path.clone()),
+                memory_type: "project".to_string(),
+                description: "project note".to_string(),
+                body: "Project note.".to_string(),
+                actor: Some("user".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: None,
+            })
+            .expect("write project entry");
+        let with_project = store
+            .quota_summary(MemoryQuotaSummaryArgs {
+                workdir: Some(workdir_path),
+            })
+            .expect("quota summary with project");
+        assert_eq!(with_project.scopes.len(), 2);
+        let project = &with_project.scopes[1];
+        assert_eq!(project.scope, "project");
+        assert_eq!(project.used, 1);
+        assert_eq!(project.unreviewed_count, 0);
+        assert!(project.oldest_unreviewed_age_days.is_none());
+    }
+
+    #[test]
+    fn organize_runs_v3_to_v4_migration_preserves_history() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("memory");
+        ensure_root_dirs(&root).expect("root dirs");
+        let db_path = root.join(DB_FILENAME);
+
+        // Simulate a v3-era database: old-shape organize_runs table + version 3.
+        {
+            let conn = Connection::open(&db_path).expect("open raw db");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE memory_organize_runs (
+                    run_id                TEXT PRIMARY KEY,
+                    trigger               TEXT NOT NULL,
+                    status                TEXT NOT NULL,
+                    created_at            INTEGER NOT NULL,
+                    started_at            INTEGER,
+                    finished_at           INTEGER,
+                    due_at                INTEGER,
+                    claimed_at            INTEGER,
+                    model_json            TEXT,
+                    scope                 TEXT NOT NULL DEFAULT 'all',
+                    mode                  TEXT NOT NULL DEFAULT 'standard',
+                    input_count           INTEGER NOT NULL DEFAULT 0,
+                    cluster_count         INTEGER NOT NULL DEFAULT 0,
+                    safe_applied          INTEGER NOT NULL DEFAULT 0,
+                    review_skipped        INTEGER NOT NULL DEFAULT 0,
+                    created_count         INTEGER NOT NULL DEFAULT 0,
+                    updated_count         INTEGER NOT NULL DEFAULT 0,
+                    deleted_count         INTEGER NOT NULL DEFAULT 0,
+                    merged_count          INTEGER NOT NULL DEFAULT 0,
+                    parse_failures        INTEGER NOT NULL DEFAULT 0,
+                    error                 TEXT,
+                    final_summary         TEXT,
+                    trimmed_protocol_json TEXT NOT NULL DEFAULT '{}'
+                );
+                CREATE TABLE memory_schema_version (
+                    version    INTEGER PRIMARY KEY,
+                    applied_at INTEGER NOT NULL
+                );
+                INSERT INTO memory_schema_version (version, applied_at) VALUES (3, 0);
+                INSERT INTO memory_organize_runs (run_id, trigger, status, created_at)
+                VALUES ('memory-organize-legacy', 'manual', 'succeeded', 1000);
+                "#,
+            )
+            .expect("seed v3 schema");
+        }
+
+        let conn = open_memory_connection(&db_path).expect("open migrated db");
+        let store = MemoryStore {
+            root,
+            db_path,
+            conn: Mutex::new(conn),
+            mutation_lock: Mutex::new(()),
+        };
+        std::mem::forget(temp);
+
+        let run = store
+            .organize_run_read(MemoryOrganizeRunReadArgs {
+                run_id: "memory-organize-legacy".to_string(),
+            })
+            .expect("read legacy run")
+            .expect("legacy run retained");
+        assert_eq!(run.status, "succeeded");
+        assert_eq!(run.final_count, 0);
+        assert!(!run.dry_run);
+        assert!(run.phase.is_none());
+
+        // v4 fields are writable after migration
+        let updated = store
+            .organize_run_update(MemoryOrganizeRunUpdateArgs {
+                run_id: "memory-organize-legacy".to_string(),
+                phase: Some("apply".to_string()),
+                final_count: Some(20),
+                compression_ratio: Some(0.8),
+                token_usage_total: Some(1234),
+                ..Default::default()
+            })
+            .expect("update with v4 fields")
+            .expect("run present");
+        assert_eq!(updated.phase.as_deref(), Some("apply"));
+        assert_eq!(updated.final_count, 20);
+        assert_eq!(updated.token_usage_total, 1234);
+    }
+
+    #[test]
+    fn apply_batch_update_supports_partial_and_evidence_only_revisions() {
+        let store = test_store();
+        store
+            .write(MemoryWriteArgs {
+                slug: "user-editor".to_string(),
+                scope: "global".to_string(),
+                workdir: None,
+                memory_type: "user".to_string(),
+                description: "editor preference".to_string(),
+                body: "User prefers vim.".to_string(),
+                actor: Some("extractor".to_string()),
+                conversation_id: None,
+                model: None,
+                evidence: None,
+            })
+            .expect("seed entry");
+
+        // evidence-only update: no body/description/type, evidence only
+        let response = store
+            .apply_batch(MemoryBatchArgs {
+                workdir: None,
+                conversation_id: None,
+                trigger: Some("memory-extraction".to_string()),
+                model: None,
+                local_date: None,
+                daily_append: None,
+                decisions: Some(vec![MemoryDecisionArgs {
+                    op: "update".to_string(),
+                    slug: "user-editor".to_string(),
+                    scope: Some("global".to_string()),
+                    workdir_hash: None,
+                    memory_type: None,
+                    description: None,
+                    body: None,
+                    mode: Some("merge".to_string()),
+                    reason: None,
+                    group_id: None,
+                    evidence: Some(MemoryEvidenceArgs {
+                        confidence: Some("high".to_string()),
+                        source_quote: Some("我只用 vim，别的都不用".to_string()),
+                        ..Default::default()
+                    }),
+                }]),
+            })
+            .expect("apply evidence-only update");
+        assert_eq!(response.updated, vec!["user-editor".to_string()]);
+        assert!(response.warnings.is_empty(), "{:?}", response.warnings);
+
+        let read = store
+            .read(MemoryReadArgs {
+                slug: "user-editor".to_string(),
+                scope: Some("global".to_string()),
+                workdir: None,
+                workdir_hash: None,
+                offset: None,
+                length: None,
+            })
+            .expect("read updated entry");
+        assert_eq!(read.meta.confidence, "high");
+        assert!(read.body.contains("User prefers vim."));
+    }
 }
+

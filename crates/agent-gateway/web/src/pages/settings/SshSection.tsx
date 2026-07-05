@@ -25,10 +25,10 @@ import { Label } from "../../components/ui/label";
 import { Textarea } from "../../components/ui/textarea";
 import { useLocale } from "../../i18n";
 import {
+  removeSshHostFromProjectAssociations,
   type SshAuthType,
   type SshHostConfig,
   type SshProxyType,
-  removeSshHostFromProjectAssociations,
   updateSsh,
 } from "../../lib/settings";
 import { useModalMotion } from "../../lib/shared/modalMotion";
@@ -305,7 +305,7 @@ function SshHostModal(props: {
                   isPasswordAuth
                     ? "border-emerald-500/40 bg-emerald-500/[0.06] shadow-sm"
                     : "border-border/60 bg-card hover:border-border hover:bg-muted/20"
-                  }`}
+                }`}
               >
                 <Lock
                   className={`h-4 w-4 shrink-0 text-emerald-500 transition-transform duration-200 ${
@@ -460,8 +460,7 @@ function SshHostModal(props: {
                     disabled={!isPrivateKeyAuth}
                     onChange={setPrivateKeyPassphrase}
                   />
-                  {initialData?.privateKeyPassphraseConfigured &&
-                  !privateKeyPassphrase.trim() ? (
+                  {initialData?.privateKeyPassphraseConfigured && !privateKeyPassphrase.trim() ? (
                     <div className="text-[11px] text-muted-foreground">
                       {t("settings.sshPrivateKeyPassphraseConfigured")}
                     </div>
@@ -790,7 +789,7 @@ function SshHostCard(props: {
   const showAgentConfigured = host.authType === "agent";
   const showProxy =
     host.proxy.url.trim().length > 0 || host.proxy.port > 0 || host.proxy.passwordConfigured;
-  const hasMeta = showKeyPath || showKeyConfigured || showAgentConfigured || showProxy;
+  const hasMeta = showKeyPath || showKeyConfigured || showAgentConfigured;
   const hasFooter = hasMeta || resetStatus;
 
   const actions = (
@@ -845,7 +844,6 @@ function SshHostCard(props: {
       {showKeyPath ? <PromptTag label={host.privateKeyPath} muted /> : null}
       {showKeyConfigured ? <PromptTag label={t("settings.sshPrivateKeyConfigured")} muted /> : null}
       {showAgentConfigured ? <PromptTag label={t("settings.sshAgentConfigured")} muted /> : null}
-      {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
     </div>
   );
 
@@ -869,8 +867,9 @@ function SshHostCard(props: {
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium text-foreground">{host.name}</div>
-            <div className="mt-1 flex">
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <PromptTag label={authLabel(host, t)} />
+              {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
             </div>
           </div>
         </div>
@@ -897,6 +896,7 @@ function SshHostCard(props: {
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium text-foreground">{host.name}</span>
             <PromptTag label={authLabel(host, t)} />
+            {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
           </div>
           <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
             {endpointLabel(host)}
@@ -963,8 +963,9 @@ export function SshSection(props: SettingsSectionProps) {
   const [importOpen, setImportOpen] = useState(false);
   const [editingHost, setEditingHost] = useState<SshHostConfig | null>(null);
   const [knownHostResettingId, setKnownHostResettingId] = useState<string | null>(null);
-  const [knownHostResetStatus, setKnownHostResetStatus] =
-    useState<SshKnownHostResetStatus | null>(null);
+  const [knownHostResetStatus, setKnownHostResetStatus] = useState<SshKnownHostResetStatus | null>(
+    null,
+  );
   const knownHostResetTimerRef = useRef<number | null>(null);
   const hosts = settings.ssh.hosts;
 
@@ -1047,8 +1048,7 @@ export function SshSection(props: SettingsSectionProps) {
                 ...data.proxy,
                 password: data.proxy.password || host.proxy.password,
                 passwordConfigured:
-                  data.proxy.password.trim().length > 0 ||
-                  host.proxy.passwordConfigured === true,
+                  data.proxy.password.trim().length > 0 || host.proxy.passwordConfigured === true,
               },
             };
           }),

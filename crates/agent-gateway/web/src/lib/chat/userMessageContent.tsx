@@ -1,13 +1,21 @@
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { type FocusEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type FocusEvent,
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { getFileTypeIcon } from "../../components/chat/fileTypeIcons";
 import { useLocale } from "../../i18n";
 
 import {
-  parsePastedTextDisplayReferences,
-  type PendingUploadedFile,
   type PastedTextDisplayReference,
+  type PendingUploadedFile,
+  parsePastedTextDisplayReferences,
 } from "./uploadedFiles";
 
 export function isMentionToken(token: string) {
@@ -34,16 +42,16 @@ function isSkillMentionName(value: string) {
 
 function isCommonSkillMentionEnvVar(name: string) {
   const upper = name.toUpperCase();
-  return COMMON_SKILL_MENTION_ENV_VARS.has(upper) ||
-    (upper.endsWith(":") && COMMON_SKILL_MENTION_ENV_VARS.has(upper.slice(0, -1)));
+  return (
+    COMMON_SKILL_MENTION_ENV_VARS.has(upper) ||
+    (upper.endsWith(":") && COMMON_SKILL_MENTION_ENV_VARS.has(upper.slice(0, -1)))
+  );
 }
 
 export function isSkillMentionToken(token: string) {
   if (!token.startsWith("$")) return false;
   const name = token.slice(1);
-  return Boolean(name) &&
-    isSkillMentionName(name) &&
-    !isCommonSkillMentionEnvVar(name);
+  return Boolean(name) && isSkillMentionName(name) && !isCommonSkillMentionEnvVar(name);
 }
 
 type UserMessageSegment =
@@ -102,10 +110,7 @@ function pushTextSegment(segments: UserMessageSegment[], value: string) {
   segments.push({ type: "text", value });
 }
 
-function appendSegments(
-  segments: UserMessageSegment[],
-  incoming: UserMessageSegment[],
-) {
+function appendSegments(segments: UserMessageSegment[], incoming: UserMessageSegment[]) {
   for (const segment of incoming) {
     if (segment.type === "text") {
       pushTextSegment(segments, segment.value);
@@ -121,13 +126,8 @@ function unescapeMarkdown(value: string) {
 
 function normalizeMarkdownDestination(value: string) {
   const trimmed = value.trim();
-  const inner =
-    trimmed.startsWith("<") && trimmed.endsWith(">")
-      ? trimmed.slice(1, -1)
-      : trimmed;
-  return unescapeMarkdown(inner)
-    .replace(/%3C/gi, "<")
-    .replace(/%3E/gi, ">");
+  const inner = trimmed.startsWith("<") && trimmed.endsWith(">") ? trimmed.slice(1, -1) : trimmed;
+  return unescapeMarkdown(inner).replace(/%3C/gi, "<").replace(/%3E/gi, ">");
 }
 
 function normalizeReferencePath(value: string) {
@@ -163,7 +163,7 @@ function extractGitHubCommitSha(value: string) {
     if (!["github.com", "www.github.com"].includes(url.hostname.toLowerCase())) return "";
     const parts = url.pathname.split("/").filter(Boolean);
     const commitIndex = parts.findIndex((part) => part.toLowerCase() === "commit");
-    const sha = commitIndex >= 0 ? parts[commitIndex + 1] ?? "" : "";
+    const sha = commitIndex >= 0 ? (parts[commitIndex + 1] ?? "") : "";
     return /^[0-9a-f]{7,40}$/i.test(sha) ? sha : "";
   } catch {
     return "";
@@ -200,7 +200,7 @@ function extractGitHubFileReference(value: string) {
     if (!["github.com", "www.github.com"].includes(url.hostname.toLowerCase())) return null;
     const parts = url.pathname.split("/").filter(Boolean);
     const blobIndex = parts.findIndex((part) => part.toLowerCase() === "blob");
-    const ref = blobIndex >= 0 ? parts[blobIndex + 1] ?? "" : "";
+    const ref = blobIndex >= 0 ? (parts[blobIndex + 1] ?? "") : "";
     const pathParts = blobIndex >= 0 ? parts.slice(blobIndex + 2) : [];
     if (!ref || pathParts.length === 0) return null;
     return {
@@ -212,7 +212,10 @@ function extractGitHubFileReference(value: string) {
   }
 }
 
-function markdownCommitReference(label: string, rawDestination: string): CommitDisplayReference | null {
+function markdownCommitReference(
+  label: string,
+  rawDestination: string,
+): CommitDisplayReference | null {
   const normalizedLabel = unescapeMarkdown(label.trim());
   const match = /^commit\s+([0-9a-f]{7,40})(?::\s*(.*))?$/i.exec(normalizedLabel);
   if (!match) return null;
@@ -246,7 +249,10 @@ function normalizeGitFileDisplayReference(file: GitFileDisplayReference): GitFil
   };
 }
 
-function markdownGitFileReference(label: string, rawDestination: string): GitFileDisplayReference | null {
+function markdownGitFileReference(
+  label: string,
+  rawDestination: string,
+): GitFileDisplayReference | null {
   const normalizedLabel = unescapeMarkdown(label.trim());
   const match = /^git file\s+(.+?):\s*(.+)$/i.exec(normalizedLabel);
   if (!match) return null;
@@ -280,11 +286,22 @@ function normalizeCommitDisplayReference(commit: CommitDisplayReference): Commit
     authorName: commit.authorName ?? "",
     authorEmail: commit.authorEmail ?? "",
     authorDate: commit.authorDate ?? "",
-    fileCount: typeof commit.fileCount === "number" && Number.isFinite(commit.fileCount) ? commit.fileCount : undefined,
+    fileCount:
+      typeof commit.fileCount === "number" && Number.isFinite(commit.fileCount)
+        ? commit.fileCount
+        : undefined,
     filesChanged:
-      typeof commit.filesChanged === "number" && Number.isFinite(commit.filesChanged) ? commit.filesChanged : undefined,
-    insertions: typeof commit.insertions === "number" && Number.isFinite(commit.insertions) ? commit.insertions : undefined,
-    deletions: typeof commit.deletions === "number" && Number.isFinite(commit.deletions) ? commit.deletions : undefined,
+      typeof commit.filesChanged === "number" && Number.isFinite(commit.filesChanged)
+        ? commit.filesChanged
+        : undefined,
+    insertions:
+      typeof commit.insertions === "number" && Number.isFinite(commit.insertions)
+        ? commit.insertions
+        : undefined,
+    deletions:
+      typeof commit.deletions === "number" && Number.isFinite(commit.deletions)
+        ? commit.deletions
+        : undefined,
     stat: commit.stat ?? "",
     remoteName: commit.remoteName ?? "",
     remoteUrl: commit.remoteUrl ?? "",
@@ -313,9 +330,7 @@ function inlineCommitReferenceAt(text: string, index: number) {
 
 function inlineGitFileReferenceAt(text: string, index: number) {
   if (!isTokenBoundary(text, index)) return null;
-  const match = /^git file\s+(.+?):\s*([^\r\n]+?)\s+\(([0-9a-f]{7,40})\)/i.exec(
-    text.slice(index),
-  );
+  const match = /^git file\s+(.+?):\s*([^\r\n]+?)\s+\(([0-9a-f]{7,40})\)/i.exec(text.slice(index));
   if (!match) return null;
   const refName = (match[1] ?? "").trim();
   const path = normalizeReferencePath(match[2] ?? "");
@@ -490,7 +505,10 @@ function formatCommitTooltipDate(value: string | undefined, locale: string) {
     minute: "2-digit",
   });
   const deltaSeconds = Math.round((date.getTime() - Date.now()) / 1000);
-  const units: Array<{ unit: "year" | "month" | "day" | "hour" | "minute" | "second"; seconds: number }> = [
+  const units: Array<{
+    unit: "year" | "month" | "day" | "hour" | "minute" | "second";
+    seconds: number;
+  }> = [
     { unit: "year", seconds: 365 * 24 * 60 * 60 },
     { unit: "month", seconds: 30 * 24 * 60 * 60 },
     { unit: "day", seconds: 24 * 60 * 60 },
@@ -565,12 +583,16 @@ function CommitReferenceTooltip({
   const availableBelow = window.innerHeight - rect.bottom - 16;
   const placeAbove = availableAbove > 260 || availableAbove > availableBelow;
   const maxHeight = Math.max(120, Math.min(520, placeAbove ? availableAbove : availableBelow));
-  const top = placeAbove ? Math.max(8, rect.top - 8) : Math.min(window.innerHeight - 8, rect.bottom + 8);
+  const top = placeAbove
+    ? Math.max(8, rect.top - 8)
+    : Math.min(window.innerHeight - 8, rect.bottom + 8);
   const shortSha = commit.shortSha || commit.sha.slice(0, 7);
   const subject = commit.subject.trim() || shortSha;
   const body = commit.body?.trim() ?? "";
   const author = commit.authorName?.trim() || t("chat.composer.commitTooltipUnknownAuthor");
-  const authorLabel = commit.authorEmail?.trim() ? `${author} <${commit.authorEmail.trim()}>` : author;
+  const authorLabel = commit.authorEmail?.trim()
+    ? `${author} <${commit.authorEmail.trim()}>`
+    : author;
   const date = formatCommitTooltipDate(commit.authorDate, locale);
   const detailed = hasDetailedCommitInfo(commit);
   const filesChanged = commitStatNumber(commit.filesChanged ?? commit.fileCount);
@@ -625,7 +647,9 @@ function CommitReferenceTooltip({
               ) : null}
             </>
           ) : (
-            <div className="font-mono text-[11px] leading-tight text-muted-foreground">{shortSha}</div>
+            <div className="font-mono text-[11px] leading-tight text-muted-foreground">
+              {shortSha}
+            </div>
           )}
         </div>
       </div>
@@ -638,7 +662,9 @@ function CommitReferenceTooltip({
       {detailed ? (
         <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] leading-tight">
           <span className="text-muted-foreground">{filesChangedLabel}</span>
-          <span className="font-medium text-emerald-600 dark:text-emerald-400">{insertionsLabel}</span>
+          <span className="font-medium text-emerald-600 dark:text-emerald-400">
+            {insertionsLabel}
+          </span>
           <span className="font-medium text-rose-600 dark:text-rose-400">{deletionsLabel}</span>
         </div>
       ) : null}
@@ -696,13 +722,7 @@ function PastedTextChip({
   );
 }
 
-function MentionChip({
-  path,
-  isDir,
-}: {
-  path: string;
-  isDir: boolean;
-}) {
+function MentionChip({ path, isDir }: { path: string; isDir: boolean }) {
   const fileName = path.split("/").pop() || path;
   const Icon = getFileTypeIcon(path, isDir ? "dir" : "file");
   return (
@@ -773,7 +793,9 @@ function CommitMentionChip({
   commit: CommitDisplayReference;
   loadCommitDetails?: CommitDetailsLoader;
 }) {
-  const [resolvedCommit, setResolvedCommit] = useState(() => normalizeCommitDisplayReference(commit));
+  const [resolvedCommit, setResolvedCommit] = useState(() =>
+    normalizeCommitDisplayReference(commit),
+  );
   const [detailsState, setDetailsState] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [tooltipRect, setTooltipRect] = useState<DOMRect | null>(null);
   const closeTimerRef = useRef<number | null>(null);
@@ -912,19 +934,19 @@ export function UserMessageContent({
           return <SkillMentionChip key={idx} name={part.name} />;
         }
         if (part.type === "commit") {
-          return <CommitMentionChip key={idx} commit={part.commit} loadCommitDetails={loadCommitDetails} />;
+          return (
+            <CommitMentionChip
+              key={idx}
+              commit={part.commit}
+              loadCommitDetails={loadCommitDetails}
+            />
+          );
         }
         if (part.type === "gitFile") {
           return <GitFileMentionChip key={idx} file={part.file} />;
         }
         if (part.type === "pastedText") {
-          return (
-            <PastedTextChip
-              key={idx}
-              reference={part.reference}
-              file={part.file}
-            />
-          );
+          return <PastedTextChip key={idx} reference={part.reference} file={part.file} />;
         }
         return <span key={idx}>{part.value}</span>;
       })}

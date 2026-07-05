@@ -4,10 +4,13 @@ use serde_json::Value;
 
 use crate::commands::settings::{load_remote_settings, open_db, parse_remote_settings_payload};
 use crate::services::gateway::{
-    build_history_sync_activity, GatewayChatClaimedRequest, GatewayChatQueueEventInput,
-    GatewayChatQueueResponseInput, GatewayController, GatewayStatusSnapshot,
-    GatewayTunnelCreateInput, GatewayTunnelSummary, GatewayTunnelUpdateInput,
+    GatewayChatClaimedRequest, GatewayChatQueueEventInput, GatewayChatQueueResponseInput,
+    GatewayChatRuntimeSnapshot, GatewayController, GatewayStatusSnapshot,
 };
+use crate::services::tunnel::{
+    GatewayTunnelCreateInput, GatewayTunnelUpdateInput, TunnelStatePayload,
+};
+use crate::services::workspace_watch::WatchSource;
 
 #[tauri::command]
 pub async fn gateway_connect(
@@ -193,20 +196,13 @@ pub async fn gateway_publish_chat_queue_event(
 }
 
 #[tauri::command(rename_all = "snake_case")]
-pub async fn gateway_publish_conversation_activity(
-    conversation_id: String,
-    running: bool,
-    workdir: Option<String>,
+pub async fn gateway_publish_chat_runtime_snapshot(
+    input: GatewayChatRuntimeSnapshot,
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
 ) -> Result<(), String> {
     gateway_controller
-        .publish_history_sync(build_history_sync_activity(
-            conversation_id,
-            running,
-            workdir,
-        ))
-        .await;
-    Ok(())
+        .publish_chat_runtime_snapshot(input)
+        .await
 }
 
 #[tauri::command]
@@ -218,17 +214,17 @@ pub async fn gateway_publish_settings_sync(
 }
 
 #[tauri::command]
-pub async fn gateway_tunnel_list(
+pub fn gateway_tunnel_state(
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
-) -> Result<Vec<GatewayTunnelSummary>, String> {
-    gateway_controller.tunnel_list().await
+) -> Result<TunnelStatePayload, String> {
+    Ok(gateway_controller.tunnel_state())
 }
 
 #[tauri::command]
 pub async fn gateway_tunnel_create(
     input: GatewayTunnelCreateInput,
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
-) -> Result<GatewayTunnelSummary, String> {
+) -> Result<(), String> {
     gateway_controller.tunnel_create(input).await
 }
 
@@ -236,7 +232,7 @@ pub async fn gateway_tunnel_create(
 pub async fn gateway_tunnel_update(
     input: GatewayTunnelUpdateInput,
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
-) -> Result<GatewayTunnelSummary, String> {
+) -> Result<(), String> {
     gateway_controller.tunnel_update(input).await
 }
 
@@ -244,6 +240,25 @@ pub async fn gateway_tunnel_update(
 pub async fn gateway_tunnel_close(
     tunnel_id: String,
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
-) -> Result<GatewayTunnelSummary, String> {
+) -> Result<(), String> {
     gateway_controller.tunnel_close(tunnel_id).await
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn gateway_tunnel_check(
+    tunnel_id: Option<String>,
+    gateway_controller: tauri::State<'_, Arc<GatewayController>>,
+) -> Result<(), String> {
+    gateway_controller.tunnel_check(tunnel_id).await
+}
+
+#[tauri::command]
+pub fn workspace_watch_set(
+    workdirs: Vec<String>,
+    gateway_controller: tauri::State<'_, Arc<GatewayController>>,
+) -> Result<(), String> {
+    gateway_controller
+        .workspace_watch
+        .set_desired(WatchSource::Local, workdirs);
+    Ok(())
 }

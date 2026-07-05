@@ -1,12 +1,12 @@
 import { useState } from "react";
 import {
-  MessageSquareText,
-  History,
-  Timer,
   ArrowRight,
-  Shield,
+  History,
   Key,
   Lock,
+  MessageSquareText,
+  Shield,
+  Timer,
 } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -41,13 +41,7 @@ const features = [
   },
 ];
 
-export function LoginPage({
-  token,
-  error,
-  isSubmitting,
-  onTokenChange,
-  onSubmit,
-}: LoginPageProps) {
+export function LoginPage({ token, error, isSubmitting, onTokenChange, onSubmit }: LoginPageProps) {
   const [isFocused, setIsFocused] = useState(false);
 
   return (
@@ -95,9 +89,7 @@ export function LoginPage({
                 </div>
                 <h2 className="login-form-title">连接控制台</h2>
               </div>
-              <p className="login-form-sub">
-                输入 Gateway 服务端的 Access Token 以验证身份
-              </p>
+              <p className="login-form-sub">输入 Gateway 服务端的 Access Token 以验证身份</p>
             </div>
 
             <div className={cn("login-input-wrap", isFocused && "login-input-wrap--focus")}>
@@ -139,9 +131,7 @@ export function LoginPage({
               )}
             </Button>
 
-            <p className="login-form-footer">
-              Token 验证通过后将本地保存，下次自动登录
-            </p>
+            <p className="login-form-footer">Token 验证通过后将本地保存，下次自动登录</p>
           </div>
         </div>
       </div>

@@ -5,7 +5,7 @@ import {
   type WorkspaceProject,
   workspaceProjectPathKey,
 } from "./settings";
-import type { HistoryWorkdirSummary } from "./gatewayTypes";
+import type { SidebarWorkdirSummary } from "./sidebar/types";
 
 type WorkspaceProjectActivitySource = {
   path?: string;
@@ -18,7 +18,13 @@ const EMPTY_PROJECT_ACTIVITY_UPDATED_ATS = new Map<string, number>();
 const EMPTY_RUNNING_PROJECT_PATH_KEYS = new Set<string>();
 
 export function fallbackWorkspaceProjectName(path: string) {
-  return path.trim().split(/[\\/]+/).filter(Boolean).pop() || "Project";
+  return (
+    path
+      .trim()
+      .split(/[\\/]+/)
+      .filter(Boolean)
+      .pop() || "Project"
+  );
 }
 
 function stableProjectIdForPath(path: string) {
@@ -53,10 +59,7 @@ function readProjectPinnedAt(project: WorkspaceProject) {
     : 0;
 }
 
-function createHistoryWorkspaceProjectFromPath(
-  path: string,
-  updatedAt?: number | null,
-) {
+function createHistoryWorkspaceProjectFromPath(path: string, updatedAt?: number | null) {
   const normalizedPath = path.trim();
   const activityUpdatedAt = normalizeActivityUpdatedAt(updatedAt);
   return {
@@ -72,7 +75,7 @@ function createHistoryWorkspaceProjectFromPath(
 
 export function mergeWorkspaceProjectsWithHistory(
   system: SystemSettings,
-  historyWorkdirs: HistoryWorkdirSummary[],
+  historyWorkdirs: readonly SidebarWorkdirSummary[],
 ) {
   const hidden = new Set(system.hiddenWorkspaceProjectPaths.map(workspaceProjectPathKey));
   const historyActivity = buildWorkspaceProjectActivityUpdatedAts(historyWorkdirs);
@@ -197,11 +200,7 @@ export function applyWorkspaceProjectConversationActivityMap(
     if (options?.hiddenProjectPathKeys?.has(workspaceProjectPathKey(pathKey))) {
       continue;
     }
-    const applied = applyWorkspaceProjectConversationActivity(
-      nextProjects,
-      pathKey,
-      updatedAt,
-    );
+    const applied = applyWorkspaceProjectConversationActivity(nextProjects, pathKey, updatedAt);
     if (applied) {
       nextProjects = applied;
       changed = true;
@@ -287,8 +286,7 @@ export function sortWorkspaceProjectsByActivity(
 
   const projectActivityUpdatedAts =
     options?.projectActivityUpdatedAts ?? EMPTY_PROJECT_ACTIVITY_UPDATED_ATS;
-  const runningProjectPathKeys =
-    options?.runningProjectPathKeys ?? EMPTY_RUNNING_PROJECT_PATH_KEYS;
+  const runningProjectPathKeys = options?.runningProjectPathKeys ?? EMPTY_RUNNING_PROJECT_PATH_KEYS;
 
   return [...projects]
     .map((project, index) => {

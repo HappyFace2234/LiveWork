@@ -2,6 +2,7 @@ import type { Context } from "@earendil-works/pi-ai";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import type { PromptRunRequest } from "../../lib/automation";
 import { runAssistantWithTools } from "../../lib/chat/runner/agentRunner";
 import { createStreamDebugLogger } from "../../lib/debug/agentDebug";
 import { assistantMessageToText } from "../../lib/providers/llm";
@@ -24,72 +25,27 @@ import { createFileToolState } from "../../lib/tools/fileToolState";
 import type { SkillAccessPolicy } from "../../lib/tools/skillAccessPolicy";
 import { appendSystemPrompt } from "../../pages/chat";
 
+const PROMPT_PENDING_EVENT = "automation:prompt-pending";
+const PROMPT_EXPIRED_EVENT = "automation:prompt-expired";
+/** Abort slightly before the Rust lease expires so our completion wins the race. */
+const LEASE_SAFETY_MARGIN_MS = 2_000;
+const COMPLETION_RETRY_DELAYS_MS = [1_000, 5_000, 15_000];
+
 type CronPromptRunnerProps = {
   settings: AppSettings;
 };
 
-type CronPromptRunRequest = {
-  executionId: string;
-  taskId: string;
-  taskName: string;
-  prompt: string;
-  providerId: string;
-  model: string;
-  startedAt: number;
-};
-
-type CronCompletePromptRunInput = {
-  executionId: string;
-  taskId: string;
-  success: boolean;
-  durationMs: number;
-  output: string;
-};
-
-type CronPromptRunCompletionResult = {
-  status: "completed" | "already_finished";
-};
-
-type CronPromptRunExpiredEvent = {
-  executionId: string;
-  taskId: string;
-};
-
-const CRON_PENDING_EVENT = "cron:auto-prompt-pending";
-const CRON_EXPIRED_EVENT = "cron:auto-prompt-expired";
-const CRON_COMPLETION_STORAGE_KEY = "liveagent.cron-prompt-completions.v1";
-const CRON_PROMPT_TIMEOUT_MS = 5 * 60_000;
-const CRON_PROMPT_TIMEOUT_EARLY_ABORT_MS = 1_000;
-const runningExecutionIds = new Set<string>();
-const runningTaskIds = new Set<string>();
-const executionAbortControllers = new Map<string, AbortController>();
-const executionTimeoutHandles = new Map<string, number>();
-const localTimedOutExecutionIds = new Set<string>();
-const serverExpiredExecutionIds = new Set<string>();
-let completionFlushChain: Promise<void> = Promise.resolve();
-let mountedRunnerCount = 0;
-let deferredGlobalCleanupTimer: number | null = null;
-
-function buildPromptTimeoutMessage() {
-  return "Auto Prompt run timed out before the front-end completed it.";
-}
-
 function buildCronSystemPrompt(taskName: string) {
+  const lines = ["You are running a scheduled Auto Prompt task in LiveAgent."];
   const normalizedTaskName = taskName.trim();
-  if (!normalizedTaskName) {
-    return [
-      "You are running a scheduled Auto Prompt task in LiveAgent.",
-      "Return only the final conclusion for this run.",
-      "Do not include raw JSON, tool calls, hidden reasoning, or intermediate execution logs.",
-    ].join("\n");
+  if (normalizedTaskName) {
+    lines.push(`Task: ${normalizedTaskName}`);
   }
-
-  return [
-    "You are running a scheduled Auto Prompt task in LiveAgent.",
-    `Task: ${normalizedTaskName}`,
+  lines.push(
     "Return only the final conclusion for this run.",
     "Do not include raw JSON, tool calls, hidden reasoning, or intermediate execution logs.",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 function getActiveAgentPrompt(settings: AppSettings) {
@@ -152,8 +108,8 @@ async function buildCronSkillsContext(settings: AppSettings) {
 
 async function executeCronPromptRun(
   settings: AppSettings,
-  request: CronPromptRunRequest,
-  signal?: AbortSignal,
+  request: PromptRunRequest,
+  signal: AbortSignal,
 ) {
   if (!isAgentExecutionMode(settings.system.executionMode)) {
     throw new Error(
@@ -164,10 +120,6 @@ async function executeCronPromptRun(
   const workdir = settings.system.workdir.trim();
   if (!workdir) {
     throw new Error("Tool mode requires a project directory from the chat sidebar.");
-  }
-
-  if (!request.prompt.trim()) {
-    throw new Error("Auto Prompt task has no prompt content.");
   }
 
   const provider = settings.customProviders.find((item) => item.id === request.providerId);
@@ -184,7 +136,6 @@ async function executeCronPromptRun(
   }
 
   const skillsContext = await buildCronSkillsContext(settings);
-  const skillsPrompt = skillsContext.prompt;
   const activeAgentPrompt = getActiveAgentPrompt(settings);
   const { selectableMcpServers, enabledMcpServerIds } = resolveEnabledMcpServers(settings);
   const runtimePlatform = await resolveRuntimePlatform();
@@ -212,8 +163,8 @@ async function executeCronPromptRun(
   if (activeAgentPrompt) {
     systemPrompt = appendSystemPrompt(systemPrompt, activeAgentPrompt);
   }
-  if (skillsPrompt) {
-    systemPrompt = appendSystemPrompt(systemPrompt, skillsPrompt);
+  if (skillsContext.prompt) {
+    systemPrompt = appendSystemPrompt(systemPrompt, skillsContext.prompt);
   }
 
   const context: Context = {
@@ -254,7 +205,8 @@ async function executeCronPromptRun(
     workdir,
     sessionId: request.executionId,
     tools: builtinRegistry.tools,
-    executeToolCall: (toolCall, signal) => builtinRegistry.executeToolCall(toolCall, signal),
+    executeToolCall: (toolCall, toolSignal) =>
+      builtinRegistry.executeToolCall(toolCall, toolSignal),
     onTextDelta() {},
     onToolStatus() {},
     signal,
@@ -268,208 +220,36 @@ async function executeCronPromptRun(
   return conclusion;
 }
 
-async function completeCronPromptRun(input: CronCompletePromptRunInput) {
-  return invoke<CronPromptRunCompletionResult>("cron_complete_prompt_run", { input });
-}
-
-function warnIfAlreadyFinishedCompletion(
-  result: CronPromptRunCompletionResult,
-  executionId: string,
-) {
-  if (result.status === "already_finished") {
-    console.warn("Cron Auto Prompt completion reached an already-finished run", executionId);
-  }
-}
-
-function normalizeExecutionId(value: string) {
-  return value.trim();
-}
-
-function normalizeTaskId(value: string) {
-  return value.trim();
-}
-
-function clearExecutionTimeout(executionId: string) {
-  const timer = executionTimeoutHandles.get(executionId);
-  if (typeof timer === "number") {
-    window.clearTimeout(timer);
-    executionTimeoutHandles.delete(executionId);
-  }
-}
-
-function cleanupGlobalPromptRunnerState() {
-  for (const timer of executionTimeoutHandles.values()) {
-    window.clearTimeout(timer);
-  }
-  executionTimeoutHandles.clear();
-  for (const controller of executionAbortControllers.values()) {
-    controller.abort();
-  }
-  executionAbortControllers.clear();
-  runningExecutionIds.clear();
-  runningTaskIds.clear();
-  localTimedOutExecutionIds.clear();
-  serverExpiredExecutionIds.clear();
-}
-
-function remainingPromptRunTimeoutMs(startedAt: number) {
-  const normalizedStartedAt = Number.isFinite(startedAt) ? startedAt : Date.now();
-  const elapsed = Math.max(0, Date.now() - normalizedStartedAt);
-  if (elapsed >= CRON_PROMPT_TIMEOUT_MS) {
-    return 1;
-  }
-  return CRON_PROMPT_TIMEOUT_MS - elapsed;
-}
-
-function abortPromptExecution(executionId: string, reason: "local_timeout" | "server_expired") {
-  const normalizedExecutionId = normalizeExecutionId(executionId);
-  if (!normalizedExecutionId) {
-    return;
-  }
-
-  if (reason === "local_timeout") {
-    localTimedOutExecutionIds.add(normalizedExecutionId);
-  } else {
-    serverExpiredExecutionIds.add(normalizedExecutionId);
-  }
-
-  clearExecutionTimeout(normalizedExecutionId);
-  executionAbortControllers.get(normalizedExecutionId)?.abort();
-}
-
-function registerLocalPromptTimeout(
-  executionId: string,
-  startedAt: number,
-  controller: AbortController,
-) {
-  const normalizedExecutionId = normalizeExecutionId(executionId);
-  if (!normalizedExecutionId) {
-    return;
-  }
-
-  executionAbortControllers.set(normalizedExecutionId, controller);
-  const remainingMs = remainingPromptRunTimeoutMs(startedAt);
-  const abortDelayMs = Math.max(1, remainingMs - CRON_PROMPT_TIMEOUT_EARLY_ABORT_MS);
-  const timer = window.setTimeout(() => {
-    abortPromptExecution(normalizedExecutionId, "local_timeout");
-  }, abortDelayMs);
-  executionTimeoutHandles.set(normalizedExecutionId, timer);
-}
-
-function normalizeQueuedCompletion(value: unknown): CronCompletePromptRunInput | null {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  const executionId = typeof record.executionId === "string" ? record.executionId.trim() : "";
-  const taskId = typeof record.taskId === "string" ? record.taskId.trim() : "";
-  if (!executionId || !taskId) {
-    return null;
-  }
-
-  return {
-    executionId,
-    taskId,
-    success: record.success === true,
-    durationMs:
-      typeof record.durationMs === "number" && Number.isFinite(record.durationMs)
-        ? Math.max(0, record.durationMs)
-        : 0,
-    output: typeof record.output === "string" ? record.output : "",
-  };
-}
-
-function readQueuedPromptCompletions() {
-  try {
-    const raw = window.localStorage.getItem(CRON_COMPLETION_STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-    return parsed
-      .map((value) => normalizeQueuedCompletion(value))
-      .filter((value): value is CronCompletePromptRunInput => Boolean(value));
-  } catch (error) {
-    console.warn("Cron Auto Prompt completion queue read failed", error);
-    return [];
-  }
-}
-
-function writeQueuedPromptCompletions(queue: CronCompletePromptRunInput[]) {
-  if (queue.length === 0) {
-    window.localStorage.removeItem(CRON_COMPLETION_STORAGE_KEY);
-    return;
-  }
-  window.localStorage.setItem(CRON_COMPLETION_STORAGE_KEY, JSON.stringify(queue));
-}
-
-function upsertQueuedPromptCompletion(input: CronCompletePromptRunInput) {
-  const queue = readQueuedPromptCompletions();
-  const existingIndex = queue.findIndex((item) => item.executionId === input.executionId);
-  if (existingIndex >= 0) {
-    queue[existingIndex] = input;
-  } else {
-    queue.push(input);
-  }
-  writeQueuedPromptCompletions(queue);
-}
-
-function getQueuedPromptCompletionIds() {
-  return new Set(readQueuedPromptCompletions().map((item) => item.executionId));
-}
-
-async function flushQueuedPromptCompletionsInternal() {
-  const queue = readQueuedPromptCompletions();
-  if (queue.length === 0) {
-    return;
-  }
-
-  const remaining: CronCompletePromptRunInput[] = [];
-  for (let index = 0; index < queue.length; index += 1) {
-    const entry = queue[index];
+async function completeWithRetry(input: {
+  execution_id: string;
+  success: boolean;
+  duration_ms: number;
+  output: string;
+}) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      const result = await completeCronPromptRun(entry);
-      warnIfAlreadyFinishedCompletion(result, entry.executionId);
-    } catch (error) {
-      console.warn("Cron Auto Prompt completion queue flush failed", error);
-      remaining.push(entry, ...queue.slice(index + 1));
-      break;
-    }
-  }
-
-  writeQueuedPromptCompletions(remaining);
-}
-
-function serializeCompletionQueueWork(work: () => Promise<void>) {
-  completionFlushChain = completionFlushChain.catch(() => undefined).then(work);
-  return completionFlushChain;
-}
-
-async function flushQueuedPromptCompletions() {
-  await serializeCompletionQueueWork(async () => {
-    await flushQueuedPromptCompletionsInternal();
-  });
-}
-
-async function enqueueQueuedPromptCompletion(input: CronCompletePromptRunInput) {
-  await serializeCompletionQueueWork(async () => {
-    try {
-      upsertQueuedPromptCompletion(input);
-    } catch (error) {
-      console.warn("Cron Auto Prompt completion queue persist failed", error);
-      const result = await completeCronPromptRun(input);
-      warnIfAlreadyFinishedCompletion(result, input.executionId);
+      await invoke("automation_complete_prompt_run", { input });
       return;
+    } catch (error) {
+      if (attempt >= COMPLETION_RETRY_DELAYS_MS.length) {
+        // The Rust lease sweeper records the run as expired; nothing is lost
+        // silently, but the conclusion text is dropped.
+        console.warn("Cron Auto Prompt completion failed permanently", error);
+        return;
+      }
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, COMPLETION_RETRY_DELAYS_MS[attempt]),
+      );
     }
-
-    await flushQueuedPromptCompletionsInternal();
-  });
+  }
 }
 
+/**
+ * Executes prompt-type cron runs. The Rust store owns the queue: claiming is
+ * an atomic pending->leased transition, so concurrent claims (StrictMode
+ * double-mount, multiple polls) can never double-run a task, and completions
+ * are idempotent against the lease state machine.
+ */
 export function CronPromptRunner({ settings }: CronPromptRunnerProps) {
   const settingsRef = useRef(settings);
 
@@ -478,135 +258,79 @@ export function CronPromptRunner({ settings }: CronPromptRunnerProps) {
   }, [settings]);
 
   useEffect(() => {
-    mountedRunnerCount += 1;
-    if (deferredGlobalCleanupTimer !== null) {
-      window.clearTimeout(deferredGlobalCleanupTimer);
-      deferredGlobalCleanupTimer = null;
-    }
-    let stoppedTakingRuns = false;
+    let disposed = false;
+    const abortControllers = new Map<string, AbortController>();
 
-    async function takePendingRuns() {
-      if (stoppedTakingRuns) return;
-      await flushQueuedPromptCompletions();
-      if (stoppedTakingRuns) return;
-
-      let pendingRuns: CronPromptRunRequest[] = [];
-      try {
-        pendingRuns = await invoke<CronPromptRunRequest[]>("cron_take_pending_prompt_runs");
-      } catch (error) {
-        console.warn("Cron Auto Prompt pending take failed", error);
-        return;
-      }
-
-      const queuedCompletionIds = getQueuedPromptCompletionIds();
-      for (const request of pendingRuns) {
-        if (stoppedTakingRuns) {
-          break;
-        }
-        const executionId = normalizeExecutionId(request.executionId);
-        const taskId = normalizeTaskId(request.taskId);
-        if (!executionId || !taskId) {
-          continue;
-        }
-        if (queuedCompletionIds.has(executionId)) {
-          continue;
-        }
-        if (runningTaskIds.has(taskId)) {
-          continue;
-        }
-        void startRun(request);
-      }
-    }
-
-    async function startRun(request: CronPromptRunRequest) {
-      if (stoppedTakingRuns) return;
-      const executionId = normalizeExecutionId(request.executionId);
-      const taskId = normalizeTaskId(request.taskId);
-      if (
-        !executionId ||
-        !taskId ||
-        runningExecutionIds.has(executionId) ||
-        runningTaskIds.has(taskId)
-      ) {
-        return;
-      }
-
-      runningExecutionIds.add(executionId);
-      runningTaskIds.add(taskId);
-      localTimedOutExecutionIds.delete(executionId);
-      serverExpiredExecutionIds.delete(executionId);
+    async function runClaimed(request: PromptRunRequest) {
       const controller = new AbortController();
-      registerLocalPromptTimeout(executionId, request.startedAt, controller);
+      abortControllers.set(request.executionId, controller);
       const startedAt = Date.now();
+      const abortDelay = Math.max(1, request.leaseExpiresAt - Date.now() - LEASE_SAFETY_MARGIN_MS);
+      const abortTimer = window.setTimeout(() => controller.abort(), abortDelay);
+
       let success = false;
       let output = "";
-
       try {
         output = await executeCronPromptRun(settingsRef.current, request, controller.signal);
         success = true;
       } catch (error) {
         output = error instanceof Error ? error.message : String(error ?? "");
-      }
-
-      const timedOutLocally = localTimedOutExecutionIds.has(executionId);
-      const expiredByServer = serverExpiredExecutionIds.has(executionId);
-      if (timedOutLocally || expiredByServer) {
-        success = false;
-        output = buildPromptTimeoutMessage();
-      }
-
-      try {
-        if (!expiredByServer) {
-          await enqueueQueuedPromptCompletion({
-            executionId,
-            taskId,
-            success,
-            durationMs: Math.max(0, Date.now() - startedAt),
-            output: output.trim(),
-          });
-        }
-      } catch (error) {
-        console.warn("Cron Auto Prompt completion write-back failed", error);
       } finally {
-        clearExecutionTimeout(executionId);
-        executionAbortControllers.delete(executionId);
-        localTimedOutExecutionIds.delete(executionId);
-        serverExpiredExecutionIds.delete(executionId);
-        runningExecutionIds.delete(executionId);
-        runningTaskIds.delete(taskId);
-        if (!stoppedTakingRuns) {
-          void takePendingRuns();
+        window.clearTimeout(abortTimer);
+        abortControllers.delete(request.executionId);
+      }
+
+      if (controller.signal.aborted && !success) {
+        // The lease sweeper on the Rust side records the timeout; a late
+        // completion would be answered with AlreadyFinished anyway.
+        return;
+      }
+      await completeWithRetry({
+        execution_id: request.executionId,
+        success,
+        duration_ms: Math.max(0, Date.now() - startedAt),
+        output: output.trim(),
+      });
+    }
+
+    async function claimAndRun() {
+      let claimed: PromptRunRequest[] = [];
+      try {
+        claimed = await invoke<PromptRunRequest[]>("automation_claim_prompt_runs");
+      } catch (error) {
+        console.warn("Cron Auto Prompt claim failed", error);
+        return;
+      }
+      if (disposed) {
+        // Claimed after unmount (StrictMode remount window): hand the runs
+        // back so the surviving runner instance picks them up.
+        for (const request of claimed) {
+          void invoke("automation_release_prompt_run", {
+            execution_id: request.executionId,
+          }).catch(() => undefined);
         }
+        return;
+      }
+      for (const request of claimed) {
+        void runClaimed(request);
       }
     }
 
-    void takePendingRuns();
-
-    const unlistenPendingPromise = listen(CRON_PENDING_EVENT, () => {
-      void takePendingRuns();
+    void claimAndRun();
+    const unlistenPending = listen(PROMPT_PENDING_EVENT, () => {
+      if (!disposed) void claimAndRun();
     });
-    const unlistenExpiredPromise = listen<CronPromptRunExpiredEvent>(
-      CRON_EXPIRED_EVENT,
-      (event) => {
-        const executionId = normalizeExecutionId(event.payload?.executionId ?? "");
-        if (!executionId || !executionAbortControllers.has(executionId)) {
-          return;
-        }
-        abortPromptExecution(executionId, "server_expired");
-      },
-    );
+    const unlistenExpired = listen<{ executionId: string }>(PROMPT_EXPIRED_EVENT, (event) => {
+      abortControllers.get(event.payload?.executionId ?? "")?.abort();
+    });
 
     return () => {
-      stoppedTakingRuns = true;
-      void unlistenPendingPromise.then((unlisten) => unlisten());
-      void unlistenExpiredPromise.then((unlisten) => unlisten());
-      mountedRunnerCount = Math.max(0, mountedRunnerCount - 1);
-      deferredGlobalCleanupTimer = window.setTimeout(() => {
-        deferredGlobalCleanupTimer = null;
-        if (mountedRunnerCount === 0) {
-          cleanupGlobalPromptRunnerState();
-        }
-      }, 0);
+      disposed = true;
+      void unlistenPending.then((unlisten) => unlisten());
+      void unlistenExpired.then((unlisten) => unlisten());
+      for (const controller of abortControllers.values()) {
+        controller.abort();
+      }
     };
   }, []);
 

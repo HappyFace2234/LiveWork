@@ -145,10 +145,16 @@ func (c *websocketConnection) handleSkillMetadataRead(req websocketRequest) {
 		return
 	}
 
-	_ = c.writeResponse(req.ID, map[string]any{
-		"name":        nullableTrimmedString(resp.GetName()),
-		"description": nullableTrimmedString(resp.GetDescription()),
-	})
+	name := strings.TrimSpace(resp.GetName())
+	description := strings.TrimSpace(resp.GetDescription())
+	result := map[string]any{"name": any(nil), "description": any(nil)}
+	if name != "" {
+		result["name"] = name
+	}
+	if description != "" {
+		result["description"] = description
+	}
+	_ = c.writeResponse(req.ID, result)
 }
 
 func (c *websocketConnection) handleSkillTextRead(req websocketRequest) {

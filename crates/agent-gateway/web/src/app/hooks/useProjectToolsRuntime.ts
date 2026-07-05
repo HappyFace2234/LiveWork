@@ -58,6 +58,7 @@ export function useProjectToolsRuntime(params: UseProjectToolsRuntimeParams) {
     useState<WorkspaceSshTerminalOpenRequest | null>(null);
   const workspaceSshTerminalRequestIdRef = useRef(0);
   const [terminalSessions, setTerminalSessions] = useState<TerminalSession[]>([]);
+  const [terminalSessionsLoaded, setTerminalSessionsLoaded] = useState(false);
   const terminalSessionsVersionRef = useRef(0);
   const terminalStatusSessionIdRef = useRef("");
 
@@ -208,6 +209,10 @@ export function useProjectToolsRuntime(params: UseProjectToolsRuntimeParams) {
   }, []);
 
   useEffect(() => {
+    // Loaded flips false whenever the gates or the gateway session identity
+    // change, and true only once list() settles below — RightDockPanel uses it
+    // to defer terminal-tab GC until the session list is actually known.
+    setTerminalSessionsLoaded(false);
     if (!terminalClient) {
       terminalSessionsVersionRef.current += 1;
       setTerminalSessions([]);
@@ -245,7 +250,12 @@ export function useProjectToolsRuntime(params: UseProjectToolsRuntimeParams) {
           setTerminalSessions(sortTerminalSessions(sessions));
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          setTerminalSessionsLoaded(true);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -268,32 +278,30 @@ export function useProjectToolsRuntime(params: UseProjectToolsRuntimeParams) {
   }, [terminalClient]);
 
   useEffect(() => {
+    // One catch-up fetch when the ssh-tunnel tab becomes usable (opened, agent
+    // back online, gateway session ready). Ongoing freshness is event-driven:
+    // the terminalClient.subscribe effect above applies created/updated/closed
+    // broadcasts, and SshTunnelPanel's own active-gated reconcile feeds
+    // list() results back through onSessionsReconcile -> onSessionsChange.
+    // A parallel 5s poll here only duplicated that traffic.
     if (!terminalClient) return;
     if (!settingsSyncReady) return;
     if (!isAgentMode || !webTerminalSessionsEnabled || statusOnline !== true) return;
     if (!rightDockSshTunnelOpen || !terminalProjectPathKey) return;
 
     let cancelled = false;
-    let refreshSeq = 0;
-    const refreshProjectTerminalSessions = () => {
-      const seq = ++refreshSeq;
-      void terminalClient
-        .list(terminalProjectPathKey)
-        .then((sessions) => {
-          if (cancelled || seq !== refreshSeq) return;
-          terminalSessionsVersionRef.current += 1;
-          setTerminalSessions((current) =>
-            replaceTerminalSessionsForProject(current, terminalProjectPathKey, sessions),
-          );
-        })
-        .catch(() => undefined);
-    };
-
-    refreshProjectTerminalSessions();
-    const timer = window.setInterval(refreshProjectTerminalSessions, 5_000);
+    void terminalClient
+      .list(terminalProjectPathKey)
+      .then((sessions) => {
+        if (cancelled) return;
+        terminalSessionsVersionRef.current += 1;
+        setTerminalSessions((current) =>
+          replaceTerminalSessionsForProject(current, terminalProjectPathKey, sessions),
+        );
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
   }, [
     isAgentMode,
@@ -309,6 +317,7 @@ export function useProjectToolsRuntime(params: UseProjectToolsRuntimeParams) {
     terminalSessionsVersionRef.current += 1;
     terminalStatusSessionIdRef.current = "";
     setTerminalSessions([]);
+    setTerminalSessionsLoaded(false);
   }, []);
 
   return {
@@ -324,6 +333,7 @@ export function useProjectToolsRuntime(params: UseProjectToolsRuntimeParams) {
     workspaceSshTerminalOpen,
     workspaceSshTerminalOpenRequest,
     terminalSessions,
+    terminalSessionsLoaded,
     setTerminalSessions,
     terminalSessionsVersionRef,
     terminalStatusSessionIdRef,

@@ -89,31 +89,52 @@ type websocketGitRequestPayload struct {
 	Args    json.RawMessage `json:"args,omitempty"`
 }
 
+const (
+	websocketWriteQueueDefault = 512
+	websocketMaxWriteRetries   = 2
+	websocketRetryBackoff      = 100 * time.Millisecond
+)
+
 type websocketConnection struct {
 	cfg *config.Config
 	sm  *session.Manager
 
-	conn *websocket.Conn
-	req  *http.Request
+	conn         *websocket.Conn
+	req          *http.Request
+	writeMu      sync.Mutex
+	writeTimeout time.Duration
+	outbox       chan websocketEnvelope
 
-	writer     *websocketConnectionWriter
 	closeOnce  sync.Once
 	done       chan struct{}
 	authorized bool
 
-	historyEvents          <-chan *gatewayv1.HistorySyncEvent
-	historyEventsCleanup   func()
-	settingsEvents         <-chan *gatewayv1.SettingsSyncEvent
-	settingsEventsCleanup  func()
-	terminalEvents         <-chan *gatewayv1.TerminalEvent
-	terminalEventsCleanup  func()
-	sftpEvents             <-chan *gatewayv1.SftpEvent
-	sftpEventsCleanup      func()
-	chatQueueEvents        <-chan *gatewayv1.ChatQueueEvent
-	chatQueueEventsCleanup func()
-	heartbeatOnce          sync.Once
+	lastInboundAt time.Time
+	lastInboundMu sync.Mutex
+
+	historyEvents             <-chan *gatewayv1.HistorySyncEvent
+	historyEventsCleanup      func()
+	settingsEvents            <-chan *gatewayv1.SettingsSyncEvent
+	settingsEventsCleanup     func()
+	terminalEvents            <-chan *gatewayv1.TerminalEvent
+	terminalEventsCleanup     func()
+	sftpEvents                <-chan *gatewayv1.SftpEvent
+	sftpEventsCleanup         func()
+	chatQueueEvents           <-chan *gatewayv1.ChatQueueEvent
+	chatQueueEventsCleanup    func()
+	chatActivityEvents        <-chan session.ConversationActivityEvent
+	chatActivityEventsCleanup func()
+	tunnelStateEvents         <-chan *gatewayv1.TunnelStateSnapshot
+	tunnelStateEventsCleanup  func()
+	heartbeatOnce             sync.Once
 
 	terminalInterest *websocketTerminalInterestTracker
+
+	chatStreamsMu sync.Mutex
+	chatStreams   map[string]*chatStreamSubscription
+
+	workspaceSubsMu sync.Mutex
+	workspaceSubs   map[string]*workspaceActivitySubscription
 }
 
 const maxHistoryListLimit = 200
@@ -133,12 +154,17 @@ func NewWebSocketServer(cfg *config.Config, sm *session.Manager) http.Handler {
 		}
 		conn.SetReadLimit(webSocketReadLimit(cfg))
 
+		queueSize := websocketWriteQueueDefault
+		if cfg.WebSocketWriteQueueSize > 0 {
+			queueSize = cfg.WebSocketWriteQueueSize
+		}
 		state := &websocketConnection{
 			cfg:              cfg,
 			sm:               sm,
 			conn:             conn,
 			req:              r,
-			writer:           newWebsocketConnectionWriter(conn, cfg.WebSocketWriteTimeout),
+			writeTimeout:     cfg.WebSocketWriteTimeout,
+			outbox:           make(chan websocketEnvelope, queueSize),
 			done:             make(chan struct{}),
 			terminalInterest: newWebsocketTerminalInterestTracker(),
 		}
@@ -164,6 +190,10 @@ func (c *websocketConnection) serve() {
 			return
 		}
 
+		// Any inbound frame proves the client is alive — heartbeat pongs are
+		// not the only liveness evidence.
+		c.touchInboundActivity()
+
 		req.ID = strings.TrimSpace(req.ID)
 		req.Type = strings.TrimSpace(req.Type)
 		if req.Type == "pong" {
@@ -185,6 +215,17 @@ func (c *websocketConnection) serve() {
 
 		if !c.authorized {
 			_ = c.writeError(req.ID, "unauthorized")
+			continue
+		}
+
+		// Subscription lifecycle must keep the client's frame order: a
+		// re-subscribe emits [unsubscribe, subscribe] back to back, and
+		// concurrent dispatch could let the stale unsubscribe cancel the fresh
+		// subscription. These handlers are lock-only and non-blocking, so they
+		// run inline on the read loop.
+		if req.Type == "chat.subscribe" || req.Type == "chat.unsubscribe" ||
+			req.Type == "workspace.subscribe" || req.Type == "workspace.unsubscribe" {
+			c.dispatch(req)
 			continue
 		}
 
@@ -215,6 +256,16 @@ func (c *websocketConnection) close() {
 			c.chatQueueEventsCleanup()
 			c.chatQueueEventsCleanup = nil
 		}
+		if c.chatActivityEventsCleanup != nil {
+			c.chatActivityEventsCleanup()
+			c.chatActivityEventsCleanup = nil
+		}
+		if c.tunnelStateEventsCleanup != nil {
+			c.tunnelStateEventsCleanup()
+			c.tunnelStateEventsCleanup = nil
+		}
+		c.cleanupChatStreamSubscriptions()
+		c.cleanupWorkspaceSubscriptions()
 		_ = c.conn.Close()
 	})
 }
@@ -234,17 +285,21 @@ func (c *websocketConnection) handleAuth(req websocketRequest) {
 	}
 
 	c.authorized = true
+	go c.writeLoop()
 	c.startHistorySyncForwarder()
 	c.startSettingsSyncForwarder()
 	c.startTerminalEventForwarder()
 	c.startSftpEventForwarder()
 	c.startChatQueueEventForwarder()
+	c.startChatActivityForwarder()
+	c.startTunnelStateForwarder()
 	c.startWebSocketHeartbeat()
 	if err := c.writeResponse(req.ID, map[string]any{"ok": true}); err != nil {
 		c.close()
 		return
 	}
 	c.replayTerminalSessionSnapshot()
+	c.replayTunnelStateSnapshot()
 }
 
 func (c *websocketConnection) startHistorySyncForwarder() {
@@ -265,8 +320,33 @@ func (c *websocketConnection) startHistorySyncForwarder() {
 				if !ok {
 					return
 				}
-				if err := c.writeHistoryEvent(websocketHistorySyncPayload(event, c.sm.ActiveChatRunSummaries()...)); err != nil {
-					c.close()
+				if err := c.writeEvent("history.event", websocketHistorySyncPayload(event)); err != nil {
+					return
+				}
+			}
+		}
+	}()
+}
+
+func (c *websocketConnection) startChatActivityForwarder() {
+	if c.chatActivityEvents != nil || c.chatActivityEventsCleanup != nil {
+		return
+	}
+
+	activityEvents, cleanup := c.sm.SubscribeChatActivity()
+	c.chatActivityEvents = activityEvents
+	c.chatActivityEventsCleanup = cleanup
+
+	go func() {
+		for {
+			select {
+			case <-c.done:
+				return
+			case event, ok := <-activityEvents:
+				if !ok {
+					return
+				}
+				if err := c.writeEvent("chat.activity", websocketChatActivityPayload(event)); err != nil {
 					return
 				}
 			}
@@ -292,12 +372,11 @@ func (c *websocketConnection) startSettingsSyncForwarder() {
 				if !ok {
 					return
 				}
-				payload, err := websocketSettingsSyncPayload(event)
+				payload, err := websocketSettingsJSONPayload(event.GetSettingsJson())
 				if err != nil {
 					return
 				}
-				if err := c.writeSettingsEvent(payload); err != nil {
-					c.close()
+				if err := c.writeEvent("settings.event", payload); err != nil {
 					return
 				}
 			}
@@ -326,8 +405,7 @@ func (c *websocketConnection) startTerminalEventForwarder() {
 				if !c.shouldForwardTerminalEvent(event) {
 					continue
 				}
-				if err := c.writeTerminalEvent(websocketTerminalEventPayload(event)); err != nil {
-					c.close()
+				if err := c.writeEvent("terminal.event", websocketTerminalEventPayload(event)); err != nil {
 					return
 				}
 			}
@@ -356,8 +434,7 @@ func (c *websocketConnection) startSftpEventForwarder() {
 				if !c.sm.WebSshTerminalEnabled() {
 					continue
 				}
-				if err := c.writeSftpEvent(websocketSftpEventPayload(event)); err != nil {
-					c.close()
+				if err := c.writeEvent("sftp.event", websocketSftpEventPayload(event)); err != nil {
 					return
 				}
 			}
@@ -383,8 +460,7 @@ func (c *websocketConnection) startChatQueueEventForwarder() {
 				if !ok {
 					return
 				}
-				if err := c.writeChatQueueEvent(websocketChatQueueEventPayload(event)); err != nil {
-					c.close()
+				if err := c.writeEvent("chat_queue.event", websocketChatQueueEventPayload(event)); err != nil {
 					return
 				}
 			}
@@ -400,13 +476,12 @@ func (c *websocketConnection) replayTerminalSessionSnapshot() {
 		if !c.terminalSessionAllowed(terminalSession) {
 			continue
 		}
-		if err := c.writeTerminalEvent(websocketTerminalEventPayload(&gatewayv1.TerminalEvent{
+		if err := c.writeEvent("terminal.event", websocketTerminalEventPayload(&gatewayv1.TerminalEvent{
 			Kind:           "created",
 			SessionId:      terminalSession.GetId(),
 			ProjectPathKey: terminalSession.GetProjectPathKey(),
 			Session:        terminalSession,
 		})); err != nil {
-			c.close()
 			return
 		}
 	}
@@ -442,19 +517,42 @@ func (c *websocketConnection) startWebSocketHeartbeat() {
 				case <-c.done:
 					return
 				case <-ticker.C:
+					c.lastInboundMu.Lock()
+					lastInbound := c.lastInboundAt
+					c.lastInboundMu.Unlock()
+					if time.Since(lastInbound) > c.idleTimeout() {
+						c.close()
+						return
+					}
 					if err := c.writeEnvelope(websocketEnvelope{
 						Type: "ping",
 						Payload: map[string]any{
 							"timestamp": time.Now().Unix(),
 						},
 					}); err != nil {
-						c.close()
 						return
 					}
 				}
 			}
 		}()
 	})
+}
+
+// touchInboundActivity records liveness for every inbound frame and pushes the
+// read deadline forward accordingly.
+func (c *websocketConnection) touchInboundActivity() {
+	c.lastInboundMu.Lock()
+	c.lastInboundAt = time.Now()
+	c.lastInboundMu.Unlock()
+	_ = c.conn.SetReadDeadline(time.Now().Add(c.idleTimeout()))
+}
+
+func (c *websocketConnection) idleTimeout() time.Duration {
+	period := c.cfg.WebSocketHeartbeatPeriod
+	if period <= 0 {
+		period = 15 * time.Second
+	}
+	return period*3 + 5*time.Second
 }
 
 func (c *websocketConnection) dispatch(req websocketRequest) {
@@ -519,41 +617,101 @@ func (c *websocketConnection) writeError(requestID string, message string) error
 	})
 }
 
-func (c *websocketConnection) writeHistoryEvent(payload any) error {
+func (c *websocketConnection) writeEvent(eventType string, payload any) error {
 	return c.writeEnvelope(websocketEnvelope{
-		Type:    "history.event",
+		Type:    eventType,
 		Payload: payload,
 	})
 }
 
-func (c *websocketConnection) writeSettingsEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "settings.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeTerminalEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "terminal.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeSftpEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "sftp.event",
-		Payload: payload,
-	})
-}
-
-func (c *websocketConnection) writeChatQueueEvent(payload any) error {
-	return c.writeEnvelope(websocketEnvelope{
-		Type:    "chat_queue.event",
-		Payload: payload,
-	})
-}
+var errWriteQueueFull = errors.New("write queue full")
 
 func (c *websocketConnection) writeEnvelope(envelope websocketEnvelope) error {
-	return c.writer.write(envelope)
+	err := c.enqueueEnvelope(envelope)
+	if errors.Is(err, errWriteQueueFull) {
+		c.close()
+	}
+	return err
+}
+
+// enqueueEnvelope waits up to writeTimeout for a slot when the outbox is
+// momentarily full (token bursts to a slow reader); only a persistent backlog
+// is fatal. The fast path allocates nothing.
+func (c *websocketConnection) enqueueEnvelope(envelope websocketEnvelope) error {
+	select {
+	case <-c.done:
+		return errors.New("connection closed")
+	case c.outbox <- envelope:
+		return nil
+	default:
+	}
+
+	timeout := c.writeTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-c.done:
+		return errors.New("connection closed")
+	case c.outbox <- envelope:
+		return nil
+	case <-timer.C:
+		return errWriteQueueFull
+	}
+}
+
+func (c *websocketConnection) writeLoop() {
+	for {
+		select {
+		case <-c.done:
+			return
+		case envelope := <-c.outbox:
+			if err := c.writeEnvelopeDirect(envelope); err != nil {
+				ok := false
+				for attempt := 0; attempt < websocketMaxWriteRetries; attempt++ {
+					select {
+					case <-c.done:
+						return
+					case <-time.After(websocketRetryBackoff):
+					}
+					if err := c.writeEnvelopeDirect(envelope); err == nil {
+						ok = true
+						break
+					}
+				}
+				if !ok {
+					c.close()
+					return
+				}
+			}
+			for drained := 0; drained < 64; drained++ {
+				select {
+				case extra := <-c.outbox:
+					if err := c.writeEnvelopeDirect(extra); err != nil {
+						c.close()
+						return
+					}
+				default:
+					goto batchDone
+				}
+			}
+		batchDone:
+		}
+	}
+}
+
+func (c *websocketConnection) writeEnvelopeDirect(envelope websocketEnvelope) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeTimeout > 0 {
+		if err := c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
+			return err
+		}
+		defer func() {
+			_ = c.conn.SetWriteDeadline(time.Time{})
+		}()
+	}
+	return c.conn.WriteJSON(envelope)
 }

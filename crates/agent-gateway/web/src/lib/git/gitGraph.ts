@@ -1,10 +1,4 @@
-export const GRAPH_COLORS = [
-  "#ffb000",
-  "#dc267f",
-  "#994f00",
-  "#40b0a6",
-  "#b66dff",
-];
+export const GRAPH_COLORS = ["#ffb000", "#dc267f", "#994f00", "#40b0a6", "#b66dff"];
 
 export const GRAPH_REF_COLORS = {
   local: "var(--git-review-graph-ref-local)",
@@ -332,7 +326,8 @@ export function computeGitGraph(
     const inputIndex = inputLanes.findIndex((lane) => lane.id === commit.sha);
     const commitCol = inputIndex >= 0 ? inputIndex : inputLanes.length;
     const labelColor = labelColorForCommit(commit, refColorMap);
-    const commitColor = inputIndex >= 0 ? inputLanes[inputIndex].color : (labelColor ?? allocColor());
+    const commitColor =
+      inputIndex >= 0 ? inputLanes[inputIndex].color : (labelColor ?? allocColor());
     const outputLanes: GraphLane[] = [];
 
     if (parents.length > 0) {

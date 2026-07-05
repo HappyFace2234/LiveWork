@@ -27,8 +27,6 @@ type PersistedSettingsResponse = {
   mcp?: unknown | null;
   agents?: unknown | null;
   ssh?: unknown | null;
-  hooks?: unknown | null;
-  cron?: unknown | null;
   remote?: unknown | null;
   memory?: unknown | null;
   defaultWorkdir?: unknown | null;
@@ -197,8 +195,6 @@ export async function loadPersistedSettingsWithDefaults(): Promise<PersistedSett
     mcp: (persisted?.mcp ?? defaults.mcp) as AppSettings["mcp"],
     agents: (persisted?.agents ?? defaults.agents) as AppSettings["agents"],
     ssh: (persisted?.ssh ?? defaults.ssh) as AppSettings["ssh"],
-    hooks: (persisted?.hooks ?? defaults.hooks) as AppSettings["hooks"],
-    cron: (persisted?.cron ?? defaults.cron) as AppSettings["cron"],
     remote: (persisted?.remote ?? defaults.remote) as AppSettings["remote"],
     memory: (persisted?.memory ?? defaults.memory) as AppSettings["memory"],
     skills: localUi.skills,
@@ -280,22 +276,6 @@ export async function persistSettings(
           result.conflict = response.conflict;
         }
       }),
-    );
-  }
-
-  if (hasChanged(prev.hooks, next.hooks)) {
-    tasks.push(
-      invoke("settings_save_hooks", {
-        payload: next.hooks,
-      } as any),
-    );
-  }
-
-  if (hasChanged(prev.cron, next.cron)) {
-    tasks.push(
-      invoke("settings_save_cron", {
-        payload: next.cron,
-      } as any),
     );
   }
 

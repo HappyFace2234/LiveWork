@@ -1,10 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
 import { renderAsync } from "docx-preview";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { read, utils } from "xlsx";
+import { Markdown } from "@/components/Markdown";
 import { useLocale } from "@/i18n";
 import { cn } from "@/lib/shared/utils";
-import { getFileTypeIcon, type FileTypeIconComponent } from "../chat/fileTypeIcons";
+import { invokeFs } from "@/lib/tools/fsBackend";
+import { type FileTypeIconComponent, getFileTypeIcon } from "../chat/fileTypeIcons";
 import {
   AlertTriangle,
   ChevronRight,
@@ -17,7 +18,6 @@ import {
   RotateCwSquare,
   X,
 } from "../icons";
-import { Markdown } from "@/components/Markdown";
 import {
   getWorkspacePreviewKind,
   isWorkspaceEditablePreviewPath,
@@ -350,7 +350,7 @@ export function WorkspaceFilePreviewOverlay(props: WorkspaceFilePreviewOverlayPr
         replacePreview(null);
       }
       try {
-        const response = await invoke<ReadWorkspacePreviewResponse>("fs_read_workspace_image", {
+        const response = await invokeFs<ReadWorkspacePreviewResponse>("fs_read_workspace_image", {
           workdir: request.workdir,
           path: request.path,
         });

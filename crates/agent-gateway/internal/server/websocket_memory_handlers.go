@@ -64,7 +64,7 @@ func (c *websocketConnection) handleMemoryManage(req websocketRequest) {
 		return
 	}
 
-	payloadValue, err := websocketMemoryResultPayload(resp.GetResultJson())
+	payloadValue, err := unmarshalJSONPayload(resp.GetResultJson())
 	if err != nil {
 		_ = c.writeError(req.ID, err.Error())
 		return

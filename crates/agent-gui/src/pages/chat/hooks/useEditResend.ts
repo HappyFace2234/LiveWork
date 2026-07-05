@@ -9,7 +9,7 @@ import type { PendingUploadedFile } from "../../../lib/chat/messages/uploadedFil
 import {
   collectRetainedSubagentParentToolCallIds,
   pruneSubagentRunsForConversation,
-} from "../../../lib/chat/subagent/subagentHistory";
+} from "../../../lib/subagents";
 import type { SendChatAction } from "../gateway/gatewayBridgeTypes";
 import type { ConversationRuntimeEntry } from "../runtime/chatPageRuntime";
 
@@ -34,6 +34,7 @@ type PendingEditResend = {
   expectedState: ConversationViewState;
   text: string;
   uploadedFiles: PendingUploadedFile[];
+  baseMessageRef: HistoryMessageRef;
   afterInitialHistoryPersist: () => Promise<void>;
 };
 
@@ -68,6 +69,7 @@ export function useEditResend(params: UseEditResendParams) {
         expectedState: nextState,
         text: normalized,
         uploadedFiles,
+        baseMessageRef: messageRef,
         afterInitialHistoryPersist: () => {
           invalidateSubagentsForConversation?.(parentConversationId);
           return pruneSubagentRunsForConversation({
@@ -113,6 +115,7 @@ export function useEditResend(params: UseEditResendParams) {
     void sendActionRef.current({
       textOverride: pending.text,
       uploadedFilesOverride: pending.uploadedFiles,
+      editResendBaseMessageRef: pending.baseMessageRef,
       afterInitialHistoryPersist: pending.afterInitialHistoryPersist,
     });
   }, [conversationState, sendActionRef]);

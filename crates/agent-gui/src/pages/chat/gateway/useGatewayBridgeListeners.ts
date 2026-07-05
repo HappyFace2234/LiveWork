@@ -3,10 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 
 import type { HistoryMessageRef } from "../../../lib/chat/conversation/conversationState";
-import {
-  normalizeChatRuntimeControls,
-  normalizeSystemToolSelection,
-} from "../../../lib/settings";
+import { normalizeChatRuntimeControls, normalizeSystemToolSelection } from "../../../lib/settings";
 import {
   type ActiveGatewayBridgeRequest,
   type GatewayBridgeRuntimeRefs,
@@ -32,9 +29,7 @@ type UseGatewayBridgeListenersParams = GatewayBridgeRuntimeRefs & {
     conversationId: string,
   ) => Promise<boolean>;
   isConversationRunning: (conversationId: string) => boolean;
-  getConversationAbortController: (
-    conversationId: string,
-  ) => AbortController | null;
+  getConversationAbortController: (conversationId: string) => AbortController | null;
 };
 
 type GatewayBridgeRequestRegistry = {
@@ -67,8 +62,7 @@ const gatewayBridgeRequestRegistry = (() => {
     pendingClientRequestIds: new Set<string>(),
     pendingConversationIds: new Set<string>(),
   };
-  root.__LIVEAGENT_GATEWAY_BRIDGE_REQUESTS__.pendingConversationIds ??=
-    new Set<string>();
+  root.__LIVEAGENT_GATEWAY_BRIDGE_REQUESTS__.pendingConversationIds ??= new Set<string>();
   return root.__LIVEAGENT_GATEWAY_BRIDGE_REQUESTS__;
 })();
 
@@ -86,9 +80,7 @@ function isConversationAlreadyRunningError(message: string) {
   return message.trim().startsWith("Conversation is already running:");
 }
 
-function normalizeQueuePolicy(
-  value: string | null | undefined,
-): "auto" | "append" | "interrupt" {
+function normalizeQueuePolicy(value: string | null | undefined): "auto" | "append" | "interrupt" {
   switch (value?.trim()) {
     case "append":
       return "append";
@@ -99,9 +91,7 @@ function normalizeQueuePolicy(
   }
 }
 
-function normalizeGatewayBaseMessageRef(
-  value: unknown,
-): HistoryMessageRef | undefined {
+function normalizeGatewayBaseMessageRef(value: unknown): HistoryMessageRef | undefined {
   if (!value || typeof value !== "object") {
     return undefined;
   }
@@ -114,24 +104,17 @@ function normalizeGatewayBaseMessageRef(
     contentHash?: unknown;
   };
   const segmentIndex =
-    typeof candidate.segmentIndex === "number" &&
-    Number.isFinite(candidate.segmentIndex)
+    typeof candidate.segmentIndex === "number" && Number.isFinite(candidate.segmentIndex)
       ? Math.trunc(candidate.segmentIndex)
       : -1;
   const messageIndex =
-    typeof candidate.messageIndex === "number" &&
-    Number.isFinite(candidate.messageIndex)
+    typeof candidate.messageIndex === "number" && Number.isFinite(candidate.messageIndex)
       ? Math.trunc(candidate.messageIndex)
       : -1;
-  const segmentId =
-    typeof candidate.segmentId === "string" ? candidate.segmentId.trim() : "";
-  const messageId =
-    typeof candidate.messageId === "string" ? candidate.messageId.trim() : "";
+  const segmentId = typeof candidate.segmentId === "string" ? candidate.segmentId.trim() : "";
+  const messageId = typeof candidate.messageId === "string" ? candidate.messageId.trim() : "";
   const role = typeof candidate.role === "string" ? candidate.role.trim() : "";
-  const contentHash =
-    typeof candidate.contentHash === "string"
-      ? candidate.contentHash.trim()
-      : "";
+  const contentHash = typeof candidate.contentHash === "string" ? candidate.contentHash.trim() : "";
   if (
     segmentIndex < 0 ||
     messageIndex < 0 ||
@@ -152,13 +135,10 @@ function normalizeGatewayBaseMessageRef(
   };
 }
 
-export function useGatewayBridgeListeners(
-  params: UseGatewayBridgeListenersParams,
-) {
+export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParams) {
   const {
     currentConversationIdRef,
     conversationRuntimeCacheRef,
-    historyItemsRef,
     ensureGatewayBridgeConversationReadyRef,
     sendActionRef,
     queueGatewayBridgeEventForRequest,
@@ -185,13 +165,9 @@ export function useGatewayBridgeListeners(
       gatewayBridgeRequestRegistry.pendingRequestIds.size;
 
     const runtimeVisible = () =>
-      typeof document === "undefined"
-        ? true
-        : document.visibilityState !== "hidden";
+      typeof document === "undefined" ? true : document.visibilityState !== "hidden";
 
-    const publishRuntimeHeartbeat = (
-      state?: "ready" | "draining" | "busy" | "suspended",
-    ) => {
+    const publishRuntimeHeartbeat = (state?: "ready" | "draining" | "busy" | "suspended") => {
       const activeRunCount = activeRuntimeRequestCount();
       const nextState = state ?? (activeRunCount > 0 ? "busy" : "ready");
       void invoke("gateway_chat_runtime_heartbeat", {
@@ -204,22 +180,13 @@ export function useGatewayBridgeListeners(
       });
     };
 
-    const setActiveGatewayBridgeRequest = (
-      request: ActiveGatewayBridgeRequest,
-    ) => {
+    const setActiveGatewayBridgeRequest = (request: ActiveGatewayBridgeRequest) => {
       gatewayBridgeRequestRegistry.pendingRequestIds.delete(request.requestId);
       if (request.clientRequestId) {
-        gatewayBridgeRequestRegistry.pendingClientRequestIds.delete(
-          request.clientRequestId,
-        );
+        gatewayBridgeRequestRegistry.pendingClientRequestIds.delete(request.clientRequestId);
       }
-      gatewayBridgeRequestRegistry.pendingConversationIds.delete(
-        request.conversationId,
-      );
-      gatewayBridgeRequestRegistry.activeRequests.set(
-        request.requestId,
-        request,
-      );
+      gatewayBridgeRequestRegistry.pendingConversationIds.delete(request.conversationId);
+      gatewayBridgeRequestRegistry.activeRequests.set(request.requestId, request);
       publishRuntimeHeartbeat("busy");
       return request;
     };
@@ -230,15 +197,10 @@ export function useGatewayBridgeListeners(
     };
 
     const getActiveGatewayBridgeRequestByRequestId = (requestId: string) => {
-      return (
-        gatewayBridgeRequestRegistry.activeRequests.get(requestId.trim()) ??
-        null
-      );
+      return gatewayBridgeRequestRegistry.activeRequests.get(requestId.trim()) ?? null;
     };
 
-    const getActiveGatewayBridgeRequestByConversationId = (
-      conversationId: string,
-    ) => {
+    const getActiveGatewayBridgeRequestByConversationId = (conversationId: string) => {
       const targetConversationId = conversationId.trim();
       if (!targetConversationId) {
         return null;
@@ -252,9 +214,7 @@ export function useGatewayBridgeListeners(
       return null;
     };
 
-    const getActiveGatewayBridgeRequestByClientRequestId = (
-      clientRequestId: string,
-    ) => {
+    const getActiveGatewayBridgeRequestByClientRequestId = (clientRequestId: string) => {
       const targetClientRequestId = clientRequestId.trim();
       if (!targetClientRequestId) {
         return null;
@@ -282,32 +242,24 @@ export function useGatewayBridgeListeners(
       }
       if (
         clientRequestId &&
-        (gatewayBridgeRequestRegistry.pendingClientRequestIds.has(
-          clientRequestId,
-        ) ||
+        (gatewayBridgeRequestRegistry.pendingClientRequestIds.has(clientRequestId) ||
           getActiveGatewayBridgeRequestByClientRequestId(clientRequestId))
       ) {
         return "duplicate_client_request";
       }
       if (
         targetConversationId &&
-        (gatewayBridgeRequestRegistry.pendingConversationIds.has(
-          targetConversationId,
-        ) ||
+        (gatewayBridgeRequestRegistry.pendingConversationIds.has(targetConversationId) ||
           getActiveGatewayBridgeRequestByConversationId(targetConversationId))
       ) {
         return "conversation_busy";
       }
       gatewayBridgeRequestRegistry.pendingRequestIds.add(requestId);
       if (clientRequestId) {
-        gatewayBridgeRequestRegistry.pendingClientRequestIds.add(
-          clientRequestId,
-        );
+        gatewayBridgeRequestRegistry.pendingClientRequestIds.add(clientRequestId);
       }
       if (targetConversationId) {
-        gatewayBridgeRequestRegistry.pendingConversationIds.add(
-          targetConversationId,
-        );
+        gatewayBridgeRequestRegistry.pendingConversationIds.add(targetConversationId);
       }
       publishRuntimeHeartbeat("busy");
       return "claimed";
@@ -321,14 +273,10 @@ export function useGatewayBridgeListeners(
     ) => {
       gatewayBridgeRequestRegistry.pendingRequestIds.delete(requestId);
       if (clientRequestId) {
-        gatewayBridgeRequestRegistry.pendingClientRequestIds.delete(
-          clientRequestId,
-        );
+        gatewayBridgeRequestRegistry.pendingClientRequestIds.delete(clientRequestId);
       }
       if (conversationId) {
-        gatewayBridgeRequestRegistry.pendingConversationIds.delete(
-          conversationId,
-        );
+        gatewayBridgeRequestRegistry.pendingConversationIds.delete(conversationId);
       }
       if (request) {
         clearActiveGatewayBridgeRequest(request.requestId);
@@ -384,10 +332,7 @@ export function useGatewayBridgeListeners(
       });
     };
 
-    const markQueuedInGui = async (
-      claimed: GatewayChatClaimedRequest,
-      conversationId: string,
-    ) => {
+    const markQueuedInGui = async (claimed: GatewayChatClaimedRequest, conversationId: string) => {
       const requestId = claimed.requestId.trim();
       if (!requestId) return false;
       const queued = await enqueueGatewayChatRequest(claimed, conversationId);
@@ -401,16 +346,12 @@ export function useGatewayBridgeListeners(
       return true;
     };
 
-    const handleGatewayChatRequest = async (
-      claimed: GatewayChatClaimedRequest,
-    ) => {
+    const handleGatewayChatRequest = async (claimed: GatewayChatClaimedRequest) => {
       const payload = claimed.request;
       const requestId = payload.requestId.trim();
       const clientRequestId = payload.clientRequestId?.trim() ?? "";
       const message = payload.message.trim();
-      const uploadedFiles = Array.isArray(payload.uploadedFiles)
-        ? payload.uploadedFiles
-        : [];
+      const uploadedFiles = Array.isArray(payload.uploadedFiles) ? payload.uploadedFiles : [];
       const targetConversationId = payload.conversationId.trim();
       const queuePolicy = normalizeQueuePolicy(payload.queuePolicy);
       let resolvedConversationId = targetConversationId;
@@ -490,8 +431,7 @@ export function useGatewayBridgeListeners(
             ? normalizeGatewayBaseMessageRef(payload.baseMessageRef)
             : undefined;
         if (payload.rebased === true && !baseMessageRef) {
-          const message =
-            "Remote edit_resend command is missing base_message_ref.";
+          const message = "Remote edit_resend command is missing base_message_ref.";
           queueGatewayBridgeEventForRequest(
             requestId,
             {
@@ -503,12 +443,7 @@ export function useGatewayBridgeListeners(
               workerId,
             },
           );
-          failClaimedRequest(
-            requestId,
-            targetConversationId,
-            "invalid_chat_command",
-            message,
-          );
+          failClaimedRequest(requestId, targetConversationId, "invalid_chat_command", message);
           return;
         }
 
@@ -525,19 +460,16 @@ export function useGatewayBridgeListeners(
           return;
         }
 
-        resolvedConversationId =
-          await ensureGatewayBridgeConversationReadyRef.current(
-            targetConversationId,
-            {
-              rebased: payload.rebased === true,
-              baseMessageRef,
-            },
-          );
+        resolvedConversationId = await ensureGatewayBridgeConversationReadyRef.current(
+          targetConversationId,
+          {
+            rebased: payload.rebased === true,
+            baseMessageRef,
+          },
+        );
 
         const runningRequest =
-          getActiveGatewayBridgeRequestByConversationId(
-            resolvedConversationId,
-          ) ||
+          getActiveGatewayBridgeRequestByConversationId(resolvedConversationId) ||
           (clientRequestId
             ? getActiveGatewayBridgeRequestByClientRequestId(clientRequestId)
             : null);
@@ -548,10 +480,7 @@ export function useGatewayBridgeListeners(
           getConversationAbortController(resolvedConversationId)
         ) {
           if (
-            await markQueuedInGui(
-              claimed,
-              runningRequest?.conversationId || resolvedConversationId,
-            )
+            await markQueuedInGui(claimed, runningRequest?.conversationId || resolvedConversationId)
           ) {
             return;
           }
@@ -568,13 +497,9 @@ export function useGatewayBridgeListeners(
           runtimeControlsOverride: payload.runtimeControls
             ? normalizeChatRuntimeControls(payload.runtimeControls)
             : undefined,
-          executionModeOverride: normalizeGatewayExecutionMode(
-            payload.executionMode,
-          ),
+          executionModeOverride: normalizeGatewayExecutionMode(payload.executionMode),
           workdirOverride: normalizeGatewayWorkdir(payload.workdir),
-          selectedSystemToolIdsOverride: normalizeSystemToolSelection(
-            payload.selectedSystemTools,
-          ),
+          selectedSystemToolIdsOverride: normalizeSystemToolSelection(payload.selectedSystemTools),
         });
         const markRuntimeStarted = async () => {
           await invoke("gateway_chat_mark_started", {
@@ -589,8 +514,7 @@ export function useGatewayBridgeListeners(
           conversationIdOverride: resolvedConversationId,
           executionModeOverride: gatewayBridgeRequest.executionModeOverride,
           workdirOverride: gatewayBridgeRequest.workdirOverride,
-          selectedSystemToolIdsOverride:
-            gatewayBridgeRequest.selectedSystemToolIdsOverride,
+          selectedSystemToolIdsOverride: gatewayBridgeRequest.selectedSystemToolIdsOverride,
           runtimeControlsOverride: gatewayBridgeRequest.runtimeControlsOverride,
           gatewayBridgeRequestOverride: gatewayBridgeRequest,
           beforeRuntimeStart: markRuntimeStarted,
@@ -616,18 +540,14 @@ export function useGatewayBridgeListeners(
           "Failed to execute the remote gateway chat request.",
         );
         const conversationBusy = isConversationAlreadyRunningError(rawMessage);
-        const message = conversationBusy
-          ? GATEWAY_CHAT_CONVERSATION_BUSY_MESSAGE
-          : rawMessage;
+        const message = conversationBusy ? GATEWAY_CHAT_CONVERSATION_BUSY_MESSAGE : rawMessage;
         queueGatewayBridgeEventForRequest(
           requestId,
           {
             type: "error",
             message,
             conversation_id:
-              resolvedConversationId ||
-              targetConversationId ||
-              currentConversationIdRef.current,
+              resolvedConversationId || targetConversationId || currentConversationIdRef.current,
           },
           {
             workerId,
@@ -635,9 +555,7 @@ export function useGatewayBridgeListeners(
         );
         failClaimedRequest(
           requestId,
-          resolvedConversationId ||
-            targetConversationId ||
-            currentConversationIdRef.current,
+          resolvedConversationId || targetConversationId || currentConversationIdRef.current,
           conversationBusy ? "conversation_busy" : "desktop_runtime_error",
           message,
         );
@@ -685,13 +603,10 @@ export function useGatewayBridgeListeners(
       }
     };
 
-    void listen<GatewayChatRequestReadyEvent>(
-      "gateway:chat-request-ready",
-      () => {
-        publishRuntimeHeartbeat("draining");
-        void drainGatewayChatInbox();
-      },
-    ).then((dispose) => {
+    void listen<GatewayChatRequestReadyEvent>("gateway:chat-request-ready", () => {
+      publishRuntimeHeartbeat("draining");
+      void drainGatewayChatInbox();
+    }).then((dispose) => {
       if (disposed) {
         dispose();
         return;
@@ -774,7 +689,6 @@ export function useGatewayBridgeListeners(
     currentConversationIdRef,
     ensureGatewayBridgeConversationReadyRef,
     getConversationAbortController,
-    historyItemsRef,
     isConversationRunning,
     shouldQueueGatewayChatRequest,
     enqueueGatewayChatRequest,

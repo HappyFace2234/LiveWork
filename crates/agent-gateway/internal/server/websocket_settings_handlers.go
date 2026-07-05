@@ -71,23 +71,21 @@ func (c *websocketConnection) handleSettingsUpdate(req websocketRequest) {
 		_ = c.writeError(req.ID, "unexpected agent response")
 		return
 	}
-	if settingsResp.GetAccepted() && !settingsUpdateHasSshPatch(payloadJSON) {
-		c.sm.ApplySettingsJSONPreservingRemote(payloadJSON)
+	if settingsResp.GetAccepted() {
+		var patch map[string]any
+		hasSshPatch := json.Unmarshal([]byte(payloadJSON), &patch) == nil && patch != nil
+		if hasSshPatch {
+			_, hasSshPatch = patch["sshPatch"]
+		}
+		if !hasSshPatch {
+			c.sm.ApplySettingsJSONPreservingRemote(payloadJSON)
+		}
 	}
 
 	_ = c.writeResponse(req.ID, map[string]any{
 		"accepted": settingsResp.GetAccepted(),
 		"message":  strings.TrimSpace(settingsResp.GetMessage()),
 	})
-}
-
-func settingsUpdateHasSshPatch(payloadJSON string) bool {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		return false
-	}
-	_, ok := payload["sshPatch"]
-	return ok
 }
 
 func (c *websocketConnection) handleSettingsResetSshKnownHost(req websocketRequest) {

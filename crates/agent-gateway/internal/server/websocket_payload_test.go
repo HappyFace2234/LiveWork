@@ -2,109 +2,94 @@ package server
 
 import (
 	"testing"
+	"time"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
 )
 
-func TestChatEventPayloadPreservesHostedSearch(t *testing.T) {
-	payload := chatEventPayload(&gatewayv1.ChatEvent{
-		Type:           gatewayv1.ChatEvent_HOSTED_SEARCH,
-		ConversationId: "conversation-1",
-		Data:           `{"id":"search-1","provider":"codex","status":"completed","queries":["设计模式定义"],"sources":[{"url":"https://example.com/pattern","title":"设计模式"}],"round":2}`,
-	}, 7)
-
-	if payload["type"] != "hosted_search" {
-		t.Fatalf("expected hosted_search type, got %#v", payload["type"])
-	}
-	if payload["conversation_id"] != "conversation-1" {
-		t.Fatalf("expected conversation id, got %#v", payload["conversation_id"])
-	}
-	if payload["id"] != "search-1" {
-		t.Fatalf("expected search id, got %#v", payload["id"])
-	}
-	if payload["provider"] != "codex" {
-		t.Fatalf("expected provider, got %#v", payload["provider"])
-	}
-	if payload["status"] != "completed" {
-		t.Fatalf("expected status, got %#v", payload["status"])
-	}
-	if payload["seq"] != int64(7) {
-		t.Fatalf("expected seq 7, got %#v", payload["seq"])
-	}
-}
-
-func TestChatEventPayloadPreservesToolCallDeltaType(t *testing.T) {
-	payload := chatEventPayload(&gatewayv1.ChatEvent{
-		Type:           gatewayv1.ChatEvent_TOOL_CALL,
-		ConversationId: "conversation-1",
-		Data:           `{"type":"tool_call_delta","id":"call-write","name":"Write","arguments":{"path":"src/app.ts","content":"con"},"round":1}`,
-	}, 8)
-
-	if payload["type"] != "tool_call_delta" {
-		t.Fatalf("expected tool_call_delta type, got %#v", payload["type"])
-	}
-	if payload["conversation_id"] != "conversation-1" {
-		t.Fatalf("expected conversation id, got %#v", payload["conversation_id"])
-	}
-	if payload["id"] != "call-write" {
-		t.Fatalf("expected tool call id, got %#v", payload["id"])
-	}
-	if payload["name"] != "Write" {
-		t.Fatalf("expected tool name, got %#v", payload["name"])
-	}
-	if payload["seq"] != int64(8) {
-		t.Fatalf("expected seq 8, got %#v", payload["seq"])
-	}
-}
-
-func TestActiveChatRunSummaryPayloadIncludesReplayCursor(t *testing.T) {
-	payload := websocketActiveChatRunSummariesPayload([]session.ActiveChatRunSummary{
-		{
-			ConversationID: "conversation-1",
-			RequestID:      "run-1",
-			Workdir:        "/workspace",
-			FirstSeq:       4,
-			LatestSeq:      9,
-			RunEpoch:       2,
-			UpdatedAt:      123,
-		},
-	})
-	if len(payload) != 1 {
-		t.Fatalf("payload len = %d, want 1", len(payload))
-	}
-	item := payload[0]
-	if item["run_id"] != "run-1" ||
-		item["first_seq"] != int64(4) ||
-		item["latest_seq"] != int64(9) ||
-		item["run_epoch"] != int64(2) {
-		t.Fatalf("active run payload = %#v", item)
-	}
-}
-
-func TestHistoryRunningPayloadIncludesReplayCursor(t *testing.T) {
-	payload := websocketHistorySyncPayload(&gatewayv1.HistorySyncEvent{
-		Kind:           "running",
-		ConversationId: "conversation-1",
-		Conversation: &gatewayv1.ConversationSummary{
-			Id:  "conversation-1",
-			Cwd: "/workspace",
-		},
-	}, session.ActiveChatRunSummary{
+func TestWebsocketChatActivityPayloadCarriesRunIdentity(t *testing.T) {
+	updatedAt := time.UnixMilli(123456)
+	payload := websocketChatActivityPayload(session.ConversationActivityEvent{
 		ConversationID: "conversation-1",
-		RequestID:      "conversation-live-conversation-1",
-		FirstSeq:       2,
-		LatestSeq:      1,
-		RunEpoch:       5,
-		UpdatedAt:      123,
+		RunID:          "run-1",
+		Running:        true,
+		State:          "running",
+		Workdir:        "/workspace",
+		UpdatedAt:      updatedAt,
+	})
+	if payload["conversation_id"] != "conversation-1" ||
+		payload["run_id"] != "run-1" ||
+		payload["running"] != true ||
+		payload["state"] != "running" ||
+		payload["workdir"] != "/workspace" ||
+		payload["updated_at"] != int64(123456) {
+		t.Fatalf("chat activity payload = %#v", payload)
+	}
+
+	idle := websocketChatActivityPayload(session.ConversationActivityEvent{
+		ConversationID: "conversation-1",
+		Running:        false,
+		UpdatedAt:      updatedAt,
+	})
+	if idle["running"] != false {
+		t.Fatalf("idle activity payload = %#v", idle)
+	}
+	if _, hasRunID := idle["run_id"]; hasRunID {
+		t.Fatalf("idle activity should omit empty run_id: %#v", idle)
+	}
+}
+
+func TestWebsocketRunActivityAndSnapshotPayloads(t *testing.T) {
+	updatedAt := time.UnixMilli(7890)
+	activity := websocketRunActivityPayload(&session.RunActivity{
+		RunID:                  "run-1",
+		ClientRequestID:        "client-1",
+		State:                  "running",
+		ToolStatus:             "Vibing",
+		ToolStatusIsCompaction: false,
+		StartedSeq:             17,
+		UpdatedAt:              updatedAt,
+	})
+	if activity["run_id"] != "run-1" ||
+		activity["state"] != "running" ||
+		activity["started_seq"] != int64(17) ||
+		activity["tool_status"] != "Vibing" ||
+		activity["client_request_id"] != "client-1" {
+		t.Fatalf("run activity payload = %#v", activity)
+	}
+	if payload := websocketRunActivityPayload(nil); payload != nil {
+		t.Fatalf("nil activity payload = %#v, want nil", payload)
+	}
+
+	snapshot := websocketRunSnapshotPayload(&session.RunSnapshot{
+		RunID:       "run-1",
+		Revision:    3,
+		EntriesJSON: `[{"kind":"assistant"}]`,
+		ToolStatus:  "Compacting",
+	})
+	if snapshot["run_id"] != "run-1" ||
+		snapshot["revision"] != int64(3) ||
+		snapshot["entries_json"] != `[{"kind":"assistant"}]` {
+		t.Fatalf("run snapshot payload = %#v", snapshot)
+	}
+	if payload := websocketRunSnapshotPayload(nil); payload != nil {
+		t.Fatalf("nil snapshot payload = %#v, want nil", payload)
+	}
+}
+
+func TestWebsocketChatQueueSnapshotResponsePayload(t *testing.T) {
+	payload := websocketChatQueueSnapshotResponsePayload(&gatewayv1.ChatQueueEvent{
+		ConversationId: "conversation-1",
+		SnapshotJson:   `{"conversationId":"conversation-1","revision":3,"items":[{"id":"queue-1"}]}`,
+		Revision:       3,
 	})
 
-	if payload["run_id"] != "conversation-live-conversation-1" ||
-		payload["first_seq"] != int64(2) ||
-		payload["latest_seq"] != int64(1) ||
-		payload["run_epoch"] != int64(5) ||
-		payload["updated_at"] != int64(123) {
-		t.Fatalf("history running payload = %#v", payload)
+	if payload["accepted"] != true ||
+		payload["snapshot_json"] != `{"conversationId":"conversation-1","revision":3,"items":[{"id":"queue-1"}]}` ||
+		payload["revision"] != uint64(3) ||
+		payload["error_code"] != "" {
+		t.Fatalf("chat queue snapshot response payload = %#v", payload)
 	}
 }
 

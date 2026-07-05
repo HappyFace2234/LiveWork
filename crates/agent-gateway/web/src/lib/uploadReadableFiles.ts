@@ -41,18 +41,12 @@ function normalizeUploadedFile(value: unknown): PendingUploadedFile | null {
   }
 
   const record = value as Record<string, unknown>;
-  const relativePath =
-    typeof record.relativePath === "string" ? record.relativePath.trim() : "";
+  const relativePath = typeof record.relativePath === "string" ? record.relativePath.trim() : "";
   const fileName = typeof record.fileName === "string" ? record.fileName.trim() : "";
   const kind = typeof record.kind === "string" ? record.kind.trim() : "";
   const sizeBytes = typeof record.sizeBytes === "number" ? record.sizeBytes : NaN;
 
-  if (
-    !relativePath ||
-    !fileName ||
-    !Number.isFinite(sizeBytes) ||
-    !READABLE_FILE_KINDS.has(kind)
-  ) {
+  if (!relativePath || !fileName || !Number.isFinite(sizeBytes) || !READABLE_FILE_KINDS.has(kind)) {
     return null;
   }
 

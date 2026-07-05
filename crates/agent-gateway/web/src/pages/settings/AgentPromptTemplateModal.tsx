@@ -7,8 +7,8 @@ import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import { Textarea } from "../../components/ui/textarea";
 import { useLocale } from "../../i18n";
-import { useModalMotion } from "../../lib/shared/modalMotion";
 import type { AgentPromptTemplate } from "../../lib/settings";
+import { useModalMotion } from "../../lib/shared/modalMotion";
 
 type AgentPromptTemplateModalProps = {
   initialData?: AgentPromptTemplate;

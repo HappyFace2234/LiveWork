@@ -31,7 +31,9 @@ export function mergeAlwaysEnabledSkillNames(selected: readonly string[]) {
 }
 
 function alwaysEnabledSkillRank(name: string) {
-  const rank = ALWAYS_ENABLED_SKILL_NAMES.indexOf(name as (typeof ALWAYS_ENABLED_SKILL_NAMES)[number]);
+  const rank = ALWAYS_ENABLED_SKILL_NAMES.indexOf(
+    name as (typeof ALWAYS_ENABLED_SKILL_NAMES)[number],
+  );
   return rank === -1 ? Number.POSITIVE_INFINITY : rank;
 }
 

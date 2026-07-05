@@ -25,6 +25,10 @@ const STREAM_AUTO_SCROLL_INTERVAL_MS = 80;
 const STREAM_INPUT_BUSY_INTERVAL_MS = 160;
 const USER_SCROLL_INTENT_WINDOW_MS = 500;
 const BOTTOM_LOCK_DURATION_MS = 700;
+// Bottom gaps beyond this are layout jumps (live→committed swap, virtualizer
+// estimate corrections, late image/highlight layout), not streaming growth,
+// and must be re-pinned before paint instead of waiting for the throttled rAF.
+const CONTENT_JUMP_REPIN_THRESHOLD_PX = 64;
 const VIEWPORT_ATTACH_RETRY_MS = 80;
 const VIEWPORT_ATTACH_MAX_ATTEMPTS = 75;
 const LIVE_TRANSCRIPT_RAF_FALLBACK_MS = 96;
@@ -208,6 +212,14 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
     [currentConversationId, getConversationLiveTranscriptStore],
   );
 
+  // Turn runners capture callbacks at send time; comparing against this ref
+  // (instead of the memoized binding) keeps background-conversation resets from
+  // scrolling the visible viewport after the user switches conversations.
+  const visibleLiveTranscriptStoreRef = useRef(liveTranscriptStore);
+  useLayoutEffect(() => {
+    visibleLiveTranscriptStoreRef.current = liveTranscriptStore;
+  }, [liveTranscriptStore]);
+
   const resolveLiveTranscriptArtifacts = useCallback(
     (targetStore: LiveTranscriptStore = liveTranscriptStore) =>
       liveTranscriptArtifactsByStoreRef.current.get(targetStore) ?? null,
@@ -260,8 +272,14 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
         return;
       }
 
+      // While a bottom lock is active the transcript is settling across several
+      // commits (run start/stop, live→committed handoff); the throttle would let
+      // mis-scrolled frames reach paint, so pin on every frame instead.
       const elapsed = ts - lastAutoScrollTsRef.current;
-      if (elapsed < getAdaptiveStreamInterval(STREAM_AUTO_SCROLL_INTERVAL_MS)) {
+      if (
+        !hasActiveBottomLock() &&
+        elapsed < getAdaptiveStreamInterval(STREAM_AUTO_SCROLL_INTERVAL_MS)
+      ) {
         autoScrollRafIdRef.current = requestAnimationFrame(tick);
         return;
       }
@@ -412,8 +430,16 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
     (targetStore: LiveTranscriptStore = liveTranscriptStore) => {
       flushPendingLiveUpdates(targetStore);
       targetStore.reset();
+      // Every reset is a live→committed handoff (run completion, abort/error
+      // commit, mid-run compaction rebase): the live bubble unmounts while the
+      // same content re-enters the virtualizer at estimated height. Arm the
+      // bottom lock so the viewport stays pinned through those commits — but
+      // only when the user was already following the stream.
+      if (targetStore === visibleLiveTranscriptStoreRef.current && shouldAutoScrollRef.current) {
+        stickToBottom();
+      }
     },
-    [flushPendingLiveUpdates, liveTranscriptStore],
+    [flushPendingLiveUpdates, liveTranscriptStore, stickToBottom],
   );
 
   const updateLiveRounds = useCallback(
@@ -647,6 +673,13 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
           if (!isViewportAtLatest(viewport) && hasRecentUserScrollIntent()) {
             detachAutoScroll();
             return;
+          }
+          // ResizeObserver fires after layout and before paint: correcting a
+          // large gap here keeps single-commit height jumps from ever being
+          // painted. Small gaps are ordinary streaming growth and stay on the
+          // throttled path.
+          if (getViewportBottomGap(viewport) > CONTENT_JUMP_REPIN_THRESHOLD_PX) {
+            viewport.scrollTop = viewport.scrollHeight;
           }
           requestAutoScroll();
           return;

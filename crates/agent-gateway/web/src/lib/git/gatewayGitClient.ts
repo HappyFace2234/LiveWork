@@ -65,7 +65,10 @@ export function createGatewayGitClient(api: GatewayWebSocketClientLike): GitClie
       );
     },
     async stage(workdir, path) {
-      return normalizeGitOperationResponse(await api.gitRequest("stage", workdir, { path }), workdir);
+      return normalizeGitOperationResponse(
+        await api.gitRequest("stage", workdir, { path }),
+        workdir,
+      );
     },
     async stageAll(workdir) {
       return normalizeGitOperationResponse(await api.gitRequest("stage_all", workdir), workdir);

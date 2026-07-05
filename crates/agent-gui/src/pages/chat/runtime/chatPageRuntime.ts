@@ -1,9 +1,10 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { HOOK_EVENT_TRANSLATION_KEYS } from "../../../lib/automation";
+import type { HookRunWarning } from "../../../lib/automation/hookRunner";
 import type { CompactionStatus } from "../../../lib/chat/compaction/contextCompaction";
 import type { ConversationViewState } from "../../../lib/chat/conversation/conversationState";
-import type { ConversationHookWarning } from "../../../lib/hooks/conversationHooks";
 import { normalizeErrorMessage } from "../../../lib/providers/llm";
-import { type AppSettings, HOOK_EVENT_TRANSLATION_KEYS } from "../../../lib/settings";
+import type { AppSettings } from "../../../lib/settings";
 
 export const MAX_IDLE_CONVERSATION_RUNTIME_CACHE_ENTRIES = 12;
 
@@ -200,7 +201,7 @@ export function appendSystemPrompt(base: string | undefined, suffix: string) {
 export function formatHookWarningMessage(
   locale: AppSettings["locale"],
   t: (key: string) => string,
-  warning: ConversationHookWarning,
+  warning: HookRunWarning,
 ) {
   const eventLabel = t(HOOK_EVENT_TRANSLATION_KEYS[warning.event]);
   return locale === "en-US"

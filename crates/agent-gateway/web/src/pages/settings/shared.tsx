@@ -1,4 +1,7 @@
-export { ConfirmActionPopover, ConfirmDeletePopover } from "../../components/ui/confirm-action-popover";
+export {
+  ConfirmActionPopover,
+  ConfirmDeletePopover,
+} from "../../components/ui/confirm-action-popover";
 
 export function PromptTag({ label, muted = false }: { label: string; muted?: boolean }) {
   return (

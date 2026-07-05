@@ -8,6 +8,8 @@ import type {
 } from "../../lib/git/types";
 import { emptyGitRepositoryState } from "../../lib/git/types";
 import { cn } from "../../lib/shared/utils";
+import type { WorkspaceActivityClient } from "../../lib/workspace-activity/types";
+import { useWorkspaceInvalidation } from "../../lib/workspace-activity/useWorkspaceInvalidation";
 import { Check, GitBranch, Loader2, Plus, RefreshCw, X } from "../icons";
 import { Button } from "../ui/button";
 import {
@@ -203,20 +205,22 @@ function GitInitModal(props: {
 export function GitBranchSelector(props: {
   workdir: string;
   gitClient?: GitClient | null;
+  // Push-based refresh channel; when absent the selector falls back to its
+  // low-frequency poll.
+  workspaceActivityClient?: WorkspaceActivityClient | null;
   disabled?: boolean;
   canWrite?: boolean;
   disabledMessage?: string;
   onStateChange?: (state: GitRepositoryState) => void;
-  onChanged?: () => void;
 }) {
   const {
     workdir,
     gitClient,
+    workspaceActivityClient,
     disabled,
     canWrite = true,
     disabledMessage,
     onStateChange,
-    onChanged,
   } = props;
   const { t } = useLocale();
   const [state, setState] = useState<GitRepositoryState>(() => emptyGitRepositoryState(workdir));
@@ -281,15 +285,27 @@ export function GitBranchSelector(props: {
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    if (!gitClient || !workdir.trim()) return;
-    const handleGitChanged = () => void refresh({ force: true, silent: true });
-    window.addEventListener("liveagent:git-changed", handleGitChanged);
-    return () => window.removeEventListener("liveagent:git-changed", handleGitChanged);
-  }, [gitClient, refresh, workdir]);
+  // Push-based refresh: workspace-activity events with the git flag replace
+  // both the old window-event broadcast and the constant poll.
+  const handleWorkspaceInvalidate = useCallback(
+    (hint: { fs: boolean; git: boolean }) => {
+      if (!hint.git || !gitClient || !workdir.trim()) return;
+      void refresh({ force: true, silent: true });
+    },
+    [gitClient, refresh, workdir],
+  );
+
+  useWorkspaceInvalidation({
+    client: gitClient ? workspaceActivityClient : null,
+    workdir,
+    active: true,
+    onInvalidate: handleWorkspaceInvalidate,
+  });
 
   useEffect(() => {
-    if (!gitClient || !workdir.trim()) return;
+    if (workspaceActivityClient || !gitClient || !workdir.trim()) return;
+    // No workspace-activity push channel (no-push environment): fall back to
+    // the low-frequency visible poll.
     let stopped = false;
     const refreshVisibleSelector = () => {
       if (stopped || document.hidden) return;
@@ -313,7 +329,7 @@ export function GitBranchSelector(props: {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [gitClient, refresh, workdir]);
+  }, [gitClient, refresh, workdir, workspaceActivityClient]);
 
   const localBranches = useMemo(
     () => branches.filter((branch) => branch.kind === "local"),
@@ -323,6 +339,7 @@ export function GitBranchSelector(props: {
     () => branches.filter((branch) => branch.kind === "remote"),
     [branches],
   );
+  const currentUpstream = state.upstream.trim();
 
   const resetCreateBranch = useCallback(() => {
     setCreating(false);
@@ -352,7 +369,6 @@ export function GitBranchSelector(props: {
         const result = await task();
         assertGitOperationResult(result, t("git.branchSelector.operationFailed"));
         await refresh({ force: true });
-        onChanged?.();
         return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -361,7 +377,7 @@ export function GitBranchSelector(props: {
         setMutating(false);
       }
     },
-    [canWrite, disabledMessage, gitClient, onChanged, refresh, t, workdir],
+    [canWrite, disabledMessage, gitClient, refresh, t, workdir],
   );
 
   const selectBranch = useCallback(
@@ -419,7 +435,6 @@ export function GitBranchSelector(props: {
       setState(result.state);
       onStateChange?.(result.state);
       await refresh({ force: true });
-      onChanged?.();
       setInitModalOpen(false);
     } catch (err) {
       setInitError(err instanceof Error ? err.message : String(err));
@@ -434,7 +449,6 @@ export function GitBranchSelector(props: {
     initUserEmail,
     initUserName,
     initializing,
-    onChanged,
     onStateChange,
     refresh,
     t,
@@ -471,8 +485,12 @@ export function GitBranchSelector(props: {
           )}
           <span className="min-w-0 truncate">{label}</span>
         </DropdownMenuTrigger>
-        <DropdownMenuContent className="w-72" side="top" align="start">
-          <div className="flex items-center gap-2 px-2 py-1.5">
+        <DropdownMenuContent
+          className="flex w-72 flex-col overflow-hidden p-0"
+          side="top"
+          align="start"
+        >
+          <div className="flex shrink-0 items-center gap-2 border-b border-border/60 px-2 py-1.5">
             <div className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
               {repositorySummary}
             </div>
@@ -486,70 +504,83 @@ export function GitBranchSelector(props: {
               <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
             </button>
           </div>
-          {visibleError ? (
-            <div className="px-2 py-1 text-xs text-destructive">{visibleError}</div>
-          ) : null}
-          {!canWrite && disabledMessage ? (
-            <div className="px-2 py-1 text-xs text-muted-foreground">{disabledMessage}</div>
-          ) : null}
-          {noRepo && !visibleError ? (
-            <>
-              <div className="px-2 py-2 text-xs text-muted-foreground">
-                {t("git.branchSelector.noRepositoryFound")}
-              </div>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                disabled={!canWrite || initializing}
-                onSelect={openInitModal}
-                className="gap-2 text-xs"
-                title={!canWrite ? disabledMessage : undefined}
-              >
-                {initializing ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <Plus className="h-3.5 w-3.5" />
-                )}
-                <span>{t("git.branchSelector.initRepository")}</span>
-              </DropdownMenuItem>
-            </>
-          ) : noRepo ? null : (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                {t("git.branchSelector.localBranches")}
-              </DropdownMenuLabel>
-              {localBranches.map((branch) => (
+          <div className="min-h-0 flex-1 overflow-y-auto p-1">
+            {visibleError ? (
+              <div className="px-2 py-1 text-xs text-destructive">{visibleError}</div>
+            ) : null}
+            {!canWrite && disabledMessage ? (
+              <div className="px-2 py-1 text-xs text-muted-foreground">{disabledMessage}</div>
+            ) : null}
+            {noRepo && !visibleError ? (
+              <>
+                <div className="px-2 py-2 text-xs text-muted-foreground">
+                  {t("git.branchSelector.noRepositoryFound")}
+                </div>
+                <DropdownMenuSeparator />
                 <DropdownMenuItem
-                  key={branch.fullName}
-                  disabled={branch.current || mutating || !canWrite}
-                  onSelect={() => selectBranch(branch)}
+                  disabled={!canWrite || initializing}
+                  onSelect={openInitModal}
                   className="gap-2 text-xs"
+                  title={!canWrite ? disabledMessage : undefined}
                 >
-                  {branch.current ? (
-                    <Check className="h-3.5 w-3.5" />
+                  {initializing ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    <GitBranch className="h-3.5 w-3.5" />
+                    <Plus className="h-3.5 w-3.5" />
                   )}
-                  <span className="min-w-0 flex-1 truncate">{branch.name}</span>
+                  <span>{t("git.branchSelector.initRepository")}</span>
                 </DropdownMenuItem>
-              ))}
-              <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                {t("git.branchSelector.remoteBranches")}
-              </DropdownMenuLabel>
-              {remoteBranches.slice(0, 40).map((branch) => (
-                <DropdownMenuItem
-                  key={branch.fullName}
-                  disabled={mutating || !canWrite}
-                  onSelect={() => selectBranch(branch)}
-                  className="gap-2 text-xs"
-                >
-                  <GitBranch className="h-3.5 w-3.5" />
-                  <span className="min-w-0 flex-1 truncate">{branch.fullName}</span>
-                </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
+              </>
+            ) : noRepo ? null : (
+              <>
+                <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  {t("git.branchSelector.localBranches")}
+                </DropdownMenuLabel>
+                {localBranches.map((branch) => (
+                  <DropdownMenuItem
+                    key={branch.fullName}
+                    disabled={branch.current || mutating || !canWrite}
+                    onSelect={() => selectBranch(branch)}
+                    className="gap-2 text-xs"
+                  >
+                    {branch.current ? (
+                      <Check className="h-3.5 w-3.5" />
+                    ) : (
+                      <GitBranch className="h-3.5 w-3.5" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{branch.name}</span>
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuLabel className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                  {t("git.branchSelector.remoteBranches")}
+                </DropdownMenuLabel>
+                {remoteBranches.slice(0, 40).map((branch) => {
+                  const isCurrentUpstream =
+                    branch.current ||
+                    (currentUpstream !== "" && branch.fullName === currentUpstream);
+                  return (
+                    <DropdownMenuItem
+                      key={branch.fullName}
+                      disabled={isCurrentUpstream || mutating || !canWrite}
+                      onSelect={() => selectBranch(branch)}
+                      className="gap-2 text-xs"
+                    >
+                      {isCurrentUpstream ? (
+                        <Check className="h-3.5 w-3.5" />
+                      ) : (
+                        <GitBranch className="h-3.5 w-3.5" />
+                      )}
+                      <span className="min-w-0 flex-1 truncate">{branch.fullName}</span>
+                    </DropdownMenuItem>
+                  );
+                })}
+              </>
+            )}
+          </div>
+          {noRepo ? null : (
+            <div className="shrink-0 border-t border-border/60 p-1">
               {creating ? (
-                <div className="flex items-center gap-1 px-2 py-1.5">
+                <div className="flex items-center gap-1 px-1 py-0.5">
                   <Input
                     value={draftBranch}
                     onChange={(event) => setDraftBranch(event.target.value)}
@@ -585,7 +616,7 @@ export function GitBranchSelector(props: {
                   {t("git.branchSelector.createNewBranch")}
                 </button>
               )}
-            </>
+            </div>
           )}
         </DropdownMenuContent>
       </DropdownMenu>

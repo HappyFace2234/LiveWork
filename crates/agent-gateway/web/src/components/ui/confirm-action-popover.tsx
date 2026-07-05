@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle } from "../icons";
-
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useLocale } from "../../i18n";
+import { AlertTriangle } from "../icons";
 import { Button } from "./button";
 
 export function ConfirmActionPopover(props: {

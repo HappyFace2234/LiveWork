@@ -4,8 +4,8 @@ import type {
   MentionComposerGitFileMention,
   MentionComposerLargePaste,
 } from "@/components/chat/MentionComposer";
-import type { PendingUploadedFile } from "@/lib/chat/uploadedFiles";
 import { formatFileMentionToken } from "@/lib/chat/mentionReferences";
+import type { PendingUploadedFile } from "@/lib/chat/uploadedFiles";
 import { withPastedTextDisplayMetadata } from "@/lib/chat/uploadedFiles";
 import { importReadableFiles } from "@/lib/uploadReadableFiles";
 

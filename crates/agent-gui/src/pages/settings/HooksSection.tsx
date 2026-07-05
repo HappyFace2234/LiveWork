@@ -1,5 +1,6 @@
 import { type ReactNode, useState } from "react";
 import {
+  AlertTriangle,
   Bot,
   CheckCircle2,
   ChevronDown,
@@ -19,13 +20,15 @@ import {
 import { Button } from "../../components/ui/button";
 import { useLocale } from "../../i18n";
 import {
-  type ConversationHook,
-  HOOK_LIFECYCLE_EVENTS,
-  type HookLifecycleEventType,
-  updateHooks,
-} from "../../lib/settings";
+  applyHookOps,
+  HOOK_EVENT_DESCRIPTION_TRANSLATION_KEYS,
+  HOOK_EVENT_TRANSLATION_KEYS,
+  type HookDef,
+  type HookEvent,
+  type HookType,
+  useAutomation,
+} from "../../lib/automation";
 import { HookModal } from "./HookModal";
-import { getHookEventDescription, getHookEventLabel, getHookTypeTone } from "./hookUtils";
 import { AgentActivationSwitch, ConfirmDeletePopover } from "./shared";
 import type { SettingsSectionProps } from "./types";
 
@@ -38,29 +41,51 @@ type LifecyclePhase = {
   borderColor: string;
   dotColor: string;
   icon: ReactNode;
-  events: HookLifecycleEventType[];
 };
 
 type PhaseGroup = {
   phase: LifecyclePhase;
-  items: { event: HookLifecycleEventType; index: number }[];
+  items: { event: HookEvent; index: number }[];
 };
 
-export function HooksSection(props: SettingsSectionProps) {
-  const { settings, setSettings } = props;
-  const { t } = useLocale();
-  const [activeEvent, setActiveEvent] = useState<HookLifecycleEventType>(HOOK_LIFECYCLE_EVENTS[0]);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editingHook, setEditingHook] = useState<ConversationHook | null>(null);
-  const [collapsedPhases, setCollapsedPhases] = useState<Set<string>>(new Set());
+/** Conversation-order event flow; the single source for the lifecycle rail. */
+const EVENT_FLOW: { event: HookEvent; phaseKey: string }[] = [
+  { event: "agent_start", phaseKey: "agent" },
+  { event: "turn_start", phaseKey: "turn" },
+  { event: "message_start", phaseKey: "message" },
+  { event: "message_end", phaseKey: "message" },
+  { event: "tool_execution_start", phaseKey: "tool" },
+  { event: "tool_execution_end", phaseKey: "tool" },
+  { event: "turn_end", phaseKey: "turn" },
+  { event: "agent_end", phaseKey: "agent" },
+];
 
-  const hooks = settings.hooks;
+function getHookEventLabel(t: (key: string) => string, event: HookEvent) {
+  return t(HOOK_EVENT_TRANSLATION_KEYS[event]);
+}
+
+function getHookTypeTone(type: HookType) {
+  return type === "command"
+    ? "bg-blue-500/10 text-blue-600 dark:text-blue-300"
+    : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300";
+}
+
+export function HooksSection(_props: SettingsSectionProps) {
+  const { t } = useLocale();
+  const [activeEvent, setActiveEvent] = useState<HookEvent>(EVENT_FLOW[0].event);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingHook, setEditingHook] = useState<HookDef | null>(null);
+  const [collapsedPhases, setCollapsedPhases] = useState<Set<string>>(new Set());
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const { hooks: hooksSnapshot } = useAutomation();
+  const hooks = hooksSnapshot.hooks;
   const activeHooks = hooks.filter((hook) => hook.event === activeEvent);
   const enabledCount = hooks.filter((hook) => hook.enabled).length;
   const disabledCount = hooks.length - enabledCount;
 
-  const phases: LifecyclePhase[] = [
-    {
+  const phasesByKey: Record<string, LifecyclePhase> = {
+    agent: {
       key: "agent",
       label: t("settings.hooksPhaseAgent"),
       description: t("settings.hooksPhaseAgentDesc"),
@@ -69,9 +94,8 @@ export function HooksSection(props: SettingsSectionProps) {
       borderColor: "border-violet-500/20",
       dotColor: "bg-violet-500",
       icon: <Bot className="h-3.5 w-3.5" />,
-      events: ["agent_start", "agent_end"],
     },
-    {
+    turn: {
       key: "turn",
       label: t("settings.hooksPhaseTurn"),
       description: t("settings.hooksPhaseTurnDesc"),
@@ -80,9 +104,8 @@ export function HooksSection(props: SettingsSectionProps) {
       borderColor: "border-blue-500/20",
       dotColor: "bg-blue-500",
       icon: <RefreshCw className="h-3.5 w-3.5" />,
-      events: ["turn_start", "turn_end"],
     },
-    {
+    message: {
       key: "message",
       label: t("settings.hooksPhaseMessage"),
       description: t("settings.hooksPhaseMessageDesc"),
@@ -91,9 +114,8 @@ export function HooksSection(props: SettingsSectionProps) {
       borderColor: "border-emerald-500/20",
       dotColor: "bg-emerald-500",
       icon: <MessageSquare className="h-3.5 w-3.5" />,
-      events: ["message_start", "message_update", "message_end"],
     },
-    {
+    tool: {
       key: "tool",
       label: t("settings.hooksPhaseTool"),
       description: t("settings.hooksPhaseToolDesc"),
@@ -102,22 +124,13 @@ export function HooksSection(props: SettingsSectionProps) {
       borderColor: "border-amber-500/20",
       dotColor: "bg-amber-500",
       icon: <Wrench className="h-3.5 w-3.5" />,
-      events: ["tool_execution_start", "tool_execution_update", "tool_execution_end"],
     },
-  ];
+  };
 
-  const orderedEvents: { event: HookLifecycleEventType; phase: LifecyclePhase }[] = [
-    { event: "agent_start", phase: phases[0] },
-    { event: "turn_start", phase: phases[1] },
-    { event: "message_start", phase: phases[2] },
-    { event: "message_update", phase: phases[2] },
-    { event: "message_end", phase: phases[2] },
-    { event: "tool_execution_start", phase: phases[3] },
-    { event: "tool_execution_update", phase: phases[3] },
-    { event: "tool_execution_end", phase: phases[3] },
-    { event: "turn_end", phase: phases[1] },
-    { event: "agent_end", phase: phases[0] },
-  ];
+  const orderedEvents = EVENT_FLOW.map(({ event, phaseKey }) => ({
+    event,
+    phase: phasesByKey[phaseKey],
+  }));
 
   function togglePhase(key: string) {
     setCollapsedPhases((prev) => {
@@ -138,44 +151,34 @@ export function HooksSection(props: SettingsSectionProps) {
     setModalOpen(true);
   }
 
-  function openEdit(hook: ConversationHook) {
+  function openEdit(hook: HookDef) {
     setEditingHook(hook);
     setActiveEvent(hook.event);
     setModalOpen(true);
   }
 
-  function handleSave(data: Omit<ConversationHook, "id">) {
-    setSettings((prev) => {
-      const nextHook: ConversationHook = editingHook
-        ? { ...editingHook, ...data }
-        : { id: crypto.randomUUID(), ...data };
-
-      return updateHooks(
-        prev,
-        editingHook
-          ? prev.hooks.map((hook) => (hook.id === editingHook.id ? nextHook : hook))
-          : [...prev.hooks, nextHook],
-      );
+  function runOps(run: () => Promise<unknown>) {
+    setActionError(null);
+    void run().catch((error) => {
+      setActionError(error instanceof Error ? error.message : String(error));
     });
-    closeModal();
   }
 
-  function updateHookState(hookId: string, updater: (hook: ConversationHook) => ConversationHook) {
-    setSettings((prev) =>
-      updateHooks(
-        prev,
-        prev.hooks.map((hook) => (hook.id === hookId ? updater(hook) : hook)),
-      ),
-    );
+  async function handleSave(data: Omit<HookDef, "id">) {
+    setActionError(null);
+    if (editingHook) {
+      await applyHookOps([{ op: "update", id: editingHook.id, patch: { ...data } }]);
+    } else {
+      await applyHookOps([{ op: "create", item: { ...data } }]);
+    }
+  }
+
+  function toggleHook(hook: HookDef) {
+    runOps(() => applyHookOps([{ op: "update", id: hook.id, patch: { enabled: !hook.enabled } }]));
   }
 
   function deleteHook(hookId: string) {
-    setSettings((prev) =>
-      updateHooks(
-        prev,
-        prev.hooks.filter((hook) => hook.id !== hookId),
-      ),
-    );
+    runOps(() => applyHookOps([{ op: "delete", id: hookId }]));
   }
 
   const phaseGroups: PhaseGroup[] = [];
@@ -191,9 +194,9 @@ export function HooksSection(props: SettingsSectionProps) {
   }
 
   return (
-    <div className="flex h-full flex-col gap-5">
-      <div className="shrink-0 flex flex-col gap-4 rounded-2xl border border-border/60 bg-card p-5 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-start gap-3">
+    <div className="settings-hooks-section flex h-full flex-col gap-5">
+      <div className="settings-section-hero shrink-0 flex flex-col gap-4 rounded-2xl border border-border/60 bg-card p-5 lg:flex-row lg:items-center lg:justify-between">
+        <div className="settings-section-title-group flex items-start gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-500">
             <Zap className="h-5 w-5" />
           </div>
@@ -204,30 +207,32 @@ export function HooksSection(props: SettingsSectionProps) {
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/80 px-3 py-1.5">
+        <div className="settings-section-actions settings-hooks-stats flex flex-wrap items-center gap-3">
+          <div className="settings-hooks-stat flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/80 px-3 py-1.5">
             <Zap className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium text-muted-foreground">
+            <span className="settings-hooks-stat-label text-xs font-medium text-muted-foreground">
               {t("settings.hooksTotalHooks")}
             </span>
-            <span className="ml-0.5 text-sm font-bold tabular-nums">{hooks.length}</span>
+            <span className="settings-hooks-stat-value ml-0.5 text-sm font-bold tabular-nums">
+              {hooks.length}
+            </span>
           </div>
-          <div className="flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-1.5">
+          <div className="settings-hooks-stat flex items-center gap-1.5 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-1.5">
             <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-            <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">
+            <span className="settings-hooks-stat-label text-xs font-medium text-emerald-600 dark:text-emerald-400">
               {t("settings.hooksActiveHooks")}
             </span>
-            <span className="ml-0.5 text-sm font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+            <span className="settings-hooks-stat-value ml-0.5 text-sm font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
               {enabledCount}
             </span>
           </div>
           {disabledCount > 0 ? (
-            <div className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-3 py-1.5">
+            <div className="settings-hooks-stat flex items-center gap-1.5 rounded-lg border border-border/60 bg-muted/30 px-3 py-1.5">
               <Circle className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-xs font-medium text-muted-foreground">
+              <span className="settings-hooks-stat-label text-xs font-medium text-muted-foreground">
                 {t("settings.hooksInactiveHooks")}
               </span>
-              <span className="ml-0.5 text-sm font-bold tabular-nums text-muted-foreground">
+              <span className="settings-hooks-stat-value ml-0.5 text-sm font-bold tabular-nums text-muted-foreground">
                 {disabledCount}
               </span>
             </div>
@@ -235,15 +240,22 @@ export function HooksSection(props: SettingsSectionProps) {
         </div>
       </div>
 
-      <div className="grid min-h-0 flex-1 gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
-        <aside className="flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card">
-          <div className="shrink-0 border-b border-border/40 px-4 py-3">
+      {actionError ? (
+        <div className="flex shrink-0 items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{actionError}</span>
+        </div>
+      ) : null}
+
+      <div className="settings-hooks-grid grid min-h-0 flex-1 gap-5 xl:grid-cols-[300px_minmax(0,1fr)]">
+        <aside className="settings-hooks-lifecycle flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card">
+          <div className="settings-hooks-lifecycle-header shrink-0 border-b border-border/40 px-4 py-3">
             <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <Play className="h-4 w-4 text-muted-foreground" />
               {t("settings.hooksLifecycle")}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          <div className="settings-hooks-lifecycle-body min-h-0 flex-1 overflow-y-auto p-2">
             {phaseGroups.map((group, groupIndex) => {
               const phaseHookCount = group.items.reduce(
                 (sum, { event }) => sum + hooks.filter((hook) => hook.event === event).length,
@@ -253,11 +265,11 @@ export function HooksSection(props: SettingsSectionProps) {
               const isCollapsed = collapsedPhases.has(groupKey);
 
               return (
-                <div key={groupKey} className="mb-1 last:mb-0">
+                <div key={groupKey} className="settings-hooks-phase-group mb-1 last:mb-0">
                   <button
                     type="button"
                     onClick={() => togglePhase(groupKey)}
-                    className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors hover:bg-muted/40 ${group.phase.color}`}
+                    className={`settings-hooks-phase-button flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors hover:bg-muted/40 ${group.phase.color}`}
                   >
                     <div
                       className={`flex h-7 w-7 items-center justify-center rounded-lg ${group.phase.bgColor}`}
@@ -286,10 +298,10 @@ export function HooksSection(props: SettingsSectionProps) {
                   </button>
 
                   {!isCollapsed ? (
-                    <div className="relative ml-3 mt-0.5">
+                    <div className="settings-hooks-event-tree relative ml-3 mt-0.5">
                       <span
                         aria-hidden
-                        className="pointer-events-none absolute left-3 top-2 bottom-2 w-[2px] -translate-x-1/2 rounded-full bg-border/40"
+                        className="settings-hooks-event-rail pointer-events-none absolute left-3 top-2 bottom-2 w-[2px] -translate-x-1/2 rounded-full bg-border/40"
                       />
                       <ul className="space-y-0.5">
                         {group.items.map(({ event }) => {
@@ -302,22 +314,22 @@ export function HooksSection(props: SettingsSectionProps) {
                               <button
                                 type="button"
                                 onClick={() => setActiveEvent(event)}
-                                className={`group relative flex w-full items-center gap-2.5 rounded-lg py-2 pl-7 pr-2.5 text-left transition-all ${
+                                className={`settings-hooks-event-button group relative flex w-full items-center gap-2.5 rounded-lg py-2 pl-7 pr-2.5 text-left transition-all ${
                                   selected ? "bg-primary/10 shadow-sm" : "hover:bg-muted/30"
                                 }`}
                               >
                                 <span
                                   aria-hidden
-                                  className="pointer-events-none absolute left-3 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2"
+                                  className="settings-hooks-event-dot pointer-events-none absolute left-3 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2"
                                 >
                                   {selected ? (
                                     <span
                                       aria-hidden
-                                      className={`absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full ${group.phase.dotColor} opacity-25`}
+                                      className={`settings-hooks-event-dot-halo absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full ${group.phase.dotColor} opacity-25`}
                                     />
                                   ) : null}
                                   <span
-                                    className={`relative block h-full w-full rounded-full ring-2 ring-card transition-all duration-200 ${
+                                    className={`settings-hooks-event-dot-core relative block h-full w-full rounded-full ring-2 ring-card transition-all duration-200 ${
                                       selected
                                         ? group.phase.dotColor
                                         : hasHooks
@@ -330,7 +342,7 @@ export function HooksSection(props: SettingsSectionProps) {
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-center gap-1.5">
                                     <span
-                                      className={`text-[13px] font-medium transition-colors ${
+                                      className={`settings-hooks-event-label text-[13px] font-medium transition-colors ${
                                         selected
                                           ? "text-foreground"
                                           : "text-muted-foreground group-hover:text-foreground"
@@ -364,38 +376,40 @@ export function HooksSection(props: SettingsSectionProps) {
           </div>
         </aside>
 
-        <section className="flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card">
-          <div className="shrink-0 border-b border-border/40 px-5 py-4">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div className="flex items-center gap-3">
+        <section className="settings-hooks-detail flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card">
+          <div className="settings-hooks-detail-header shrink-0 border-b border-border/40 px-5 py-4">
+            <div className="settings-section-heading-row flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="settings-section-title-group flex items-center gap-3">
                 {(() => {
                   const phase = orderedEvents.find((item) => item.event === activeEvent)?.phase;
                   if (!phase) return null;
                   return (
                     <div
-                      className={`flex h-9 w-9 items-center justify-center rounded-xl ${phase.bgColor} ${phase.color}`}
+                      className={`settings-hooks-detail-icon flex h-9 w-9 items-center justify-center rounded-xl ${phase.bgColor} ${phase.color}`}
                     >
                       {phase.icon}
                     </div>
                   );
                 })()}
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-semibold">{getHookEventLabel(t, activeEvent)}</h3>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="settings-hooks-detail-title text-base font-semibold">
+                      {getHookEventLabel(t, activeEvent)}
+                    </h3>
                   </div>
-                  <p className="mt-0.5 text-sm text-muted-foreground">
-                    {getHookEventDescription(t, activeEvent)}
+                  <p className="settings-hooks-detail-desc mt-0.5 text-sm text-muted-foreground">
+                    {t(HOOK_EVENT_DESCRIPTION_TRANSLATION_KEYS[activeEvent])}
                   </p>
                 </div>
               </div>
-              <Button className="gap-1.5 self-start" onClick={openAdd}>
+              <Button className="settings-section-action gap-1.5 self-start" onClick={openAdd}>
                 <Plus className="h-3.5 w-3.5" />
                 {t("settings.hooksAdd")}
               </Button>
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <div className="settings-hooks-detail-body min-h-0 flex-1 overflow-y-auto p-5">
             {activeHooks.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border/60 bg-muted/5 px-6 py-12 text-center">
                 <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-muted/30">
@@ -420,15 +434,15 @@ export function HooksSection(props: SettingsSectionProps) {
                   return (
                     <div
                       key={hook.id}
-                      className={`group rounded-xl border bg-background/80 p-4 transition-all hover:shadow-sm ${
+                      className={`settings-hooks-card group rounded-xl border bg-background/80 p-4 transition-all hover:shadow-sm ${
                         hook.enabled
                           ? "border-border/60 hover:border-border"
                           : "border-border/40 opacity-60"
                       }`}
                     >
-                      <div className="flex items-start gap-3">
+                      <div className="settings-card-row settings-hooks-card-row flex items-start gap-3">
                         <div
-                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${getHookTypeTone(hook.type)}`}
+                          className={`settings-hooks-card-icon flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${getHookTypeTone(hook.type)}`}
                         >
                           {hook.type === "command" ? (
                             <Terminal className="h-4.5 w-4.5" />
@@ -437,31 +451,28 @@ export function HooksSection(props: SettingsSectionProps) {
                           )}
                         </div>
 
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate text-sm font-semibold">{hook.name}</span>
-                            <span className="rounded-md bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
+                        <div className="settings-hooks-card-main min-w-0 flex-1">
+                          <div className="settings-hooks-card-meta flex flex-wrap items-center gap-2">
+                            <span className="settings-hooks-card-name truncate text-sm font-semibold">
+                              {hook.name}
+                            </span>
+                            <span className="settings-hooks-card-badge rounded-md bg-muted/50 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
                               {stepCount}{" "}
                               {hook.type === "command"
                                 ? t("settings.hooksScriptLinesCount")
                                 : t("settings.hooksRequestsCount")}
                             </span>
                           </div>
-                          <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+                          <p className="settings-hooks-card-desc mt-1 text-sm leading-relaxed text-muted-foreground">
                             {hook.description || t("settings.hooksNoDescription")}
                           </p>
                         </div>
 
-                        <div className="flex shrink-0 items-center gap-1.5">
+                        <div className="settings-card-actions settings-hooks-card-actions flex shrink-0 items-center gap-1.5">
                           <AgentActivationSwitch
                             checked={hook.enabled}
                             title={hook.enabled ? t("settings.disable") : t("settings.enable")}
-                            onToggle={() =>
-                              updateHookState(hook.id, (current) => ({
-                                ...current,
-                                enabled: !current.enabled,
-                              }))
-                            }
+                            onToggle={() => toggleHook(hook)}
                           />
                           <Button
                             type="button"

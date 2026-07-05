@@ -2,27 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createWebModuleLoader } from "../helpers/load-web-module.mjs";
 
-class FakeMessagePort {
-  messages = [];
-  closed = false;
-  onmessage = null;
-  onmessageerror = null;
-
-  postMessage(message) {
-    this.messages.push(message);
-  }
-
-  start() {}
-
-  close() {
-    this.closed = true;
-  }
-
-  emit(data) {
-    this.onmessage?.({ data });
-  }
-}
-
 class FakeWebSocket {
   static CONNECTING = 0;
   static OPEN = 1;
@@ -113,17 +92,6 @@ function installBrowser(options = {}) {
       return true;
     },
   };
-}
-
-class FakeSharedWorker {
-  static instances = [];
-
-  constructor(url, options) {
-    this.url = url;
-    this.options = options;
-    this.port = new FakeMessagePort();
-    FakeSharedWorker.instances.push(this);
-  }
 }
 
 function waitFor(predicate, label) {
@@ -419,1400 +387,6 @@ test("GatewayWebSocketClient does not recover mutating git requests", async () =
   resetGatewayWebSocketClient();
 });
 
-test("SharedWorker gateway client sends conversation cancel directly over HTTP", async () => {
-  installBrowser();
-  FakeSharedWorker.instances = [];
-  globalThis.SharedWorker = FakeSharedWorker;
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    fetchCalls.push({ url: new URL(String(rawUrl)), init });
-    return new Response(JSON.stringify({ accepted: true }), {
-      status: 202,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    assert.equal(FakeSharedWorker.instances.length, 1);
-    const port = FakeSharedWorker.instances[0].port;
-    const connect = port.messages.find((message) => message.type === "connect");
-    assert.ok(connect);
-    port.emit({
-      type: "ready",
-      connection_id: connect.connection_id,
-      payload: { status: { online: true }, error: null },
-    });
-
-    await client.cancelChat(" conversation-1 ", " run-1 ");
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0].url.toString(), "https://gateway.example/api/chat/commands");
-    assert.equal(fetchCalls[0].init.method, "POST");
-    assert.equal(fetchCalls[0].init.headers.Authorization, "Bearer token");
-    assert.equal(fetchCalls[0].init.headers["X-LiveAgent-CSRF"], "1");
-    assert.deepEqual(JSON.parse(fetchCalls[0].init.body), {
-      type: "chat.cancel",
-      payload: {
-        run_id: "run-1",
-        conversation_id: "conversation-1",
-      },
-    });
-    assert.equal(
-      port.messages.some((message) => message.type === "request" && message.method === "chat.cancel"),
-      false,
-    );
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("SharedWorker gateway client emits chat queue snapshots from worker events", async () => {
-  installBrowser();
-  FakeSharedWorker.instances = [];
-  globalThis.SharedWorker = FakeSharedWorker;
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  const client = getGatewayWebSocketClient(" token ");
-  assert.equal(FakeSharedWorker.instances.length, 1);
-  const port = FakeSharedWorker.instances[0].port;
-  const connect = port.messages.find((message) => message.type === "connect");
-  assert.ok(connect);
-  port.emit({
-    type: "ready",
-    connection_id: connect.connection_id,
-    payload: { status: { online: true }, error: null },
-  });
-
-  const snapshots = [];
-  client.subscribeChatQueue((snapshot) => snapshots.push(snapshot));
-  const snapshot = {
-    conversationId: "conversation-1",
-    revision: 7,
-    items: [
-      {
-        id: "queue-1",
-        previewText: "next prompt",
-        fileCount: 0,
-        createdAt: 123,
-        source: "gui",
-        editable: true,
-      },
-    ],
-  };
-  port.emit({
-    type: "event",
-    event_type: "chat_queue",
-    connection_id: connect.connection_id,
-    payload: snapshot,
-  });
-
-  assert.deepEqual(snapshots, [snapshot]);
-  resetGatewayWebSocketClient();
-});
-
-test("GatewayWebSocketClient streamChatEvents sends replay cursor", async () => {
-  installBrowser();
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const encoder = new TextEncoder();
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname !== "/api/chat/events") {
-      return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-    }
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            'id: 42\nevent: chat.event\ndata: {"seq":42,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n',
-          ),
-        );
-        controller.close();
-      },
-    });
-    return new Response(body, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    });
-  };
-
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    const events = [];
-    for await (const event of client.streamChatEvents(" conversation-1 ", {
-      runId: " live-run ",
-      afterSeq: 41,
-    })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0].url.pathname, "/api/chat/events");
-    assert.equal(fetchCalls[0].url.searchParams.get("run_id"), "live-run");
-    assert.equal(fetchCalls[0].url.searchParams.get("conversation_id"), "conversation-1");
-    assert.equal(fetchCalls[0].url.searchParams.get("after_seq"), "41");
-    assert.equal(fetchCalls[0].init.method, "GET");
-    assert.equal(fetchCalls[0].init.headers.Accept, "text/event-stream");
-    assert.equal(fetchCalls[0].init.headers.Authorization, "Bearer token");
-    assert.equal(fetchCalls[0].init.headers["Last-Event-ID"], "41");
-    assert.deepEqual(events, [{ type: "done", conversation_id: "conversation-1", seq: 42 }]);
-    assert.equal(FakeWebSocket.instances.length, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("GatewayWebSocketClient streamChatEvents resumes from the last delivered event id", async () => {
-  installBrowser({
-    setTimeout: (fn, _delay, ...args) => setTimeout(fn, 0, ...args),
-  });
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const encoder = new TextEncoder();
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname !== "/api/chat/events") {
-      return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-    }
-    const attempt = fetchCalls.length;
-    const body = new ReadableStream({
-      start(controller) {
-        if (attempt === 1) {
-          controller.enqueue(
-            encoder.encode(
-              'id: 42\nevent: chat.event\ndata: {"seq":42,"payload":{"type":"token","text":"hello","conversation_id":"conversation-1"}}\n\n',
-            ),
-          );
-        } else {
-          controller.enqueue(
-            encoder.encode(
-              'id: 42\nevent: chat.event\ndata: {"seq":42,"payload":{"type":"token","text":"duplicate","conversation_id":"conversation-1"}}\n\n' +
-                'id: 43\nevent: chat.event\ndata: {"seq":43,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n',
-            ),
-          );
-        }
-        controller.close();
-      },
-    });
-    return new Response(body, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    });
-  };
-
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    const events = [];
-    for await (const event of client.streamChatEvents(" conversation-1 ", { afterSeq: 41 })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls.length, 2);
-    assert.equal(fetchCalls[0].url.searchParams.get("after_seq"), "41");
-    assert.equal(fetchCalls[0].init.headers["Last-Event-ID"], "41");
-    assert.equal(fetchCalls[1].url.searchParams.get("after_seq"), "42");
-    assert.equal(fetchCalls[1].init.headers["Last-Event-ID"], "42");
-    assert.deepEqual(events, [
-      { type: "token", text: "hello", conversation_id: "conversation-1", seq: 42 },
-      { type: "done", conversation_id: "conversation-1", seq: 43 },
-    ]);
-    assert.equal(FakeWebSocket.instances.length, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("GatewayWebSocketClient streamChatEvents ignores stale terminal events from older runs", async () => {
-  installBrowser();
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const encoder = new TextEncoder();
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname !== "/api/chat/events") {
-      return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-    }
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            'id: 3\nevent: chat.event\ndata: {"run_id":"old-run","snapshot_run_id":"live-run","seq":3,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n' +
-              'id: 4\nevent: chat.event\ndata: {"run_id":"live-run","snapshot_run_id":"live-run","seq":4,"payload":{"type":"token","text":"second","conversation_id":"conversation-1"}}\n\n' +
-              'id: 5\nevent: chat.event\ndata: {"run_id":"live-run","snapshot_run_id":"live-run","seq":5,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n',
-          ),
-        );
-        controller.close();
-      },
-    });
-    return new Response(body, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    });
-  };
-
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    const events = [];
-    for await (const event of client.streamChatEvents(" conversation-1 ", { afterSeq: 0 })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls.length, 1);
-    assert.deepEqual(events, [
-      { type: "token", text: "second", conversation_id: "conversation-1", seq: 4 },
-      { type: "done", conversation_id: "conversation-1", seq: 5 },
-    ]);
-    assert.equal(FakeWebSocket.instances.length, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("GatewayWebSocketClient streamChatEvents ignores stale non-terminal events from older runs", async () => {
-  installBrowser();
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const encoder = new TextEncoder();
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname !== "/api/chat/events") {
-      return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-    }
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            'id: 3\nevent: chat.event\ndata: {"run_id":"old-run","snapshot_run_id":"live-run","seq":3,"payload":{"type":"token","text":"stale","conversation_id":"conversation-1"}}\n\n' +
-              'id: 4\nevent: chat.event\ndata: {"run_id":"live-run","snapshot_run_id":"live-run","seq":4,"payload":{"type":"token","text":"fresh","conversation_id":"conversation-1"}}\n\n' +
-              'id: 5\nevent: chat.event\ndata: {"run_id":"live-run","snapshot_run_id":"live-run","seq":5,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n',
-          ),
-        );
-        controller.close();
-      },
-    });
-    return new Response(body, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    });
-  };
-
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    const events = [];
-    for await (const event of client.streamChatEvents(" conversation-1 ", {
-      runId: "live-run",
-      afterSeq: 0,
-    })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0].url.searchParams.get("run_id"), "live-run");
-    assert.deepEqual(events, [
-      { type: "token", text: "fresh", conversation_id: "conversation-1", seq: 4 },
-      { type: "done", conversation_id: "conversation-1", seq: 5 },
-    ]);
-    assert.equal(FakeWebSocket.instances.length, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("GatewayWebSocketClient streamChatEvents isolates a run after interrupt cancellation", async () => {
-  installBrowser();
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const encoder = new TextEncoder();
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname !== "/api/chat/events") {
-      return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-    }
-    const body = new ReadableStream({
-      start(controller) {
-        controller.enqueue(
-          encoder.encode(
-            'id: 1\nevent: chat.control\ndata: {"run_id":"old-run","snapshot_run_id":"new-run","seq":1,"payload":{"type":"cancelled","state":"cancelled","conversation_id":"conversation-1","seq":1}}\n\n' +
-              'id: 2\nevent: chat.event\ndata: {"run_id":"old-run","snapshot_run_id":"new-run","seq":2,"payload":{"type":"token","text":"stale tail","conversation_id":"conversation-1","seq":2}}\n\n' +
-              'id: 1\nevent: chat.control\ndata: {"run_id":"new-run","snapshot_run_id":"new-run","seq":1,"payload":{"type":"started","state":"running","conversation_id":"conversation-1","seq":1}}\n\n' +
-              'id: 2\nevent: chat.event\ndata: {"run_id":"new-run","snapshot_run_id":"new-run","seq":2,"payload":{"type":"token","text":"fresh","conversation_id":"conversation-1","seq":2}}\n\n' +
-              'id: 3\nevent: chat.event\ndata: {"run_id":"new-run","snapshot_run_id":"new-run","seq":3,"payload":{"type":"done","conversation_id":"conversation-1","seq":3}}\n\n',
-          ),
-        );
-        controller.close();
-      },
-    });
-    return new Response(body, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream" },
-    });
-  };
-
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    const events = [];
-    for await (const event of client.streamChatEvents(" conversation-1 ", {
-      runId: "new-run",
-      afterSeq: 0,
-    })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0].url.searchParams.get("run_id"), "new-run");
-    assert.deepEqual(events, [
-      { type: "started", state: "running", conversation_id: "conversation-1", seq: 1 },
-      { type: "token", text: "fresh", conversation_id: "conversation-1", seq: 2 },
-      { type: "done", conversation_id: "conversation-1", seq: 3 },
-    ]);
-    assert.equal(FakeWebSocket.instances.length, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("SharedWorker gateway client forwards foreground wakeups to the worker", async () => {
-  installBrowser();
-  FakeSharedWorker.instances = [];
-  globalThis.SharedWorker = FakeSharedWorker;
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  getGatewayWebSocketClient(" token ");
-  assert.equal(FakeSharedWorker.instances.length, 1);
-  const port = FakeSharedWorker.instances[0].port;
-  const connect = port.messages.find((message) => message.type === "connect");
-  assert.ok(connect);
-  port.emit({
-    type: "ready",
-    connection_id: connect.connection_id,
-    payload: { status: { online: true }, error: null },
-  });
-
-  window.dispatchEvent({ type: "pageshow" });
-
-  assert.deepEqual(port.messages.at(-1), {
-    type: "wakeup",
-    connection_id: connect.connection_id,
-  });
-
-  resetGatewayWebSocketClient();
-});
-
-test("SharedWorker gateway client accepts terminal list sessions from worker payload", async () => {
-  installBrowser();
-  FakeSharedWorker.instances = [];
-  globalThis.SharedWorker = FakeSharedWorker;
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  const client = getGatewayWebSocketClient(" token ");
-  const port = FakeSharedWorker.instances[0].port;
-  const connect = port.messages.find((message) => message.type === "connect");
-  assert.ok(connect);
-  port.emit({
-    type: "ready",
-    connection_id: connect.connection_id,
-    payload: { status: { online: true }, error: null },
-  });
-
-  const sessionsPromise = client.listTerminals("/workspace/project");
-  await waitFor(
-    () => port.messages.some((message) => message.method === "terminal.list"),
-    "shared worker terminal.list request",
-  );
-  const request = port.messages.find((message) => message.method === "terminal.list");
-  assert.deepEqual(request.payload, { project_path_key: "/workspace/project" });
-
-  port.emit({
-    type: "response",
-    connection_id: connect.connection_id,
-    request_id: request.request_id,
-    payload: {
-      sessions: [
-        {
-          id: "terminal-1",
-          project_path_key: "/workspace/project",
-          cwd: "/workspace/project",
-          title: "Terminal 1",
-          created_at: 1,
-          updated_at: 2,
-          running: true,
-        },
-      ],
-    },
-  });
-
-  const sessions = await sessionsPromise;
-  assert.equal(sessions.length, 1);
-  assert.equal(sessions[0].id, "terminal-1");
-  assert.equal(sessions[0].projectPathKey, "/workspace/project");
-  assert.equal(sessions[0].title, "Terminal 1");
-
-  resetGatewayWebSocketClient();
-});
-
-test("SharedWorker gateway client keeps SSH create snapshots from worker payload", async () => {
-  installBrowser();
-  FakeSharedWorker.instances = [];
-  globalThis.SharedWorker = FakeSharedWorker;
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  const client = getGatewayWebSocketClient(" token ");
-  const port = FakeSharedWorker.instances[0].port;
-  const connect = port.messages.find((message) => message.type === "connect");
-  port.emit({
-    type: "ready",
-    connection_id: connect.connection_id,
-    payload: { status: { online: true }, error: null },
-  });
-
-  const createPromise = client.createSshTerminal({
-    cwd: "/workspace/project",
-    projectPathKey: "project-key",
-    hostId: "host-1",
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.type === "request" && message.method === "terminal.create_ssh"),
-    "terminal.create_ssh worker request",
-  );
-  const request = port.messages.find((message) => message.type === "request" && message.method === "terminal.create_ssh");
-  assert.ok(request);
-  assert.deepEqual(request.payload, {
-    cwd: "/workspace/project",
-    project_path_key: "project-key",
-    ssh_host_id: "host-1",
-    title: undefined,
-    cols: undefined,
-    rows: undefined,
-    sftp_enabled: false,
-  });
-  port.emit({
-    type: "response",
-    connection_id: connect.connection_id,
-    request_id: request.request_id,
-    payload: {
-      snapshot: {
-        session: {
-          id: "ssh-1",
-          projectPathKey: "project-key",
-          cwd: "/workspace/project",
-          shell: "ssh",
-          title: "Claw-SG",
-          kind: "ssh",
-          ssh: {
-            hostId: "host-1",
-            hostName: "Claw-SG",
-            username: "root",
-            host: "8.219.204.112",
-            port: 22,
-            authType: "privateKey",
-            status: "connected",
-            reconnectAttempt: 0,
-            reconnectMaxAttempts: 3,
-          },
-          pid: null,
-          cols: 80,
-          rows: 24,
-          createdAt: 10,
-          updatedAt: 10,
-          running: true,
-        },
-        output: "root@s878169:~# ",
-        truncated: false,
-        outputStartOffset: 0,
-        outputEndOffset: 18,
-      },
-    },
-  });
-
-  const result = await createPromise;
-  assert.equal(result.snapshot?.session.id, "ssh-1");
-  assert.equal(result.snapshot?.session.ssh?.hostId, "host-1");
-  assert.equal(result.snapshot?.output, "root@s878169:~# ");
-  resetGatewayWebSocketClient();
-});
-
-test("SharedWorker gateway client posts chat commands directly over HTTP", async () => {
-  installBrowser();
-  FakeSharedWorker.instances = [];
-  globalThis.SharedWorker = FakeSharedWorker;
-  const realFetch = globalThis.fetch;
-  const encoder = new TextEncoder();
-  const fetchCalls = [];
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname === "/api/chat/commands") {
-      return new Response(
-        JSON.stringify({
-          run_id: "run-1",
-          conversation_id: "conversation-1",
-          accepted_seq: 1,
-        }),
-        {
-          status: 202,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-    if (url.pathname === "/api/chat/events") {
-      const body = new ReadableStream({
-        start(controller) {
-          controller.enqueue(
-            encoder.encode(
-              'id: 1\nevent: chat.event\ndata: {"seq":1,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n',
-            ),
-          );
-          controller.close();
-        },
-      });
-      return new Response(body, {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      });
-    }
-    return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-  };
-  const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
-  resetGatewayWebSocketClient();
-
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    assert.equal(FakeSharedWorker.instances.length, 1);
-    const port = FakeSharedWorker.instances[0].port;
-    const connect = port.messages.find((message) => message.type === "connect");
-    assert.ok(connect);
-    port.emit({
-      type: "ready",
-      connection_id: connect.connection_id,
-      payload: { status: { online: true }, error: null },
-    });
-
-    const events = [];
-    for await (const event of client.commandChat({
-      type: "chat.submit",
-      message: "hello",
-      conversationId: "conversation-1",
-      selectedModel: {
-        customProviderId: "claude-provider",
-        model: "claude-test",
-        providerType: "claude_code",
-      },
-      systemSettings: {
-        executionMode: "agent-dev",
-        workdir: "/workspace",
-        selectedSystemTools: ["http_get_test"],
-      },
-      uploadedFiles: [
-        {
-          relativePath: "uploads/notes.txt",
-          absolutePath: "/workspace/uploads/notes.txt",
-          fileName: "notes.txt",
-          kind: "text",
-          sizeBytes: 12,
-        },
-      ],
-      clientRequestId: "client-submit-1",
-      runtimeControls: {
-        thinkingEnabled: false,
-        nativeWebSearchEnabled: true,
-        reasoning: "xhigh",
-      },
-    })) {
-      events.push(event);
-    }
-
-    assert.equal(fetchCalls.length, 2);
-    assert.equal(fetchCalls[0].url.toString(), "https://gateway.example/api/chat/commands");
-    assert.deepEqual(JSON.parse(fetchCalls[0].init.body), {
-      type: "chat.submit",
-      payload: {
-        message: "hello",
-        conversation_id: "conversation-1",
-        client_request_id: "client-submit-1",
-        execution_mode: "agent-dev",
-        workdir: "/workspace",
-        selected_system_tools: ["http_get_test"],
-        uploaded_files: [
-          {
-            relative_path: "uploads/notes.txt",
-            absolute_path: "/workspace/uploads/notes.txt",
-            file_name: "notes.txt",
-            kind: "text",
-            size_bytes: 12,
-          },
-        ],
-        selected_model: {
-          custom_provider_id: "claude-provider",
-          model: "claude-test",
-          provider_type: "claude_code",
-        },
-        runtime_controls: {
-          thinking_enabled: false,
-          native_web_search_enabled: true,
-          reasoning: "xhigh",
-        },
-        queue_policy: "auto",
-      },
-    });
-    assert.equal(fetchCalls[1].url.pathname, "/api/chat/events");
-    assert.equal(fetchCalls[1].url.searchParams.get("run_id"), "run-1");
-    assert.deepEqual(events, [{ type: "done", conversation_id: "conversation-1", seq: 1 }]);
-    const legacyWorkerChatCommand = "chat" + ".command";
-    assert.equal(
-      port.messages.some(
-        (message) => message.type === "request" && message.method === legacyWorkerChatCommand,
-      ),
-      false,
-    );
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
-});
-
-test("Gateway SharedWorker broadcasts events with each port connection id", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-
-  class MockGatewayWebSocketClient {
-    statusListeners = [];
-    historyListeners = [];
-    settingsListeners = [];
-    sftpTransferListeners = [];
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus(listener) {
-      this.statusListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeHistory(listener) {
-      this.historyListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeSettings(listener) {
-      this.settingsListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeTerminal() {
-      return () => {};
-    }
-
-    subscribeSftpTransfers(listener) {
-      this.sftpTransferListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-  assert.equal(typeof globalThis.onconnect, "function");
-
-  const firstPort = new FakeMessagePort();
-  const secondPort = new FakeMessagePort();
-  globalThis.onconnect({ ports: [firstPort] });
-  globalThis.onconnect({ ports: [secondPort] });
-
-  firstPort.emit({ type: "connect", connection_id: "connection-1", token: " token " });
-  secondPort.emit({ type: "connect", connection_id: "connection-2", token: "token" });
-
-  assert.equal(clientInstances.length, 1);
-  assert.equal(clientInstances[0].token, "token");
-  assert.deepEqual(firstPort.messages.at(-1), {
-    type: "ready",
-    connection_id: "connection-1",
-    payload: { status: null, error: null },
-  });
-  assert.deepEqual(secondPort.messages.at(-1), {
-    type: "ready",
-    connection_id: "connection-2",
-    payload: { status: null, error: null },
-  });
-
-  const historyEvent = { kind: "idle", conversation_id: "conversation-1" };
-  clientInstances[0].historyListeners[0](historyEvent);
-
-  assert.deepEqual(firstPort.messages.at(-1), {
-    type: "event",
-    event_type: "history",
-    connection_id: "connection-1",
-    payload: historyEvent,
-  });
-  assert.deepEqual(secondPort.messages.at(-1), {
-    type: "event",
-    event_type: "history",
-    connection_id: "connection-2",
-    payload: historyEvent,
-  });
-
-  const sftpEvent = {
-    kind: "progress",
-    transfer: {
-      id: "transfer-1",
-      sessionId: "ssh-1",
-      status: "running",
-      bytesTransferred: 12,
-      totalBytes: 24,
-    },
-  };
-  clientInstances[0].sftpTransferListeners[0](sftpEvent);
-
-  assert.deepEqual(firstPort.messages.at(-1), {
-    type: "event",
-    event_type: "sftp",
-    connection_id: "connection-1",
-    payload: sftpEvent,
-  });
-  assert.deepEqual(secondPort.messages.at(-1), {
-    type: "event",
-    event_type: "sftp",
-    connection_id: "connection-2",
-    payload: sftpEvent,
-  });
-
-  globalThis.onconnect = previousOnConnect;
-});
-
-test("Gateway SharedWorker applies foreground wakeups to the managed socket client", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-
-  class MockGatewayWebSocketClient {
-    wakeups = 0;
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus() {
-      return () => {};
-    }
-
-    subscribeHistory() {
-      return () => {};
-    }
-
-    subscribeSettings() {
-      return () => {};
-    }
-
-    subscribeTerminal() {
-      return () => {};
-    }
-
-    subscribeSftpTransfers() {
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    noteForegroundWakeup() {
-      this.wakeups += 1;
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-
-  const port = new FakeMessagePort();
-  globalThis.onconnect({ ports: [port] });
-  port.emit({ type: "connect", connection_id: "connection-1", token: "token" });
-  port.emit({ type: "wakeup", connection_id: "connection-1" });
-
-  assert.equal(clientInstances.length, 1);
-  assert.equal(clientInstances[0].wakeups, 1);
-
-  globalThis.onconnect = previousOnConnect;
-});
-
-test("Gateway SharedWorker terminal metadata reaches every page while output stays scoped", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-
-  class MockGatewayWebSocketClient {
-    terminalListeners = [];
-    calls = [];
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus() {
-      return () => {};
-    }
-
-    subscribeHistory() {
-      return () => {};
-    }
-
-    subscribeSettings() {
-      return () => {};
-    }
-
-    subscribeTerminal(listener) {
-      this.terminalListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeSftpTransfers() {
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    async listTerminals(projectPathKey) {
-      this.calls.push(["listTerminals", projectPathKey ?? ""]);
-      return [
-        {
-          id: "terminal-1",
-          projectPathKey: "/workspace/project-a",
-          cwd: "/workspace/project-a",
-          shell: "zsh",
-          title: "Terminal 1",
-          cols: 80,
-          rows: 24,
-          createdAt: 1,
-          updatedAt: 1,
-          running: true,
-        },
-      ];
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-
-  const firstPort = new FakeMessagePort();
-  const secondPort = new FakeMessagePort();
-  globalThis.onconnect({ ports: [firstPort] });
-  globalThis.onconnect({ ports: [secondPort] });
-  firstPort.emit({ type: "connect", connection_id: "connection-1", token: "token" });
-  secondPort.emit({ type: "connect", connection_id: "connection-2", token: "token" });
-
-  firstPort.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "terminal-list-all",
-    method: "terminal.list",
-    payload: {},
-  });
-  await waitFor(
-    () => firstPort.messages.some((message) => message.request_id === "terminal-list-all"),
-    "terminal list all response",
-  );
-  assert.deepEqual(clientInstances[0].calls, [["listTerminals", ""]]);
-  const listResponse = firstPort.messages.find(
-    (message) => message.request_id === "terminal-list-all",
-  );
-  assert.equal(listResponse.payload.sessions[0].id, "terminal-1");
-
-  const event = {
-    kind: "created",
-    sessionId: "terminal-2",
-    projectPathKey: "/workspace/project-b",
-    session: {
-      id: "terminal-2",
-      projectPathKey: "/workspace/project-b",
-      cwd: "/workspace/project-b",
-      shell: "zsh",
-      title: "Terminal 2",
-      cols: 80,
-      rows: 24,
-      createdAt: 2,
-      updatedAt: 2,
-      running: true,
-    },
-  };
-  clientInstances[0].terminalListeners[0](event);
-
-  assert.deepEqual(firstPort.messages.at(-1), {
-    type: "event",
-    event_type: "terminal",
-    payload: event,
-    connection_id: "connection-1",
-  });
-  assert.deepEqual(secondPort.messages.at(-1), {
-    type: "event",
-    event_type: "terminal",
-    payload: event,
-    connection_id: "connection-2",
-  });
-
-  const outputEvent = {
-    ...event,
-    kind: "output",
-    data: "secret\n",
-  };
-  clientInstances[0].terminalListeners[0](outputEvent);
-
-  assert.equal(
-    firstPort.messages.some((message) => message.payload === outputEvent),
-    false,
-  );
-  assert.equal(
-    secondPort.messages.some((message) => message.payload === outputEvent),
-    false,
-  );
-
-  globalThis.onconnect = previousOnConnect;
-});
-
-test("Gateway SharedWorker forwards terminal stream snapshot and output messages", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-  const streamSession = {
-    id: "terminal-1",
-    projectPathKey: "/workspace/project",
-    cwd: "/workspace/project",
-    shell: "zsh",
-    title: "Terminal 1",
-    cols: 80,
-    rows: 24,
-    createdAt: 1,
-    updatedAt: 2,
-    running: true,
-  };
-  let resolveAttach = null;
-  const outputListeners = [];
-
-  class MockGatewayWebSocketClient {
-    terminalListeners = [];
-    calls = [];
-    terminalStream = {
-      attach: (session, options) => {
-        this.calls.push(["terminalStream.attach", session.id, options?.maxBytes]);
-        return new Promise((resolve) => {
-          resolveAttach = () => {
-            resolve({
-              snapshot: {
-                session,
-                bytes: new Uint8Array([112, 119, 100]),
-                truncated: false,
-                outputStartOffset: 10,
-                outputEndOffset: 13,
-              },
-              write: (bytes) => {
-                this.calls.push(["terminalStream.write", [...bytes]]);
-                return true;
-              },
-              resize: (cols, rows) => this.calls.push(["terminalStream.resize", cols, rows]),
-              dispose: () => this.calls.push(["terminalStream.dispose", session.id]),
-              subscribeOutput: (listener) => {
-                outputListeners.push(listener);
-                return () => {};
-              },
-              subscribeInputState: () => () => {},
-            });
-          };
-        });
-      },
-    };
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus() {
-      return () => {};
-    }
-
-    subscribeHistory() {
-      return () => {};
-    }
-
-    subscribeSettings() {
-      return () => {};
-    }
-
-    subscribeTerminal(listener) {
-      this.terminalListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeSftpTransfers() {
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-
-  const port = new FakeMessagePort();
-  globalThis.onconnect({ ports: [port] });
-  port.emit({ type: "connect", connection_id: "connection-1", token: "token" });
-  port.emit({
-    type: "terminal_stream_attach",
-    connection_id: "connection-1",
-    stream_id: "page-stream-1",
-    session: streamSession,
-    max_bytes: 8192,
-  });
-  await waitFor(
-    () => clientInstances[0]?.calls.some((call) => call[0] === "terminalStream.attach"),
-    "terminal stream attach",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), [
-    "terminalStream.attach",
-    "terminal-1",
-    8192,
-  ]);
-
-  resolveAttach();
-  await waitFor(
-    () => port.messages.some((message) => message.type === "terminal_stream_snapshot"),
-    "terminal stream snapshot",
-  );
-  const snapshotMessage = port.messages.find((message) => message.type === "terminal_stream_snapshot");
-  assert.equal(snapshotMessage.connection_id, "connection-1");
-  assert.equal(snapshotMessage.stream_id, "page-stream-1");
-  assert.deepEqual([...snapshotMessage.payload.bytes], [112, 119, 100]);
-  assert.equal(snapshotMessage.payload.outputStartOffset, 10);
-
-  outputListeners[0]({
-    sessionId: "terminal-1",
-    projectPathKey: "/workspace/project",
-    bytes: new Uint8Array([13, 10]),
-    startOffset: 13,
-    endOffset: 15,
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.type === "terminal_stream_output"),
-    "terminal stream output",
-  );
-  const outputMessage = port.messages.find((message) => message.type === "terminal_stream_output");
-  assert.equal(outputMessage.connection_id, "connection-1");
-  assert.equal(outputMessage.stream_id, "page-stream-1");
-  assert.deepEqual([...outputMessage.payload.bytes], [13, 10]);
-  assert.equal(outputMessage.payload.startOffset, 13);
-
-  globalThis.onconnect = previousOnConnect;
-});
-
-test("Gateway SharedWorker keeps one upstream terminal stream until every port detaches", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-  const streamSession = {
-    id: "terminal-1",
-    projectPathKey: "/workspace/project",
-    cwd: "/workspace/project",
-    shell: "zsh",
-    title: "Terminal 1",
-    cols: 80,
-    rows: 24,
-    createdAt: 1,
-    updatedAt: 2,
-    running: true,
-  };
-  const outputListeners = [];
-  const inputStateListeners = [];
-  const currentInputState = {
-    paused: false,
-    queuedBytes: 17,
-    highWaterBytes: 256 * 1024,
-  };
-
-  class MockGatewayWebSocketClient {
-    terminalListeners = [];
-    calls = [];
-    terminalStream = {
-      attach: async (session, options) => {
-        this.calls.push(["terminalStream.attach", session.id, options?.maxBytes]);
-        return {
-          snapshot: {
-            session,
-            bytes: new Uint8Array(),
-            truncated: false,
-            outputStartOffset: 0,
-            outputEndOffset: 0,
-          },
-          write: (bytes) => {
-            this.calls.push(["terminalStream.write", [...bytes]]);
-            return true;
-          },
-          resize: (cols, rows) => this.calls.push(["terminalStream.resize", cols, rows]),
-          dispose: () => this.calls.push(["terminalStream.dispose", session.id]),
-          subscribeOutput: (listener) => {
-            outputListeners.push(listener);
-            return () => this.calls.push(["terminalStream.unsubscribe", session.id]);
-          },
-          subscribeInputState: (listener) => {
-            inputStateListeners.push(listener);
-            listener(currentInputState);
-            return () => this.calls.push(["terminalStream.inputState.unsubscribe", session.id]);
-          },
-        };
-      },
-    };
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus() {
-      return () => {};
-    }
-
-    subscribeHistory() {
-      return () => {};
-    }
-
-    subscribeSettings() {
-      return () => {};
-    }
-
-    subscribeTerminal(listener) {
-      this.terminalListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeSftpTransfers() {
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-
-  const firstPort = new FakeMessagePort();
-  const secondPort = new FakeMessagePort();
-  globalThis.onconnect({ ports: [firstPort] });
-  globalThis.onconnect({ ports: [secondPort] });
-  firstPort.emit({ type: "connect", connection_id: "connection-1", token: "token" });
-  secondPort.emit({ type: "connect", connection_id: "connection-2", token: "token" });
-
-  firstPort.emit({
-    type: "terminal_stream_attach",
-    connection_id: "connection-1",
-    stream_id: "first-stream",
-    session: streamSession,
-    max_bytes: 4096,
-  });
-  await waitFor(
-    () => firstPort.messages.some((message) => message.type === "terminal_stream_snapshot"),
-    "first terminal stream snapshot",
-  );
-
-  secondPort.emit({
-    type: "terminal_stream_attach",
-    connection_id: "connection-2",
-    stream_id: "second-stream",
-    session: streamSession,
-    max_bytes: 4096,
-  });
-  await waitFor(
-    () =>
-      secondPort.messages.some((message) => message.type === "terminal_stream_snapshot") &&
-      secondPort.messages.some((message) => message.type === "terminal_stream_input_state"),
-    "second terminal stream snapshot and input state",
-  );
-  assert.equal(
-    clientInstances[0].calls.filter((call) => call[0] === "terminalStream.attach").length,
-    1,
-  );
-  assert.equal(inputStateListeners.length, 1);
-  const secondInputState = secondPort.messages.find(
-    (message) => message.type === "terminal_stream_input_state",
-  );
-  assert.equal(secondInputState.stream_id, "second-stream");
-  assert.deepEqual(secondInputState.payload, currentInputState);
-
-  firstPort.emit({
-    type: "terminal_stream_write",
-    connection_id: "connection-1",
-    stream_id: "first-stream",
-    session_id: "terminal-1",
-    bytes: new Uint8Array([97, 98]),
-  });
-  await waitFor(
-    () => clientInstances[0].calls.some((call) => call[0] === "terminalStream.write"),
-    "terminal stream write",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), ["terminalStream.write", [97, 98]]);
-
-  firstPort.emit({
-    type: "terminal_stream_resize",
-    connection_id: "connection-1",
-    stream_id: "first-stream",
-    session_id: "terminal-1",
-    cols: 100,
-    rows: 30,
-  });
-  await waitFor(
-    () => clientInstances[0].calls.some((call) => call[0] === "terminalStream.resize"),
-    "terminal stream resize",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), ["terminalStream.resize", 100, 30]);
-
-  firstPort.emit({
-    type: "terminal_stream_detach",
-    connection_id: "connection-1",
-    stream_id: "first-stream",
-    session_id: "terminal-1",
-  });
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(
-    clientInstances[0].calls.some((call) => call[0] === "terminalStream.dispose"),
-    false,
-  );
-
-  const firstPortMessageCount = firstPort.messages.length;
-  outputListeners[0]({
-    sessionId: "terminal-1",
-    projectPathKey: "/workspace/project",
-    bytes: new Uint8Array([112, 119, 100]),
-    startOffset: 0,
-    endOffset: 3,
-  });
-  assert.equal(firstPort.messages.length, firstPortMessageCount);
-  assert.equal(secondPort.messages.at(-1).type, "terminal_stream_output");
-  assert.equal(secondPort.messages.at(-1).stream_id, "second-stream");
-  assert.deepEqual([...secondPort.messages.at(-1).payload.bytes], [112, 119, 100]);
-
-  secondPort.emit({
-    type: "terminal_stream_detach",
-    connection_id: "connection-2",
-    stream_id: "second-stream",
-    session_id: "terminal-1",
-  });
-  await waitFor(
-    () => clientInstances[0].calls.some((call) => call[0] === "terminalStream.dispose"),
-    "upstream terminal stream dispose",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), ["terminalStream.dispose", "terminal-1"]);
-
-  globalThis.onconnect = previousOnConnect;
-});
-
 test("GatewayWebSocketClient sends mention query payloads", async () => {
   installBrowser();
   const loader = createWebModuleLoader();
@@ -2023,10 +597,10 @@ test("GatewayWebSocketClient sends history list requests", async () => {
     payload: {
       conversations: [],
       total_count: 0,
-      running_conversation_ids: ["conversation-running"],
       running_conversations: [
         {
           conversation_id: "conversation-running",
+          run_id: "run-running",
           cwd: "/tmp/project-a",
           updated_at: 123,
         },
@@ -2036,10 +610,10 @@ test("GatewayWebSocketClient sends history list requests", async () => {
   assert.deepEqual(await listPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: ["conversation-running"],
     running_conversations: [
       {
         conversation_id: "conversation-running",
+        run_id: "run-running",
         cwd: "/tmp/project-a",
         updated_at: 123,
       },
@@ -2079,12 +653,12 @@ test("GatewayWebSocketClient sends project-aware history and fs requests", async
   socket.receive({
     id: socket.sent[1].id,
     type: "response",
-    payload: { conversations: [], total_count: 0, running_conversation_ids: [] },
+    payload: { conversations: [], total_count: 0, running_conversations: [] },
   });
   assert.deepEqual(await filteredListPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: [],
+    running_conversations: [],
   });
 
   const chatModeListPromise = client.listHistory(1, 80, { cwdEmpty: true });
@@ -2098,12 +672,12 @@ test("GatewayWebSocketClient sends project-aware history and fs requests", async
   socket.receive({
     id: socket.sent[2].id,
     type: "response",
-    payload: { conversations: [], total_count: 0, running_conversation_ids: [] },
+    payload: { conversations: [], total_count: 0, running_conversations: [] },
   });
   assert.deepEqual(await chatModeListPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: [],
+    running_conversations: [],
   });
 
   const workdirsPromise = client.listHistoryWorkdirs();
@@ -2154,12 +728,12 @@ test("GatewayWebSocketClient defaults invalid history pagination", async () => {
   socket.receive({
     id: socket.sent[1].id,
     type: "response",
-    payload: { conversations: [], total_count: 0, running_conversation_ids: [] },
+    payload: { conversations: [], total_count: 0, running_conversations: [] },
   });
   assert.deepEqual(await listPromise, {
     conversations: [],
     total_count: 0,
-    running_conversation_ids: [],
+    running_conversations: [],
   });
 
   const sharedListPromise = client.listSharedHistory(Number.NaN, 500);
@@ -2243,363 +817,6 @@ test("GatewayWebSocketClient sends history share requests", async () => {
   resetGatewayWebSocketClient();
 });
 
-test("Gateway SharedWorker forwards history share requests", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-
-  class MockGatewayWebSocketClient {
-    statusListeners = [];
-    historyListeners = [];
-    settingsListeners = [];
-    calls = [];
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus(listener) {
-      this.statusListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeHistory(listener) {
-      this.historyListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeSettings(listener) {
-      this.settingsListeners.push(listener);
-      return () => {};
-    }
-
-    subscribeTerminal() {
-      return () => {};
-    }
-
-    subscribeSftpTransfers() {
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    getHistoryShare(conversationID) {
-      this.calls.push(["getHistoryShare", conversationID]);
-      return {
-        conversation_id: conversationID,
-        enabled: false,
-        token: "",
-        created_at: 0,
-        updated_at: 0,
-      };
-    }
-
-    setHistoryShare(conversationID, enabled, options) {
-      this.calls.push(["setHistoryShare", conversationID, enabled, options]);
-      return {
-        conversation_id: conversationID,
-        enabled,
-        token: enabled ? "share-token" : "",
-        created_at: 10,
-        updated_at: 20,
-        redact_tool_content: options?.redactToolContent === true,
-      };
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-
-  const port = new FakeMessagePort();
-  globalThis.onconnect({ ports: [port] });
-  port.emit({ type: "connect", connection_id: "connection-1", token: " token " });
-  assert.equal(clientInstances.length, 1);
-
-  port.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "share-get",
-    method: "history.share.get",
-    payload: { conversation_id: "conversation-1" },
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.request_id === "share-get"),
-    "shared worker history share get response",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), ["getHistoryShare", "conversation-1"]);
-  assert.deepEqual(port.messages.at(-1), {
-    type: "response",
-    connection_id: "connection-1",
-    request_id: "share-get",
-    payload: {
-      conversation_id: "conversation-1",
-      enabled: false,
-      token: "",
-      created_at: 0,
-      updated_at: 0,
-    },
-    error: undefined,
-  });
-
-  port.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "share-set",
-    method: "history.share.set",
-    payload: {
-      conversation_id: "conversation-1",
-      enabled: true,
-      redact_tool_content: true,
-    },
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.request_id === "share-set"),
-    "shared worker history share set response",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), [
-    "setHistoryShare",
-    "conversation-1",
-    true,
-    { redactToolContent: true },
-  ]);
-  assert.deepEqual(port.messages.at(-1), {
-    type: "response",
-    connection_id: "connection-1",
-    request_id: "share-set",
-    payload: {
-      conversation_id: "conversation-1",
-      enabled: true,
-      token: "share-token",
-      created_at: 10,
-      updated_at: 20,
-      redact_tool_content: true,
-    },
-    error: undefined,
-  });
-
-  globalThis.onconnect = previousOnConnect;
-});
-
-test("Gateway SharedWorker forwards tunnel requests", async () => {
-  installBrowser();
-  const loader = createWebModuleLoader();
-  const gatewaySocketPath = loader.resolveLocal("src/lib/gatewaySocket.ts");
-  const clientInstances = [];
-
-  class MockGatewayWebSocketClient {
-    calls = [];
-
-    constructor(token) {
-      this.token = token;
-      clientInstances.push(this);
-    }
-
-    subscribeStatus() {
-      return () => {};
-    }
-
-    subscribeHistory() {
-      return () => {};
-    }
-
-    subscribeSettings() {
-      return () => {};
-    }
-
-    subscribeTerminal() {
-      return () => {};
-    }
-
-    subscribeSftpTransfers() {
-      return () => {};
-    }
-
-    subscribeChatQueue() {
-      return () => {};
-    }
-
-    listTunnels() {
-      this.calls.push(["listTunnels"]);
-      return [
-        {
-          id: "tun-1",
-          slug: "slug-1",
-          name: "App",
-          targetUrl: "http://localhost:3000",
-          publicUrl: "https://gateway.example/t/slug-1/",
-          createdAt: 10,
-          expiresAt: 3700,
-          activeConnections: 0,
-          status: "active",
-        },
-      ];
-    }
-
-    createTunnel(input) {
-      this.calls.push(["createTunnel", input]);
-      return {
-        id: "tun-2",
-        slug: "slug-2",
-        name: input.name ?? "",
-        targetUrl: input.targetUrl,
-        publicUrl: "https://gateway.example/t/slug-2/",
-        createdAt: 20,
-        expiresAt: 920,
-        activeConnections: 0,
-        status: "active",
-      };
-    }
-
-    updateTunnel(input) {
-      this.calls.push(["updateTunnel", input]);
-      return {
-        id: input.id,
-        slug: "slug-2",
-        name: input.name ?? "",
-        targetUrl: input.targetUrl,
-        publicUrl: "https://gateway.example/t/slug-2/",
-        createdAt: 20,
-        expiresAt: input.ttlSeconds === 0 ? 0 : 920,
-        activeConnections: 0,
-        status: "active",
-        projectPathKey: input.projectPathKey ?? "",
-      };
-    }
-
-    closeTunnel(id) {
-      this.calls.push(["closeTunnel", id]);
-      return {
-        id,
-        slug: "slug-2",
-        name: "Closed",
-        targetUrl: "http://localhost:3000",
-        publicUrl: "https://gateway.example/t/slug-2/",
-        createdAt: 20,
-        expiresAt: 920,
-        activeConnections: 0,
-        status: "expired",
-      };
-    }
-
-    dispose() {}
-  }
-
-  const workerLoader = createWebModuleLoader({
-    mocks: {
-      [gatewaySocketPath]: {
-        GatewayWebSocketClient: MockGatewayWebSocketClient,
-      },
-    },
-  });
-
-  const previousOnConnect = globalThis.onconnect;
-  workerLoader.loadModule("src/lib/gatewaySocket.worker.ts");
-
-  const port = new FakeMessagePort();
-  globalThis.onconnect({ ports: [port] });
-  port.emit({ type: "connect", connection_id: "connection-1", token: " token " });
-  assert.equal(clientInstances.length, 1);
-
-  port.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "tunnel-list",
-    method: "tunnel.list",
-    payload: {},
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.request_id === "tunnel-list"),
-    "shared worker tunnel list response",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), ["listTunnels"]);
-  assert.equal(port.messages.at(-1).payload.tunnels[0].id, "tun-1");
-
-  port.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "tunnel-create",
-    method: "tunnel.create",
-    payload: {
-      targetUrl: "http://localhost:3000/app",
-      ttlSeconds: 900,
-      name: "App",
-    },
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.request_id === "tunnel-create"),
-    "shared worker tunnel create response",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), [
-    "createTunnel",
-    {
-      targetUrl: "http://localhost:3000/app",
-      ttlSeconds: 900,
-      name: "App",
-    },
-  ]);
-  assert.equal(port.messages.at(-1).payload.tunnel.id, "tun-2");
-
-  port.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "tunnel-update-infinite",
-    method: "tunnel.update",
-    payload: {
-      id: "tun-2",
-      targetUrl: "http://localhost:4000/dashboard",
-      ttlSeconds: 0,
-      name: "Dashboard",
-      projectPathKey: "project:/tmp/liveagent",
-    },
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.request_id === "tunnel-update-infinite"),
-    "shared worker tunnel update response",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), [
-    "updateTunnel",
-    {
-      id: "tun-2",
-      targetUrl: "http://localhost:4000/dashboard",
-      ttlSeconds: 0,
-      name: "Dashboard",
-      projectPathKey: "project:/tmp/liveagent",
-    },
-  ]);
-  assert.equal(port.messages.at(-1).payload.tunnel.expiresAt, 0);
-  assert.equal(port.messages.at(-1).payload.tunnel.projectPathKey, "project:/tmp/liveagent");
-
-  port.emit({
-    type: "request",
-    connection_id: "connection-1",
-    request_id: "tunnel-close",
-    method: "tunnel.close",
-    payload: { id: "tun-2" },
-  });
-  await waitFor(
-    () => port.messages.some((message) => message.request_id === "tunnel-close"),
-    "shared worker tunnel close response",
-  );
-  assert.deepEqual(clientInstances[0].calls.at(-1), ["closeTunnel", "tun-2"]);
-  assert.equal(port.messages.at(-1).payload.tunnel.status, "expired");
-
-  globalThis.onconnect = previousOnConnect;
-});
-
 test("GatewayWebSocketClient reconnects before read requests when an authenticated socket goes stale", async () => {
   installBrowser();
   const loader = createWebModuleLoader();
@@ -2622,7 +839,7 @@ test("GatewayWebSocketClient reconnects before read requests when an authenticat
 
     let mockNow = realDateNow();
     Date.now = () => mockNow;
-    mockNow += 30_000;
+    mockNow += 46_000;
 
     const historyPromise = client.getHistory("conversation-1");
     assert.equal(FakeWebSocket.instances.length, 2);
@@ -2783,178 +1000,285 @@ test("GatewayWebSocketClient replies to gateway websocket pings", async () => {
   resetGatewayWebSocketClient();
 });
 
-test("GatewayWebSocketClient commandChat posts commands and streams SSE events until done", async () => {
+test("GatewayWebSocketClient chatCommand sends the command envelope and parses the accept response", async () => {
   installBrowser();
-  const realFetch = globalThis.fetch;
-  const fetchCalls = [];
-  const encoder = new TextEncoder();
-  globalThis.fetch = async (rawUrl, init = {}) => {
-    const url = new URL(String(rawUrl));
-    fetchCalls.push({ url, init });
-    if (url.pathname === "/api/chat/commands") {
-      return new Response(
-        JSON.stringify({
-          run_id: "run-1",
-          conversation_id: "conversation-1",
-          accepted_seq: 1,
-        }),
-        {
-          status: 202,
-          headers: { "Content-Type": "application/json" },
-        },
-      );
-    }
-    if (url.pathname === "/api/chat/events") {
-      const body = new ReadableStream({
-        start(controller) {
-          controller.enqueue(
-            encoder.encode(
-              'id: 1\nevent: chat.control\ndata: {"seq":1,"payload":{"type":"accepted","conversation_id":"conversation-1","seq":1}}\n\n',
-            ),
-          );
-          controller.enqueue(
-            encoder.encode(
-              'id: 2\nevent: chat.event\ndata: {"seq":2,"payload":{"type":"token","text":"hi","conversation_id":"conversation-1"}}\n\n',
-            ),
-          );
-          controller.enqueue(
-            encoder.encode(
-              'id: 3\nevent: chat.event\ndata: {"seq":3,"payload":{"type":"done","conversation_id":"conversation-1"}}\n\n',
-            ),
-          );
-          controller.close();
-        },
-      });
-      return new Response(body, {
-        status: 200,
-        headers: { "Content-Type": "text/event-stream" },
-      });
-    }
-    return new Response(JSON.stringify({ error: `unexpected ${url.pathname}` }), { status: 404 });
-  };
-
   const loader = createWebModuleLoader();
-  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule("src/lib/gatewaySocket.ts");
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
   resetGatewayWebSocketClient();
 
-  try {
-    const client = getGatewayWebSocketClient(" token ");
-    const events = [];
-    for await (const event of client.commandChat({
-      type: "chat.submit",
-      message: "hello",
-      conversationId: "",
-      selectedModel: {
-        customProviderId: "claude-provider",
-        model: "claude-test",
-        providerType: "claude_code",
-      },
-      systemSettings: {
-        executionMode: "agent-dev",
-        workdir: "/workspace",
-        selectedSystemTools: ["http_get_test"],
-      },
-      uploadedFiles: [
-        {
-          relativePath: "uploads/notes.txt",
-          absolutePath: "/workspace/uploads/notes.txt",
-          fileName: "notes.txt",
-          kind: "text",
-          sizeBytes: 12,
+  const client = getGatewayWebSocketClient("token");
+  const commandPromise = client.chatCommand({
+    type: "chat.submit",
+    message: "hello",
+    conversationId: "conversation-1",
+    clientRequestId: "req-1",
+    queuePolicy: "append",
+    systemSettings: {
+      executionMode: "agent",
+      workdir: "/workspace/project",
+      selectedSystemTools: ["Bash"],
+    },
+  });
+  const socket = await connectAndAuth();
+  await waitFor(() => socket.sent.some((item) => item.type === "chat.command"), "chat command envelope");
+  const commandEnvelope = socket.sent.find((item) => item.type === "chat.command");
+  assert.equal(commandEnvelope.payload.type, "chat.submit");
+  assert.equal(commandEnvelope.payload.payload.message, "hello");
+  assert.equal(commandEnvelope.payload.payload.conversation_id, "conversation-1");
+  assert.equal(commandEnvelope.payload.payload.client_request_id, "req-1");
+  assert.equal(commandEnvelope.payload.payload.queue_policy, "append");
+  assert.equal(commandEnvelope.payload.payload.workdir, "/workspace/project");
+
+  socket.receive({
+    id: commandEnvelope.id,
+    type: "response",
+    payload: { run_id: " run-1 ", conversation_id: "conversation-1", accepted_seq: 7 },
+  });
+  assert.deepEqual(await commandPromise, {
+    runId: "run-1",
+    conversationId: "conversation-1",
+    acceptedSeq: 7,
+  });
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient cancelChat sends chat.cancel with conversation and run ids", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const cancelPromise = client.cancelChat(" conversation-1 ", " run-9 ");
+  const socket = await connectAndAuth();
+  await waitFor(() => socket.sent.some((item) => item.type === "chat.cancel"), "chat.cancel envelope");
+  const cancelEnvelope = socket.sent.find((item) => item.type === "chat.cancel");
+  assert.deepEqual(cancelEnvelope.payload, {
+    conversation_id: "conversation-1",
+    run_id: "run-9",
+  });
+  socket.receive({ id: cancelEnvelope.id, type: "response", payload: {} });
+  await cancelPromise;
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient conversation subscriptions subscribe after auth, route pushes, and survive reconnects", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const seen = { syncs: [], events: [] };
+  const cleanup = client.subscribeConversationStream("conversation-1", {
+    onSync: (result) => seen.syncs.push(result),
+    onEvent: (event) => seen.events.push(event),
+  });
+
+  // The transport may legitimately re-issue chat.subscribe (connect + eager
+  // ensureConnected both call handleConnected); answer every request with the
+  // caller's cursor plus any replay events staged below.
+  const answeredSubscribes = new Set();
+  let replayEvents = [];
+  const subscribeCalls = [];
+  const answerSubscribes = (socket) => {
+    for (const envelope of socket.sent) {
+      if (envelope.type !== "chat.subscribe" || answeredSubscribes.has(envelope.id)) {
+        continue;
+      }
+      answeredSubscribes.add(envelope.id);
+      subscribeCalls.push(envelope.payload);
+      const events = replayEvents;
+      replayEvents = [];
+      const latestSeq = events.length
+        ? events[events.length - 1].seq
+        : Math.max(envelope.payload.after_seq ?? 0, 2);
+      socket.receive({
+        id: envelope.id,
+        type: "response",
+        payload: {
+          conversation_id: "conversation-1",
+          stream_epoch: "epoch-1",
+          latest_seq: latestSeq,
+          reset: false,
+          activity: null,
+          snapshot: null,
+          events,
         },
-        {
-          relativePath: "uploads/screenshot.webp",
-          absolutePath: "/workspace/uploads/screenshot.webp",
-          fileName: "screenshot.webp",
-          kind: "image",
-          sizeBytes: 34,
-        },
-        {
-          relativePath: "uploads/report.pdf",
-          absolutePath: "/workspace/uploads/report.pdf",
-          fileName: "report.pdf",
-          kind: "pdf",
-          sizeBytes: 56,
-        },
-      ],
-      clientRequestId: "client-submit-1",
-      runtimeControls: {
-        thinkingEnabled: false,
-        nativeWebSearchEnabled: true,
-        reasoning: "xhigh",
-      },
-    })) {
-      events.push(event);
+      });
     }
+  };
+  const settle = async (socket) => {
+    for (let i = 0; i < 20; i += 1) {
+      answerSubscribes(socket);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  };
 
-    assert.equal(fetchCalls.length, 2);
-    const commandCall = fetchCalls[0];
-    assert.equal(commandCall.url.toString(), "https://gateway.example/api/chat/commands");
-    assert.equal(commandCall.init.method, "POST");
-    assert.equal(commandCall.init.headers.Authorization, "Bearer token");
-    assert.equal(commandCall.init.headers["X-LiveAgent-CSRF"], "1");
-    assert.deepEqual(JSON.parse(commandCall.init.body), {
-      type: "chat.submit",
-      payload: {
-        message: "hello",
-        conversation_id: "",
-        client_request_id: "client-submit-1",
-        execution_mode: "agent-dev",
-        workdir: "/workspace",
-        selected_system_tools: ["http_get_test"],
-        uploaded_files: [
-          {
-            relative_path: "uploads/notes.txt",
-            absolute_path: "/workspace/uploads/notes.txt",
-            file_name: "notes.txt",
-            kind: "text",
-            size_bytes: 12,
-          },
-          {
-            relative_path: "uploads/screenshot.webp",
-            absolute_path: "/workspace/uploads/screenshot.webp",
-            file_name: "screenshot.webp",
-            kind: "image",
-            size_bytes: 34,
-          },
-          {
-            relative_path: "uploads/report.pdf",
-            absolute_path: "/workspace/uploads/report.pdf",
-            file_name: "report.pdf",
-            kind: "pdf",
-            size_bytes: 56,
-          },
-        ],
-        selected_model: {
-          custom_provider_id: "claude-provider",
-          model: "claude-test",
-          provider_type: "claude_code",
-        },
-        runtime_controls: {
-          thinking_enabled: false,
-          native_web_search_enabled: true,
-          reasoning: "xhigh",
-        },
-        queue_policy: "auto",
-      },
-    });
+  // Auth completes → the persistent subscription issues chat.subscribe.
+  const socket = await connectAndAuth();
+  await waitFor(() => socket.sent.some((item) => item.type === "chat.subscribe"), "chat.subscribe");
+  assert.equal(subscribeCalls.length, 0);
+  await settle(socket);
+  assert.ok(seen.syncs.length >= 1, "subscribe sync delivered");
+  assert.equal(subscribeCalls[0].conversation_id, "conversation-1");
+  assert.equal(subscribeCalls[0].after_seq, 0);
 
-    const eventsCall = fetchCalls[1];
-    assert.equal(eventsCall.url.pathname, "/api/chat/events");
-    assert.equal(eventsCall.url.searchParams.get("run_id"), "run-1");
-    assert.equal(eventsCall.url.searchParams.get("conversation_id"), "conversation-1");
-    assert.equal(eventsCall.url.searchParams.get("after_seq"), "0");
-    assert.equal(eventsCall.init.method, "GET");
-    assert.equal(eventsCall.init.headers.Accept, "text/event-stream");
-    assert.equal(eventsCall.init.headers.Authorization, "Bearer token");
-    assert.deepEqual(events, [
-      { type: "accepted", conversation_id: "conversation-1", seq: 1 },
-      { type: "token", text: "hi", conversation_id: "conversation-1", seq: 2 },
-      { type: "done", conversation_id: "conversation-1", seq: 3 },
-    ]);
-    assert.equal(FakeWebSocket.instances.length, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-    resetGatewayWebSocketClient();
-  }
+  // chat.event pushes route by conversation id (no subscription id).
+  socket.receive({
+    type: "chat.event",
+    payload: { type: "run_started", conversation_id: "conversation-1", run_id: "run-1", seq: 3 },
+  });
+  socket.receive({
+    type: "chat.event",
+    payload: { type: "token", conversation_id: "conversation-1", run_id: "run-1", seq: 4, text: "hi" },
+  });
+  socket.receive({
+    type: "chat.event",
+    payload: { type: "token", conversation_id: "conversation-other", run_id: "run-x", seq: 9, text: "ignored" },
+  });
+  await settle(socket);
+  assert.deepEqual(
+    seen.events.map((event) => event.type),
+    ["run_started", "token"],
+  );
+
+  // Disconnect keeps the registration; the reconnect re-subscribes with the
+  // resume cursor and stream epoch.
+  const syncsBeforeReconnect = seen.syncs.length;
+  replayEvents = [
+    { type: "token", conversation_id: "conversation-1", run_id: "run-1", seq: 5, text: "re" },
+    {
+      type: "run_finished",
+      conversation_id: "conversation-1",
+      run_id: "run-1",
+      seq: 6,
+      status: "completed",
+    },
+  ];
+  const subscribesBeforeReconnect = subscribeCalls.length;
+  socket.close();
+  await new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const tick = () => {
+      if (FakeWebSocket.instances.length >= 2) {
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt > 3_000) {
+        reject(new Error("timed out waiting for reconnect socket"));
+        return;
+      }
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
+  const reconnectSocket = await connectAndAuth(1);
+  await settle(reconnectSocket);
+  assert.ok(seen.syncs.length > syncsBeforeReconnect, "resume sync delivered");
+  const resumePayload = subscribeCalls[subscribesBeforeReconnect];
+  assert.equal(resumePayload.after_seq, 4, "resume cursor from last delivered seq");
+  assert.equal(resumePayload.stream_epoch, "epoch-1");
+  const resumeSync = seen.syncs[seen.syncs.length - 1];
+  assert.deepEqual(
+    resumeSync.events.map((event) => event.type),
+    ["token", "run_finished"],
+    "replayed events delivered with the resume sync",
+  );
+
+  // chat.subscription_reset triggers another resync from the cursor.
+  const subscribesBeforeReset = subscribeCalls.length;
+  reconnectSocket.receive({
+    type: "chat.subscription_reset",
+    payload: { conversation_id: "conversation-1" },
+  });
+  await settle(reconnectSocket);
+  assert.ok(subscribeCalls.length > subscribesBeforeReset, "reset re-subscribed");
+  assert.equal(subscribeCalls[subscribesBeforeReset].after_seq, 6);
+
+  // Cleanup unsubscribes on the wire.
+  cleanup();
+  await waitFor(
+    () => reconnectSocket.sent.some((item) => item.type === "chat.unsubscribe"),
+    "chat.unsubscribe",
+  );
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient fans chat.activity and chat.command_update out to listeners", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const activityEvents = [];
+  const commandUpdates = [];
+  client.subscribeChatActivity((event) => activityEvents.push(event));
+  client.subscribeChatCommandUpdates((update) => commandUpdates.push(update));
+
+  const statusPromise = client.getStatus();
+  const socket = await connectAndAuth();
+  await waitFor(() => socket.sent.length >= 2, "status envelope");
+  socket.receive({ id: socket.sent[1].id, type: "response", payload: { online: true } });
+  await statusPromise;
+
+  socket.receive({
+    type: "chat.activity",
+    payload: {
+      conversation_id: "conversation-1",
+      run_id: "run-1",
+      running: true,
+      state: "running",
+      workdir: "/workspace/project",
+      client_request_id: "req-42",
+      updated_at: 1234,
+    },
+  });
+  socket.receive({
+    type: "chat.activity",
+    payload: { conversation_id: "", running: true },
+  });
+  assert.equal(activityEvents.length, 1, "malformed activity payloads are dropped");
+  assert.deepEqual(activityEvents[0], {
+    conversationId: "conversation-1",
+    runId: "run-1",
+    running: true,
+    state: "running",
+    workdir: "/workspace/project",
+    clientRequestId: "req-42",
+    updatedAt: 1234,
+  });
+
+  socket.receive({
+    type: "chat.command_update",
+    payload: {
+      run_id: "run-1",
+      client_request_id: "req-1",
+      conversation_id: "conversation-9",
+      phase: "bound",
+    },
+  });
+  socket.receive({
+    type: "chat.command_update",
+    payload: { run_id: "run-1", phase: "unknown-phase" },
+  });
+  assert.equal(commandUpdates.length, 1, "unknown phases are dropped");
+  assert.deepEqual(commandUpdates[0], {
+    runId: "run-1",
+    clientRequestId: "req-1",
+    conversationId: "conversation-9",
+    phase: "bound",
+    errorCode: null,
+    message: null,
+  });
+  resetGatewayWebSocketClient();
 });

@@ -2,8 +2,8 @@ import type { MentionComposerDraft } from "../../../components/chat/MentionCompo
 import type { PendingUploadedFile } from "../../../lib/chat/messages/uploadedFiles";
 import type { ChatRuntimeControls, ExecutionMode, SystemToolId } from "../../../lib/settings";
 import type {
-  GatewaySelectedModelEvent,
   GatewayChatRuntimeControlsEvent,
+  GatewaySelectedModelEvent,
 } from "../gateway/gatewayBridgeTypes";
 
 export type QueuedGatewayChatRequest = {

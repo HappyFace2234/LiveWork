@@ -25,7 +25,7 @@ pub use config_commands::settings;
 
 pub use history_commands::chat_history;
 pub use history_commands::history_db;
-pub use history_commands::subagent_history;
+pub use history_commands::subagent_store;
 
 pub use integration_commands::gateway;
 pub use integration_commands::mcp;
@@ -36,6 +36,6 @@ pub use runtime_commands::sftp;
 pub use runtime_commands::shell;
 pub use runtime_commands::terminal;
 
-pub use workspace_commands::delegate;
 pub use workspace_commands::fs;
 pub use workspace_commands::git;
+pub use workspace_commands::subagent_worktree;

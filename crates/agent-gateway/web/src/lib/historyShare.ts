@@ -66,10 +66,7 @@ export function parseHistoryShareToken(pathname = getWindowLocationPathname()) {
   }
 }
 
-export function buildHistoryShareUrl(
-  token: string,
-  origin = getWindowLocationOrigin(),
-) {
+export function buildHistoryShareUrl(token: string, origin = getWindowLocationOrigin()) {
   const normalizedToken = token.trim();
   if (!normalizedToken) {
     return "";

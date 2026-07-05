@@ -9,14 +9,14 @@ import type {
   TerminalShellOption,
   TerminalShellOptions,
   TerminalSnapshot,
-  TerminalStreamChunk,
-  TerminalStreamHandle,
-  TerminalStreamInputState,
-  TerminalStreamSnapshot,
   TerminalSshCreateResult,
   TerminalSshLatency,
   TerminalSshMetadata,
   TerminalSshPrompt,
+  TerminalStreamChunk,
+  TerminalStreamHandle,
+  TerminalStreamInputState,
+  TerminalStreamSnapshot,
 } from "./types";
 
 type TerminalEventListener = (event: TerminalEvent) => void;
@@ -246,9 +246,8 @@ function normalizeStreamSnapshot(input: RawTerminalStreamSnapshot): TerminalStre
     session: normalizeSession(input.session),
     bytes: normalizeBytes(input.bytes),
     truncated: input.truncated === true,
-    outputStartOffset: normalizeOptionalOffset(
-      input.outputStartOffset ?? input.output_start_offset,
-    ) ?? 0,
+    outputStartOffset:
+      normalizeOptionalOffset(input.outputStartOffset ?? input.output_start_offset) ?? 0,
     outputEndOffset: normalizeOptionalOffset(input.outputEndOffset ?? input.output_end_offset) ?? 0,
   };
 }
@@ -320,7 +319,10 @@ function normalizeEvent(input: RawTerminalEvent): TerminalEvent | null {
     kind: input.kind ?? "",
     sessionId: input.sessionId ?? input.session_id ?? session?.id,
     projectPathKey:
-      input.projectPathKey ?? input.project_path_key ?? session?.projectPathKey ?? sshTabs.projectPathKey,
+      input.projectPathKey ??
+      input.project_path_key ??
+      session?.projectPathKey ??
+      sshTabs.projectPathKey,
     session,
     outputStartOffset,
     outputEndOffset,
@@ -345,7 +347,9 @@ function normalizeStreamEvent(input: RawTerminalStreamEvent): TerminalStreamChun
 function normalizeBytes(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   if (ArrayBuffer.isView(value)) {
-    return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+    return new Uint8Array(
+      value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength),
+    );
   }
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (Array.isArray(value)) {

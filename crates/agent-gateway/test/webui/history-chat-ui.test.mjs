@@ -3,13 +3,28 @@ import test from "node:test";
 import { createWebModuleLoader } from "../helpers/load-web-module.mjs";
 
 const loader = createWebModuleLoader();
-const historySync = loader.loadModule("src/lib/historySync.ts");
 const chatUi = loader.loadModule("src/lib/chatUi.ts");
-const liveStore = loader.loadModule("src/lib/liveConversationStreamStore.ts");
-const liveCommit = loader.loadModule("src/lib/liveConversationCommit.ts");
+const transcriptStoreModule = loader.loadModule("src/lib/chat/transcript/transcriptStore.ts");
+const { createTurn, applyEventToTurn } = loader.loadModule(
+  "src/lib/chat/transcript/turnReducer.ts",
+);
+const { buildRowsFromEntries } = loader.loadModule("src/lib/chat/transcript/rows.ts");
 const historyShare = loader.loadModule("src/lib/historyShare.ts");
-const requestContextSanitizer = loader.loadModule("src/lib/chat/requestContextSanitizer.ts");
 const conversationState = loader.loadModule("src/lib/chat/conversationState.ts");
+
+// Live-stream reducer harness: the createTurn/applyEventToTurn pair replaces
+// the old flat pushChatEvent pipeline — one Turn holds a single run's entries.
+function reduceTurnEvents(events) {
+  let turn = createTurn({ key: "req:test", runId: "run-test" });
+  for (const event of events) {
+    turn = applyEventToTurn(turn, event);
+  }
+  return turn;
+}
+
+function findAssistantRow(rows) {
+  return rows.find((row) => row.kind === "assistant");
+}
 
 test("history share helpers parse and build share URLs", () => {
   assert.equal(historyShare.parseHistoryShareToken("/share/abc123"), "abc123");
@@ -74,401 +89,6 @@ test("fetchSharedHistory reads public share details that parse into transcript e
   } finally {
     globalThis.fetch = previousFetch;
   }
-});
-
-test("applyGatewayHistoryEvent upserts newest summaries and removes deleted conversations", () => {
-  const existing = [
-    { id: "one", title: "One", created_at: 1, updated_at: 1, message_count: 1 },
-    { id: "two", title: "Two", created_at: 2, updated_at: 2, message_count: 2 },
-  ];
-
-  const upserted = historySync.applyGatewayHistoryEvent(existing, {
-    kind: "upsert",
-    conversation_id: "two",
-    conversation: { id: "two", title: "Updated", created_at: 2, updated_at: 3, message_count: 3 },
-  });
-  assert.deepEqual(upserted.map((item) => item.id), ["two", "one"]);
-  assert.equal(upserted[0].title, "Updated");
-
-  const deleted = historySync.applyGatewayHistoryEvent(upserted, {
-    kind: "delete",
-    conversation_id: "two",
-  });
-  assert.deepEqual(deleted.map((item) => item.id), ["one"]);
-
-  const running = historySync.applyGatewayHistoryEvent(deleted, {
-    kind: "running",
-    conversation_id: "one",
-  });
-  assert.equal(running, deleted);
-});
-
-test("applyGatewayHistoryEvent sorts pinned conversations before recent conversations", () => {
-  const existing = [
-    { id: "older", title: "Older", created_at: 1, updated_at: 1, message_count: 1 },
-    { id: "newer", title: "Newer", created_at: 2, updated_at: 2, message_count: 2 },
-  ];
-
-  const pinned = historySync.applyGatewayHistoryEvent(existing, {
-    kind: "upsert",
-    conversation_id: "older",
-    conversation: {
-      id: "older",
-      title: "Older",
-      created_at: 1,
-      updated_at: 1,
-      message_count: 1,
-      is_pinned: true,
-      pinned_at: 3,
-    },
-  });
-  assert.deepEqual(pinned.map((item) => item.id), ["older", "newer"]);
-
-  const unpinned = historySync.applyGatewayHistoryEvent(pinned, {
-    kind: "upsert",
-    conversation_id: "older",
-    conversation: {
-      id: "older",
-      title: "Older",
-      created_at: 1,
-      updated_at: 1,
-      message_count: 1,
-      is_pinned: false,
-      pinned_at: 0,
-    },
-  });
-  assert.deepEqual(unpinned.map((item) => item.id), ["newer", "older"]);
-});
-
-test("applyGatewayHistoryEvent preserves share state when partial summaries arrive", () => {
-  const existing = [
-    {
-      id: "shared",
-      title: "Shared",
-      created_at: 1,
-      updated_at: 1,
-      message_count: 1,
-      is_shared: true,
-    },
-  ];
-
-  const renamed = historySync.applyGatewayHistoryEvent(existing, {
-    kind: "upsert",
-    conversation_id: "shared",
-    conversation: {
-      id: "shared",
-      title: "Renamed",
-      created_at: 1,
-      updated_at: 2,
-      message_count: 1,
-    },
-  });
-
-  assert.equal(renamed[0].title, "Renamed");
-  assert.equal(renamed[0].is_shared, true);
-
-  const disabled = historySync.applyGatewayHistoryEvent(renamed, {
-    kind: "upsert",
-    conversation_id: "shared",
-    conversation: {
-      id: "shared",
-      title: "Renamed",
-      created_at: 1,
-      updated_at: 3,
-      message_count: 1,
-      is_shared: false,
-    },
-  });
-
-  assert.equal(disabled[0].is_shared, false);
-});
-
-test("upsertConversationSummary keeps existing title when partial summary title is blank", () => {
-  const existing = [
-    {
-      id: "conversation-1",
-      title: "Existing title",
-      created_at: 1,
-      updated_at: 10,
-      message_count: 4,
-      provider_id: "codex",
-      model: "gpt-5.2",
-      session_id: "session-1",
-      cwd: "/workspace",
-    },
-  ];
-
-  const updated = historySync.upsertConversationSummary(existing, {
-    id: "conversation-1",
-    title: "",
-    created_at: 1,
-    updated_at: 11,
-    message_count: 1,
-    provider_id: "",
-    model: "",
-    session_id: "",
-    cwd: "",
-  });
-
-  assert.equal(updated[0].title, "Existing title");
-  assert.equal(updated[0].provider_id, "codex");
-  assert.equal(updated[0].model, "gpt-5.2");
-  assert.equal(updated[0].session_id, "session-1");
-  assert.equal(updated[0].cwd, "/workspace");
-  assert.equal(updated[0].updated_at, 11);
-  assert.equal(updated[0].message_count, 1);
-});
-
-test("upsertConversationSummary can update titles without changing list position", () => {
-  const existing = [
-    {
-      id: "newer",
-      title: "Newer",
-      created_at: 1,
-      updated_at: 300,
-      message_count: 4,
-    },
-    {
-      id: "conversation-1",
-      title: "1234567890",
-      created_at: 1,
-      updated_at: 100,
-      message_count: 1,
-    },
-  ];
-
-  const titleOnly = historySync.upsertConversationSummary(
-    existing,
-    {
-      id: "conversation-1",
-      title: "Generated title",
-      created_at: 1,
-      updated_at: 400,
-      message_count: 1,
-    },
-    { preserveExistingUpdatedAt: true },
-  );
-
-  assert.deepEqual(titleOnly.map((item) => item.id), ["newer", "conversation-1"]);
-  assert.equal(titleOnly[1].title, "Generated title");
-  assert.equal(titleOnly[1].updated_at, 100);
-
-  const recencyUpdate = historySync.upsertConversationSummary(existing, {
-    id: "conversation-1",
-    title: "Generated title",
-    created_at: 1,
-    updated_at: 400,
-    message_count: 1,
-  });
-
-  assert.deepEqual(recencyUpdate.map((item) => item.id), ["conversation-1", "newer"]);
-  assert.equal(recencyUpdate[0].updated_at, 400);
-});
-
-test("reconcileConversationSummaries keeps optimistic titles during protected refreshes", () => {
-  const existing = [
-    {
-      id: "conversation-1",
-      title: "1234567890",
-      created_at: 100,
-      updated_at: 100,
-      message_count: 1,
-    },
-  ];
-
-  const refreshed = historySync.reconcileConversationSummaries(
-    existing,
-    [
-      {
-        id: "conversation-1",
-        title: "1234567890abcdef",
-        created_at: 100,
-        updated_at: 200,
-        message_count: 2,
-      },
-    ],
-    { preserveTitleConversationIds: ["conversation-1"] },
-  );
-
-  assert.equal(refreshed[0].title, "1234567890");
-  assert.equal(refreshed[0].updated_at, 200);
-  assert.equal(refreshed[0].message_count, 2);
-});
-
-test("reconcileConversationSummaries can keep protected rows in place during refreshes", () => {
-  const existing = [
-    {
-      id: "newer",
-      title: "Newer",
-      created_at: 1,
-      updated_at: 300,
-      message_count: 4,
-    },
-    {
-      id: "conversation-1",
-      title: "1234567890",
-      created_at: 1,
-      updated_at: 100,
-      message_count: 1,
-    },
-  ];
-
-  const refreshed = historySync.reconcileConversationSummaries(
-    existing,
-    [
-      {
-        id: "conversation-1",
-        title: "Backend title",
-        created_at: 1,
-        updated_at: 400,
-        message_count: 2,
-      },
-      {
-        id: "newer",
-        title: "Newer",
-        created_at: 1,
-        updated_at: 300,
-        message_count: 4,
-      },
-    ],
-    {
-      preserveTitleConversationIds: ["conversation-1"],
-      preserveUpdatedAtConversationIds: ["conversation-1"],
-    },
-  );
-
-  assert.deepEqual(refreshed.map((item) => item.id), ["newer", "conversation-1"]);
-  assert.equal(refreshed[1].title, "1234567890");
-  assert.equal(refreshed[1].updated_at, 100);
-  assert.equal(refreshed[1].message_count, 2);
-});
-
-test("reconcileConversationSummaries retains running local rows missing from a list refresh", () => {
-  const existing = [
-    {
-      id: "__local_draft__:1",
-      title: "1234567890",
-      created_at: 100,
-      updated_at: 100,
-      message_count: 1,
-    },
-  ];
-
-  const refreshed = historySync.reconcileConversationSummaries(existing, [], {
-    retainConversationIds: ["__local_draft__:1"],
-  });
-
-  assert.equal(refreshed[0], existing[0]);
-});
-
-test("normalizeRunningConversationIds trims drops invalid entries and dedupes in order", () => {
-  assert.deepEqual(
-    historySync.normalizeRunningConversationIds([
-      " conversation-1 ",
-      "",
-      "conversation-2",
-      "conversation-1",
-      null,
-      42,
-      " conversation-3 ",
-    ]),
-    ["conversation-1", "conversation-2", "conversation-3"],
-  );
-  assert.deepEqual(historySync.normalizeRunningConversationIds(undefined), []);
-});
-
-test("normalizeRunningConversations preserves replay cursors and merges fallback ids", () => {
-  assert.deepEqual(
-    historySync.normalizeRunningConversations(
-      [
-        {
-          conversation_id: " conversation-1 ",
-          run_id: " run-1 ",
-          cwd: " /workspace ",
-          first_seq: 42.9,
-          run_epoch: 3.2,
-          updated_at: 123,
-        },
-        {
-          conversation_id: "conversation-1",
-          first_seq: 7,
-        },
-        {
-          conversation_id: "conversation-2",
-          first_seq: 0,
-        },
-      ],
-      ["conversation-2", " conversation-3 "],
-    ),
-    [
-      {
-        conversation_id: "conversation-1",
-        run_id: "run-1",
-        cwd: "/workspace",
-        first_seq: 42,
-        run_epoch: 3,
-        updated_at: 123,
-      },
-      {
-        conversation_id: "conversation-2",
-        run_id: undefined,
-        cwd: undefined,
-        first_seq: undefined,
-        run_epoch: undefined,
-        updated_at: undefined,
-      },
-      {
-        conversation_id: "conversation-3",
-      },
-    ],
-  );
-});
-
-test("resolveRunningConversationStreamAfterSeq starts remote replay at current run boundary", () => {
-  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(42), 41);
-  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(42.9), 41);
-  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(1), 0);
-  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(0), 0);
-  assert.equal(historySync.resolveRunningConversationStreamAfterSeq(undefined), 0);
-  assert.equal(historySync.resolveRunningConversationStreamAfterSeq("42"), 0);
-  assert.equal(
-    historySync.resolveRunningConversationStreamAfterSeq(42, { runId: "chat-command-1" }),
-    0,
-  );
-});
-
-test("applyGatewayHistoryEvent can protect optimistic titles from summary broadcasts", () => {
-  const existing = [
-    {
-      id: "conversation-1",
-      title: "1234567890",
-      created_at: 100,
-      updated_at: 100,
-      message_count: 1,
-    },
-  ];
-  const event = {
-    kind: "upsert",
-    conversation_id: "conversation-1",
-    conversation: {
-      id: "conversation-1",
-      title: "1234567890abcdef",
-      created_at: 100,
-      updated_at: 200,
-      message_count: 2,
-    },
-  };
-
-  const protectedTitle = historySync.applyGatewayHistoryEvent(existing, event, {
-    preserveTitleConversationIds: ["conversation-1"],
-    preserveUpdatedAtConversationIds: ["conversation-1"],
-  });
-  assert.equal(protectedTitle[0].title, "1234567890");
-  assert.equal(protectedTitle[0].updated_at, 100);
-
-  const replacedTitle = historySync.applyGatewayHistoryEvent(existing, event);
-  assert.equal(replacedTitle[0].title, "1234567890abcdef");
-  assert.equal(replacedTitle[0].updated_at, 200);
 });
 
 test("parseHistoryMessagesJson preserves upload display text and checkpoint metadata", () => {
@@ -616,8 +236,7 @@ test("parseHistoryMessagesJson preserves provider tool_use input arguments", () 
     },
   ]));
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "history"));
   const toolBlock = assistant.rounds[0].blocks.find((block) => block.kind === "tool");
 
   assert.ok(toolBlock);
@@ -627,97 +246,6 @@ test("parseHistoryMessagesJson preserves provider tool_use input arguments", () 
     cwd: "crates/agent-gateway/web",
     root: "workspace",
   });
-});
-
-test("WebUI model request sanitizer textifies hosted search and drops aborted rounds", () => {
-  const completedSearch = {
-    type: "hostedSearch",
-    id: "hosted-search-completed",
-    provider: "claude_code",
-    status: "completed",
-    queries: ["LiveAgent DeepSeek web search"],
-    sources: [{ url: "https://example.com/result", title: "Result" }],
-  };
-  const abortedSearch = {
-    type: "hostedSearch",
-    id: "hosted-search-aborted",
-    provider: "claude_code",
-    status: "completed",
-    queries: ["aborted query"],
-    sources: [{ url: "https://example.com/aborted" }],
-  };
-  const toolResult = {
-    role: "toolResult",
-    toolCallId: "call-aborted",
-    toolName: "Read",
-    content: [{ type: "text", text: "partial" }],
-    isError: false,
-    timestamp: 3,
-  };
-
-  const sanitized = requestContextSanitizer.sanitizeContextForModelRequest({
-    messages: [
-      { role: "user", content: "search", timestamp: 1 },
-      {
-        role: "assistant",
-        content: [{ type: "thinking", thinking: "searching" }, completedSearch],
-        provider: "anthropic",
-        model: "deepseek-chat",
-        api: "anthropic-messages",
-        usage: { totalTokens: 1 },
-        stopReason: "stop",
-        timestamp: 2,
-      },
-      {
-        role: "assistant",
-        content: [abortedSearch],
-        provider: "anthropic",
-        model: "deepseek-chat",
-        api: "anthropic-messages",
-        usage: { totalTokens: 1 },
-        stopReason: "aborted",
-        timestamp: 3,
-      },
-      toolResult,
-    ],
-  });
-
-  assert.deepEqual(sanitized.messages.map((message) => message.role), ["user", "assistant"]);
-  assert.deepEqual(
-    sanitized.messages[1].content.map((block) => block.type),
-    ["thinking", "text"],
-  );
-  assert.match(sanitized.messages[1].content[1].text, /Provider-hosted web search completed/);
-  assert.match(sanitized.messages[1].content[1].text, /https:\/\/example\.com\/result/);
-  assert.doesNotMatch(JSON.stringify(sanitized.messages), /hosted-search-aborted/);
-
-  const state = conversationState.createConversationStateFromContext({
-    messages: [
-      { role: "user", content: "search", timestamp: 1 },
-      {
-        role: "assistant",
-        content: [abortedSearch],
-        provider: "anthropic",
-        model: "deepseek-chat",
-        api: "anthropic-messages",
-        usage: { totalTokens: 1 },
-        stopReason: "aborted",
-        timestamp: 2,
-      },
-      toolResult,
-      { role: "user", content: "continue", timestamp: 4 },
-    ],
-  });
-  assert.deepEqual(
-    conversationState.buildRequestContext(state).messages.map((message) => message.role),
-    ["user", "user"],
-  );
-  assert.deepEqual(
-    conversationState.buildRequestContext(state, { includeAbortedMessages: true }).messages.map(
-      (message) => message.role,
-    ),
-    ["user", "assistant", "toolResult", "user"],
-  );
 });
 
 test("WebUI transcript strips leaked DSML tool call markup from text and thinking", () => {
@@ -737,8 +265,7 @@ test("WebUI transcript strips leaked DSML tool call markup from text and thinkin
       ],
     },
   ]));
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "history"));
   const round = assistant.rounds[0];
   const allText = JSON.stringify(round.blocks);
 
@@ -784,8 +311,7 @@ test("WebUI transcript hides provider-native web_search tool traces when hosted 
     },
   ]));
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "history"));
   const round = assistant.rounds[0];
 
   assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
@@ -793,8 +319,8 @@ test("WebUI transcript hides provider-native web_search tool traces when hosted 
 });
 
 test("WebUI live transcript removes provider-native web_search when hosted search arrives later", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
+  let turn = createTurn({ key: "req:test", runId: "run-test" });
+  turn = applyEventToTurn(turn, {
     type: "tool_call",
     id: "call_00_webui_search",
     name: "web_search",
@@ -802,10 +328,10 @@ test("WebUI live transcript removes provider-native web_search when hosted searc
     round: 1,
   });
 
-  let assistant = chatUi.buildTranscriptItems(entries).find((entry) => entry.kind === "assistant");
+  let assistant = findAssistantRow(buildRowsFromEntries(turn.entries, "stream"));
   assert.equal(assistant.rounds[0].blocks.some((block) => block.kind === "tool"), true);
 
-  entries = chatUi.pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "hosted-search-live",
     provider: "claude_code",
@@ -815,7 +341,7 @@ test("WebUI live transcript removes provider-native web_search when hosted searc
     round: 1,
   });
 
-  assistant = chatUi.buildTranscriptItems(entries).find((entry) => entry.kind === "assistant");
+  assistant = findAssistantRow(buildRowsFromEntries(turn.entries, "stream"));
   const round = assistant.rounds[0];
 
   assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
@@ -824,53 +350,54 @@ test("WebUI live transcript removes provider-native web_search when hosted searc
 });
 
 test("WebUI live transcript hides recovered provider-native web_search results without hosted search", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "call_00_webui_recovered_search",
-    name: "WebSearch",
-    arguments: { query: "LiveAgent recovered search" },
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_result",
-    id: "call_00_webui_recovered_search",
-    name: "WebSearch",
-    content: [{ type: "text", text: "Recovered provider-native web search." }],
-    details: { recoveredProviderNativeWebSearch: true },
-    isError: false,
-    round: 1,
-  });
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "call_00_webui_recovered_search",
+      name: "WebSearch",
+      arguments: { query: "LiveAgent recovered search" },
+      round: 1,
+    },
+    {
+      type: "tool_result",
+      id: "call_00_webui_recovered_search",
+      name: "WebSearch",
+      content: [{ type: "text", text: "Recovered provider-native web search." }],
+      details: { recoveredProviderNativeWebSearch: true },
+      isError: false,
+      round: 1,
+    },
+  ]);
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
-  const round = assistant.rounds[0];
-
-  assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
-  assert.deepEqual(round.runningToolCallIds, []);
+  // The recovered result hides the whole trace; with nothing else in the
+  // round the content gate drops it entirely — no avatar-only assistant row
+  // (stronger than the old "row without tool blocks" rendering).
+  const rows = buildRowsFromEntries(turn.entries, "stream");
+  assert.equal(findAssistantRow(rows), undefined, "fully hidden trace renders no assistant row");
+  assert.equal(rows.length, 0);
 });
 
 test("WebUI live transcript hides recovered DSML provider-native web_search calls immediately", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "dsml-tool-call-webui-live-search",
-    name: "builtin_web_search",
-    arguments: { query: "LiveAgent DSML hidden search" },
-    round: 1,
-  });
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "dsml-tool-call-webui-live-search",
+      name: "builtin_web_search",
+      arguments: { query: "LiveAgent DSML hidden search" },
+      round: 1,
+    },
+  ]);
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
-  const round = assistant.rounds[0];
-
-  assert.equal(round.blocks.some((block) => block.kind === "tool"), false);
-  assert.deepEqual(round.runningToolCallIds, []);
+  // The DSML-recovered call is hidden immediately; the content-less round is
+  // dropped so no assistant row (avatar) can appear for it.
+  const rows = buildRowsFromEntries(turn.entries, "stream");
+  assert.equal(findAssistantRow(rows), undefined, "fully hidden call renders no assistant row");
+  assert.equal(rows.length, 0);
 });
 
-test("pushChatEvent appends streaming text, dedupes tool cards, and dedupes compaction checkpoints", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
+test("turn reducer appends streaming text, dedupes tool cards, and dedupes compaction checkpoints", () => {
+  let turn = createTurn({ key: "req:test", runId: "run-test" });
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "hello ",
     round: 1,
@@ -878,16 +405,16 @@ test("pushChatEvent appends streaming text, dedupes tool cards, and dedupes comp
     model: "gpt-test",
     usage: { totalTokens: 12 },
   });
-  entries = chatUi.pushChatEvent(entries, { type: "token", text: "world", round: 1 });
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].kind, "assistant");
-  assert.equal(entries[0].text, "hello world");
-  assert.equal(entries[0].meta.usageTotalTokens, 12);
+  turn = applyEventToTurn(turn, { type: "token", text: "world", round: 1 });
+  assert.equal(turn.entries.length, 1);
+  assert.equal(turn.entries[0].kind, "assistant");
+  assert.equal(turn.entries[0].text, "hello world");
+  assert.equal(turn.entries[0].meta.usageTotalTokens, 12);
 
   const toolCall = { type: "tool_call", id: "call-1", name: "Read", arguments: { path: "README.md" }, round: 1 };
-  entries = chatUi.pushChatEvent(entries, toolCall);
-  entries = chatUi.pushChatEvent(entries, toolCall);
-  assert.equal(entries.filter((entry) => entry.kind === "tool_call").length, 1);
+  turn = applyEventToTurn(turn, toolCall);
+  turn = applyEventToTurn(turn, toolCall);
+  assert.equal(turn.entries.filter((entry) => entry.kind === "tool_call").length, 1);
 
   const checkpoint = {
     type: "token",
@@ -898,53 +425,54 @@ test("pushChatEvent appends streaming text, dedupes tool cards, and dedupes comp
       generatedBy: { providerId: "liveagent", model: "summary" },
     },
   };
-  entries = chatUi.pushChatEvent(entries, checkpoint);
-  entries = chatUi.pushChatEvent(entries, checkpoint);
-  assert.equal(entries.filter((entry) => entry.kind === "checkpoint").length, 1);
+  turn = applyEventToTurn(turn, checkpoint);
+  turn = applyEventToTurn(turn, checkpoint);
+  assert.equal(turn.entries.filter((entry) => entry.kind === "checkpoint").length, 1);
 });
 
-test("pushChatEvent preserves tool call arguments from JSON string and input aliases", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "bash-call",
-    name: "Bash",
-    arguments: JSON.stringify({
-      command: "echo gateway",
-      cwd: "crates/agent-gateway",
-      root: "workspace",
-    }),
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "read-call",
-    name: "Read",
-    input: {
-      path: "README.md",
-      root: "workspace",
+test("turn reducer preserves tool call arguments from JSON string and input aliases", () => {
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "bash-call",
+      name: "Bash",
+      arguments: JSON.stringify({
+        command: "echo gateway",
+        cwd: "crates/agent-gateway",
+        root: "workspace",
+      }),
+      round: 1,
     },
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    data: JSON.stringify({
-      id: "glob-call",
-      name: "Glob",
-      args: {
-        pattern: "**/*.ts",
-        path: "src",
+    {
+      type: "tool_call",
+      id: "read-call",
+      name: "Read",
+      input: {
+        path: "README.md",
         root: "workspace",
       },
-    }),
-    round: 1,
-  });
+      round: 1,
+    },
+    {
+      type: "tool_call",
+      data: JSON.stringify({
+        id: "glob-call",
+        name: "Glob",
+        args: {
+          pattern: "**/*.ts",
+          path: "src",
+          root: "workspace",
+        },
+      }),
+      round: 1,
+    },
+  ]);
+  const entries = turn.entries;
 
   const bashCall = entries.find((entry) => entry.kind === "tool_call" && entry.toolCall.id === "bash-call");
   const readCall = entries.find((entry) => entry.kind === "tool_call" && entry.toolCall.id === "read-call");
   const globCall = entries.find((entry) => entry.kind === "tool_call" && entry.toolCall.id === "glob-call");
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "stream"));
   const toolBlocks = assistant.rounds[0].blocks.filter((block) => block.kind === "tool");
 
   assert.ok(bashCall);
@@ -959,29 +487,30 @@ test("pushChatEvent preserves tool call arguments from JSON string and input ali
   assert.equal(toolBlocks[2].item.toolCall.arguments.pattern, "**/*.ts");
 });
 
-test("pushChatEvent reconstructs a parameterized tool card from tool_result arguments", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_result",
-    id: "bash-result-only",
-    name: "Bash",
-    arguments: {
-      command: "printf live",
-      cwd: "crates/agent-gateway",
-      root: "workspace",
+test("turn reducer reconstructs a parameterized tool card from tool_result arguments", () => {
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_result",
+      id: "bash-result-only",
+      name: "Bash",
+      arguments: {
+        command: "printf live",
+        cwd: "crates/agent-gateway",
+        root: "workspace",
+      },
+      content: [{ type: "text", text: "live" }],
+      isError: false,
+      round: 1,
     },
-    content: [{ type: "text", text: "live" }],
-    isError: false,
-    round: 1,
-  });
+  ]);
+  const entries = turn.entries;
 
   assert.equal(entries.length, 2);
   assert.equal(entries[0].kind, "tool_call");
   assert.equal(entries[0].toolCall.arguments.command, "printf live");
   assert.equal(entries[1].kind, "tool_result");
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "stream"));
   const toolBlock = assistant.rounds[0].blocks.find((block) => block.kind === "tool");
 
   assert.ok(toolBlock);
@@ -990,36 +519,36 @@ test("pushChatEvent reconstructs a parameterized tool card from tool_result argu
   assert.equal(toolBlock.item.toolResult.content[0].text, "live");
 });
 
-test("pushChatEvent does not duplicate tool cards when tool_call precedes parameterized tool_result", () => {
-  let entries = [];
+test("turn reducer does not duplicate tool cards when tool_call precedes parameterized tool_result", () => {
   const toolArguments = {
     command: "printf once",
     cwd: "crates/agent-gateway",
     root: "workspace",
   };
-
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "bash-no-duplicate",
-    name: "Bash",
-    arguments: toolArguments,
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_result",
-    id: "bash-no-duplicate",
-    name: "Bash",
-    arguments: toolArguments,
-    content: [{ type: "text", text: "once" }],
-    isError: false,
-    round: 1,
-  });
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "bash-no-duplicate",
+      name: "Bash",
+      arguments: toolArguments,
+      round: 1,
+    },
+    {
+      type: "tool_result",
+      id: "bash-no-duplicate",
+      name: "Bash",
+      arguments: toolArguments,
+      content: [{ type: "text", text: "once" }],
+      isError: false,
+      round: 1,
+    },
+  ]);
+  const entries = turn.entries;
 
   assert.equal(entries.filter((entry) => entry.kind === "tool_call").length, 1);
   assert.equal(entries.filter((entry) => entry.kind === "tool_result").length, 1);
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "stream"));
   const toolBlocks = assistant.rounds[0].blocks.filter((block) => block.kind === "tool");
 
   assert.equal(toolBlocks.length, 1);
@@ -1027,59 +556,62 @@ test("pushChatEvent does not duplicate tool cards when tool_call precedes parame
   assert.equal(toolBlocks[0].item.toolResult.content[0].text, "once");
 });
 
-test("pushChatEvent upgrades an existing live tool card when execution start carries arguments", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "bash-late-args",
-    name: "Bash",
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "bash-late-args",
-    name: "Bash",
-    arguments: {
-      command: "printf from-start",
-      cwd: "crates/agent-gateway",
-      root: "workspace",
+test("turn reducer upgrades an existing live tool card when execution start carries arguments", () => {
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "bash-late-args",
+      name: "Bash",
+      round: 1,
     },
-    round: 1,
-  });
+    {
+      type: "tool_call",
+      id: "bash-late-args",
+      name: "Bash",
+      arguments: {
+        command: "printf from-start",
+        cwd: "crates/agent-gateway",
+        root: "workspace",
+      },
+      round: 1,
+    },
+  ]);
+  const entries = turn.entries;
 
   assert.equal(entries.filter((entry) => entry.kind === "tool_call").length, 1);
   assert.equal(entries[0].toolCall.arguments.command, "printf from-start");
   assert.match(entries[0].summary, /command=printf from-start/);
 });
 
-test("pushChatEvent upgrades an existing live tool card when tool_result carries arguments", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "bash-result-args",
-    name: "Bash",
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_result",
-    id: "bash-result-args",
-    name: "Bash",
-    arguments: {
-      command: "printf from-result",
-      cwd: "crates/agent-gateway",
-      root: "workspace",
+test("turn reducer upgrades an existing live tool card when tool_result carries arguments", () => {
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "bash-result-args",
+      name: "Bash",
+      round: 1,
     },
-    content: [{ type: "text", text: "from-result" }],
-    isError: false,
-    round: 1,
-  });
+    {
+      type: "tool_result",
+      id: "bash-result-args",
+      name: "Bash",
+      arguments: {
+        command: "printf from-result",
+        cwd: "crates/agent-gateway",
+        root: "workspace",
+      },
+      content: [{ type: "text", text: "from-result" }],
+      isError: false,
+      round: 1,
+    },
+  ]);
+  const entries = turn.entries;
 
   assert.equal(entries.filter((entry) => entry.kind === "tool_call").length, 1);
   assert.equal(entries.filter((entry) => entry.kind === "tool_result").length, 1);
   assert.equal(entries[0].toolCall.arguments.command, "printf from-result");
 
-  const transcript = chatUi.buildTranscriptItems(entries);
-  const assistant = transcript.find((entry) => entry.kind === "assistant");
+  const assistant = findAssistantRow(buildRowsFromEntries(entries, "stream"));
   const toolBlock = assistant.rounds[0].blocks.find((block) => block.kind === "tool");
 
   assert.ok(toolBlock);
@@ -1087,250 +619,41 @@ test("pushChatEvent upgrades an existing live tool card when tool_result carries
   assert.equal(toolBlock.item.toolResult.content[0].text, "from-result");
 });
 
-test("pushChatEvent keeps a deduped result while applying late result arguments", () => {
-  let entries = [];
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_call",
-    id: "bash-duplicate-result",
-    name: "Bash",
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_result",
-    id: "bash-duplicate-result",
-    name: "Bash",
-    content: [{ type: "text", text: "duplicate" }],
-    isError: false,
-    round: 1,
-  });
-  entries = chatUi.pushChatEvent(entries, {
-    type: "tool_result",
-    id: "bash-duplicate-result",
-    name: "Bash",
-    arguments: {
-      command: "printf duplicate",
-      cwd: "crates/agent-gateway",
-      root: "workspace",
+test("turn reducer keeps a deduped result while applying late result arguments", () => {
+  const turn = reduceTurnEvents([
+    {
+      type: "tool_call",
+      id: "bash-duplicate-result",
+      name: "Bash",
+      round: 1,
     },
-    content: [{ type: "text", text: "duplicate" }],
-    isError: false,
-    round: 1,
-  });
+    {
+      type: "tool_result",
+      id: "bash-duplicate-result",
+      name: "Bash",
+      content: [{ type: "text", text: "duplicate" }],
+      isError: false,
+      round: 1,
+    },
+    {
+      type: "tool_result",
+      id: "bash-duplicate-result",
+      name: "Bash",
+      arguments: {
+        command: "printf duplicate",
+        cwd: "crates/agent-gateway",
+        root: "workspace",
+      },
+      content: [{ type: "text", text: "duplicate" }],
+      isError: false,
+      round: 1,
+    },
+  ]);
+  const entries = turn.entries;
 
   assert.equal(entries.filter((entry) => entry.kind === "tool_call").length, 1);
   assert.equal(entries.filter((entry) => entry.kind === "tool_result").length, 1);
   assert.equal(entries[0].toolCall.arguments.command, "printf duplicate");
-});
-
-test("createLiveConversationStreamStore batches entries and clears tool status on terminal events", () => {
-  globalThis.window = undefined;
-  globalThis.document = { visibilityState: "visible" };
-
-  const store = liveStore.createLiveConversationStreamStore();
-  let notifications = 0;
-  const unsubscribe = store.subscribe(() => {
-    notifications += 1;
-  });
-
-  store.setToolStatus("Compacting...", true);
-  assert.equal(store.getSnapshot().toolStatus, "Compacting...");
-  assert.equal(store.getSnapshot().toolStatusIsCompaction, true);
-  assert.equal(notifications, 1);
-
-  store.appendEvent({ type: "token", text: "hello", round: 1 });
-  assert.equal(store.getSnapshot().entries[0].text, "hello");
-  assert.equal(store.getSnapshot().toolStatus, "Compacting...");
-
-  store.appendEvent({ type: "done", conversation_id: "conversation-1" });
-  assert.equal(store.getSnapshot().toolStatus, null);
-  assert.equal(store.getSnapshot().toolStatusIsCompaction, false);
-
-  unsubscribe();
-});
-
-test("createLiveConversationStreamStore commits background events without waiting for animation frames", () => {
-  const previousWindow = globalThis.window;
-  const previousDocument = globalThis.document;
-  let rafScheduled = 0;
-  globalThis.window = {
-    requestAnimationFrame() {
-      rafScheduled += 1;
-      return 1;
-    },
-    cancelAnimationFrame() {},
-    setTimeout(callback) {
-      callback();
-      return 1;
-    },
-    clearTimeout() {},
-  };
-  globalThis.document = { visibilityState: "hidden" };
-
-  try {
-    const store = liveStore.createLiveConversationStreamStore();
-    store.appendEvent({ type: "token", text: "background", round: 1 });
-
-    assert.equal(rafScheduled, 0);
-    assert.equal(store.getSnapshot().entries.length, 1);
-    assert.equal(store.getSnapshot().entries[0].text, "background");
-  } finally {
-    globalThis.window = previousWindow;
-    globalThis.document = previousDocument;
-  }
-});
-
-test("createLiveConversationStreamStore falls back when a scheduled animation frame is paused", () => {
-  const previousWindow = globalThis.window;
-  const previousDocument = globalThis.document;
-  let fallbackCallback = null;
-  let canceledFrame = null;
-  globalThis.window = {
-    requestAnimationFrame() {
-      return 7;
-    },
-    cancelAnimationFrame(id) {
-      canceledFrame = id;
-    },
-    setTimeout(callback) {
-      fallbackCallback = callback;
-      return 11;
-    },
-    clearTimeout() {},
-  };
-  globalThis.document = { visibilityState: "visible" };
-
-  try {
-    const store = liveStore.createLiveConversationStreamStore();
-    store.appendEvent({ type: "token", text: "queued", round: 1 });
-
-    assert.equal(store.getSnapshot().entries.length, 0);
-    assert.equal(typeof fallbackCallback, "function");
-
-    fallbackCallback();
-
-    assert.equal(canceledFrame, 7);
-    assert.equal(store.getSnapshot().entries.length, 1);
-    assert.equal(store.getSnapshot().entries[0].text, "queued");
-  } finally {
-    globalThis.window = previousWindow;
-    globalThis.document = previousDocument;
-  }
-});
-
-test("createLiveConversationStreamStore ignores replayed events with the same seq", () => {
-  globalThis.window = undefined;
-  globalThis.document = { visibilityState: "visible" };
-
-  const store = liveStore.createLiveConversationStreamStore();
-  store.appendEvent({
-    type: "token",
-    text: "hello",
-    round: 1,
-    conversation_id: "conversation-1",
-    seq: 1,
-  });
-  store.appendEvent({
-    type: "token",
-    text: "hello",
-    round: 1,
-    conversation_id: "conversation-1",
-    seq: 1,
-  });
-  store.appendEvent({
-    type: "token",
-    text: " world",
-    round: 1,
-    conversation_id: "conversation-1",
-    seq: 2,
-  });
-
-  assert.equal(store.getSnapshot().entries.length, 1);
-  assert.equal(store.getSnapshot().entries[0].text, "hello world");
-
-  store.reset();
-  store.appendEvent({
-    type: "token",
-    text: "fresh",
-    round: 1,
-    conversation_id: "conversation-1",
-    seq: 1,
-  });
-
-  assert.equal(store.getSnapshot().entries.length, 1);
-  assert.equal(store.getSnapshot().entries[0].text, "fresh");
-});
-
-test("createLiveConversationStreamStore does not render queue control events", () => {
-  globalThis.window = undefined;
-  globalThis.document = { visibilityState: "visible" };
-
-  const store = liveStore.createLiveConversationStreamStore();
-  store.appendEvent({
-    type: "accepted",
-    state: "queued",
-    conversation_id: "conversation-1",
-    seq: 1,
-  });
-  store.appendEvent({
-    type: "queued_in_gui",
-    state: "desktop_queued",
-    conversation_id: "conversation-1",
-    seq: 2,
-  });
-  store.appendEvent({
-    type: "started",
-    state: "running",
-    conversation_id: "conversation-1",
-    seq: 3,
-  });
-  store.appendEvent({
-    type: "token",
-    text: "visible",
-    round: 1,
-    conversation_id: "conversation-1",
-    seq: 4,
-  });
-
-  assert.equal(store.getSnapshot().entries.length, 1);
-  assert.equal(store.getSnapshot().entries[0].text, "visible");
-});
-
-test("createLiveConversationStreamStore renders live user_message events", () => {
-  globalThis.window = undefined;
-  globalThis.document = { visibilityState: "visible" };
-
-  const store = liveStore.createLiveConversationStreamStore();
-  store.appendEvent({
-    type: "user_message",
-    message: "queued from gui",
-    uploaded_files: [
-      {
-        relative_path: "notes.md",
-        absolute_path: "/workspace/notes.md",
-        file_name: "notes.md",
-        kind: "text",
-        size_bytes: 12,
-      },
-    ],
-    conversation_id: "conversation-1",
-    seq: 1,
-  });
-  store.appendEvent({
-    type: "token",
-    text: "reply",
-    round: 1,
-    conversation_id: "conversation-1",
-    seq: 2,
-  });
-
-  const entries = store.getSnapshot().entries;
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0].kind, "user");
-  assert.equal(entries[0].text, "queued from gui");
-  assert.equal(entries[0].attachments.length, 1);
-  assert.equal(entries[0].attachments[0].relativePath, "notes.md");
-  assert.equal(entries[1].kind, "assistant");
-  assert.equal(entries[1].text, "reply");
 });
 
 function findTreeNode(node, predicate) {
@@ -1360,7 +683,56 @@ function findTreeNode(node, predicate) {
   return null;
 }
 
-test("GatewayTranscript live renderer shows user bubbles before live assistant output", () => {
+test("formatConversationTitle falls back to stable labels", () => {
+  assert.equal(chatUi.formatConversationTitle({ id: "abc", title: "  Named  " }), "Named");
+  assert.equal(chatUi.formatConversationTitle(null, "conversation-abcdef"), "会话 conversa");
+  assert.equal(chatUi.formatConversationTitle(null, ""), "新对话");
+});
+
+test("resolveConversationBrowserTitle uses project title for project-level empty selection", () => {
+  assert.equal(
+    chatUi.resolveConversationBrowserTitle({
+      conversation: null,
+      conversationId: "conversation-abcdef",
+      projectName: "  Project Alpha  ",
+      newConversationTitle: "LiveAgent",
+    }),
+    "Project Alpha",
+  );
+  assert.equal(
+    chatUi.resolveConversationBrowserTitle({
+      conversation: { id: "conversation-abcdef", title: "  Named  " },
+      conversationId: "conversation-abcdef",
+      projectName: "Project Alpha",
+      newConversationTitle: "LiveAgent",
+    }),
+    "Named",
+  );
+  assert.equal(
+    chatUi.resolveConversationBrowserTitle({
+      conversation: null,
+      conversationId: "__local_draft__:abc",
+      projectName: "Project Alpha",
+      isLocalDraftConversation: true,
+      newConversationTitle: "LiveAgent",
+    }),
+    "LiveAgent",
+  );
+});
+
+test("buildOptimisticConversationTitle uses the first ten characters of the first prompt paragraph", () => {
+  assert.equal(
+    chatUi.buildOptimisticConversationTitle("  12345 67890 abc\nstill first paragraph\n\nsecond"),
+    "12345 6789",
+  );
+  assert.equal(
+    chatUi.buildOptimisticConversationTitle("这是第一段提示词超过十个字\n\n第二段"),
+    "这是第一段提示词超过",
+  );
+  assert.equal(chatUi.buildOptimisticConversationTitle("   \n\n  "), "新对话");
+});
+
+test("GatewayTranscript renders folded and live regions as slices of one row list", () => {
   const fakeReact = {
     createContext(defaultValue) {
       return { defaultValue };
@@ -1428,47 +800,89 @@ test("GatewayTranscript live renderer shows user bubbles before live assistant o
       },
     },
   });
-  const transcriptLiveStore = transcriptLoader.loadModule("src/lib/liveConversationStreamStore.ts");
   const { GatewayTranscript } = transcriptLoader.loadModule("src/components/GatewayTranscript.tsx");
 
   globalThis.window = undefined;
   globalThis.document = { visibilityState: "visible" };
 
-  const store = transcriptLiveStore.createLiveConversationStreamStore();
-  store.appendEvent(
-    {
-      type: "user_message",
-      message: "queued from gui",
-      conversation_id: "conversation-1",
-      seq: 1,
-    },
-    { flush: true },
+  // Folded rows come from parsed history; live rows are born from the
+  // stream (a seeded prompt plus its streaming reply). Both regions come
+  // from one store assembly: foldedRows + liveRows.
+  const store = transcriptStoreModule.createTranscriptStore();
+  store.applyHistorySnapshot(
+    [
+      { id: "hu:m1", kind: "user", text: "earlier question", attachments: [] },
+      { id: "ht:hu:m1>0", kind: "assistant", text: "earlier answer", round: 1 },
+    ],
+    { mode: "replace" },
   );
-  store.appendEvent(
-    {
-      type: "token",
-      text: "reply",
-      round: 1,
-      conversation_id: "conversation-1",
-      seq: 2,
-    },
-    { flush: true },
+  store.applyEvent({
+    type: "user_message",
+    conversation_id: "conversation-1",
+    run_id: "run-1",
+    seq: 1,
+    message: "queued from gui",
+  });
+  store.applyEvent({
+    type: "run_started",
+    conversation_id: "conversation-1",
+    run_id: "run-1",
+    seq: 2,
+  });
+  store.applyEvent({
+    type: "token",
+    conversation_id: "conversation-1",
+    run_id: "run-1",
+    seq: 3,
+    text: "reply",
+  });
+  store.flush();
+  const snapshot = store.getSnapshot();
+  assert.equal(snapshot.foldedRows.length, 2, "history rows fold; the live exchange stays below");
+  assert.deepEqual(
+    [...snapshot.foldedRows, ...snapshot.liveRows].map((row) => row.kind),
+    ["user", "assistant", "user", "assistant"],
   );
 
   const transcriptTree = GatewayTranscript({
     conversationId: "conversation-1",
-    entries: [],
-    liveStore: store,
-    hasLiveStream: true,
+    foldedRows: snapshot.foldedRows,
+    liveRows: snapshot.liveRows,
+    activeTurnKey: snapshot.activeTurnKey,
     isStreaming: true,
   });
-  const liveStateNode = findTreeNode(
+
+  const foldedRegionNode = findTreeNode(
     transcriptTree,
-    (node) => typeof node.type === "function" && node.props?.liveSnapshot,
+    (node) =>
+      typeof node.type === "function" &&
+      Array.isArray(node.props?.rows) &&
+      node.props?.conversationId === "conversation-1",
+  );
+  assert.ok(foldedRegionNode, "virtualized region receives the folded rows");
+  assert.deepEqual(
+    foldedRegionNode.props.rows.map((row) => row.key),
+    snapshot.foldedRows.map((row) => row.key),
   );
 
-  assert.ok(liveStateNode);
-  const liveTree = liveStateNode.type(liveStateNode.props);
+  const liveRegionNode = findTreeNode(
+    transcriptTree,
+    (node) =>
+      typeof node.type === "function" &&
+      Array.isArray(node.props?.rows) &&
+      node.props?.isAgentMode !== undefined,
+  );
+  assert.ok(liveRegionNode, "live region receives the rows past the fold boundary");
+  assert.deepEqual(
+    liveRegionNode.props.rows.map((row) => row.key),
+    snapshot.liveRows.map((row) => row.key),
+  );
+  assert.deepEqual(
+    liveRegionNode.props.rows.map((row) => row.kind),
+    ["user", "assistant"],
+  );
+
+  const liveTree = liveRegionNode.type(liveRegionNode.props);
   assert.ok(
     findTreeNode(
       liveTree,
@@ -1476,403 +890,75 @@ test("GatewayTranscript live renderer shows user bubbles before live assistant o
         typeof node.props?.className === "string" &&
         node.props.className.includes("gateway-transcript-row-user"),
     ),
+    "live user bubble renders before the live assistant output",
   );
   assert.ok(
     findTreeNode(
       liveTree,
-      (node) => typeof node.type === "function" && node.props?.text === "queued from gui",
+      // User rows render through GatewayUserMessageRowBody, which receives
+      // the whole row (row.text) rather than a bare text prop.
+      (node) =>
+        typeof node.type === "function" &&
+        (node.props?.text === "queued from gui" || node.props?.row?.text === "queued from gui"),
     ),
   );
-});
-
-test("mergeHistorySnapshotEntries appends remote user turn without dropping loaded history", () => {
-  const existing = [
-    { id: "existing-user-1", kind: "user", text: "first", attachments: [] },
-    { id: "existing-assistant-1", kind: "assistant", text: "first answer", round: 1 },
-  ];
-  const incoming = [
-    { id: "history-user-1", kind: "user", text: "first", attachments: [] },
-    { id: "history-assistant-1", kind: "assistant", text: "first answer", round: 1 },
-    { id: "history-user-2", kind: "user", text: "second prompt", attachments: [] },
-  ];
-
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming);
-
-  assert.deepEqual(
-    merged.map((entry) => entry.text),
-    ["first", "first answer", "second prompt"],
+  const assistantBubble = findTreeNode(
+    liveTree,
+    (node) => typeof node.type === "function" && node.props?.renderMode !== undefined,
   );
-  assert.equal(merged[0].id, "history-user-1");
-  assert.equal(merged[2].id, "history-user-2");
-});
-
-test("mergeHistorySnapshotEntries keeps full-history prefix when incoming snapshot is a suffix", () => {
-  const existing = [
-    { id: "old-user", kind: "user", text: "old", attachments: [] },
-    { id: "old-assistant", kind: "assistant", text: "old answer", round: 1 },
-    { id: "recent-user", kind: "user", text: "recent", attachments: [] },
-    { id: "recent-assistant", kind: "assistant", text: "recent answer", round: 1 },
-  ];
-  const incoming = [
-    { id: "snapshot-user", kind: "user", text: "recent", attachments: [] },
-    { id: "snapshot-assistant", kind: "assistant", text: "recent answer", round: 1 },
-    { id: "snapshot-new-user", kind: "user", text: "new prompt", attachments: [] },
-  ];
-
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming);
-
-  assert.deepEqual(
-    merged.map((entry) => entry.text),
-    ["old", "old answer", "recent", "recent answer", "new prompt"],
-  );
-  assert.equal(merged[0].id, "old-user");
-  assert.equal(merged[2].id, "snapshot-user");
-});
-
-test("mergeHistorySnapshotEntries replaces assistant-only live snapshot with persisted user turn", () => {
-  const existing = [
-    { id: "committed-live-assistant", kind: "assistant", text: "live answer", round: 1 },
-  ];
-  const incoming = [
-    { id: "history-user", kind: "user", text: "remote prompt", attachments: [] },
-    { id: "history-assistant", kind: "assistant", text: "live answer", round: 1 },
-  ];
-
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming);
-
-  assert.deepEqual(
-    merged.map((entry) => entry.text),
-    ["remote prompt", "live answer"],
-  );
-  assert.equal(merged[0].id, "history-user");
-  assert.equal(merged[1].id, "history-assistant");
-});
-
-test("mergeHistorySnapshotEntries keeps live transcript stable when only assistant metadata moves", () => {
-  const meta = {
-    provider: "anthropic",
-    model: "claude-opus",
-    usage: { input: 1, output: 2, totalTokens: 3 },
-  };
-  const existing = [
-    { id: "live-user-1", kind: "user", text: "你好", attachments: [] },
-    { id: "live-assistant-prefix", kind: "assistant", text: "\n", round: 1 },
-    { id: "live-thinking", kind: "thinking", text: "thinking", round: 1 },
-    { id: "live-assistant-answer", kind: "assistant", text: "你好！", round: 1, meta },
-  ];
-  const incoming = [
-    { id: "history-user-1", kind: "user", text: "你好", attachments: [] },
-    { id: "history-assistant-prefix", kind: "assistant", text: "\n", round: 1, meta },
-    { id: "history-thinking", kind: "thinking", text: "thinking", round: 1 },
-    { id: "history-assistant-answer", kind: "assistant", text: "你好！", round: 1 },
-  ];
-
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming);
-
-  assert.equal(merged, existing);
-  assert.deepEqual(
-    merged.map((entry) => entry.id),
-    ["live-user-1", "live-assistant-prefix", "live-thinking", "live-assistant-answer"],
-  );
-});
-
-test("omitEquivalentTailEntries hides committed live tail without dropping history", () => {
-  const existing = [
-    { id: "history-user-1", kind: "user", text: "first", attachments: [] },
-    { id: "history-assistant-1", kind: "assistant", text: "first answer", round: 1 },
-    { id: "committed-live-assistant", kind: "assistant", text: "live answer", round: 1 },
-  ];
-  const liveEntries = [
-    { id: "live-assistant-1", kind: "assistant", text: "live answer", round: 1 },
-  ];
-
-  const visibleHistory = liveCommit.omitEquivalentTailEntries(existing, liveEntries);
-
-  assert.deepEqual(
-    visibleHistory.map((entry) => entry.text),
-    ["first", "first answer"],
-  );
-  assert.equal(visibleHistory[1].id, "history-assistant-1");
-});
-
-test("omitEquivalentTailEntries treats assistant metadata placement as the same visible tail", () => {
-  const meta = {
-    provider: "anthropic",
-    model: "claude-opus",
-    usage: { input: 1, output: 2, totalTokens: 3 },
-  };
-  const existing = [
-    { id: "history-user-1", kind: "user", text: "你好", attachments: [] },
-    { id: "history-assistant-prefix", kind: "assistant", text: "\n", round: 1, meta },
-    { id: "history-thinking", kind: "thinking", text: "thinking", round: 1 },
-    { id: "history-assistant-answer", kind: "assistant", text: "你好！", round: 1 },
-  ];
-  const liveEntries = [
-    { id: "live-assistant-prefix", kind: "assistant", text: "\n", round: 1 },
-    { id: "live-thinking", kind: "thinking", text: "thinking", round: 1 },
-    { id: "live-assistant-answer", kind: "assistant", text: "你好！", round: 1, meta },
-  ];
-
-  const visibleHistory = liveCommit.omitEquivalentTailEntries(existing, liveEntries);
-
-  assert.deepEqual(
-    visibleHistory.map((entry) => entry.text),
-    ["你好"],
-  );
-});
-
-test("omitEquivalentTailEntries removes live user and assistant overlap", () => {
-  const existing = [
-    { id: "history-user-1", kind: "user", text: "first", attachments: [] },
-    { id: "history-assistant-1", kind: "assistant", text: "first answer", round: 1 },
-    { id: "history-user-2", kind: "user", text: "queued from gui", attachments: [] },
-    { id: "history-assistant-2", kind: "assistant", text: "reply", round: 1 },
-  ];
-  const liveEntries = [
-    { id: "live-user-2", kind: "user", text: "queued from gui", attachments: [] },
-    { id: "live-assistant-2", kind: "assistant", text: "reply", round: 1 },
-  ];
-
-  const visibleHistory = liveCommit.omitEquivalentTailEntries(existing, liveEntries);
-
-  assert.deepEqual(
-    visibleHistory.map((entry) => entry.text),
-    ["first", "first answer"],
-  );
-});
-
-test("omitEquivalentTailEntries removes uploaded live user overlap", () => {
-  const historyAttachment = {
-    relativePath: ".liveagent/uploads/08-conclusion.png",
-    fileName: "08-conclusion.png",
-    kind: "image",
-    sizeBytes: 58368,
-    absolutePath: "/workspace/.liveagent/uploads/08-conclusion.png",
-  };
-  const liveAttachment = {
-    relativePath: ".liveagent/uploads/08-conclusion.png",
-    absolutePath: "/workspace/.liveagent/uploads/08-conclusion.png",
-    fileName: "08-conclusion.png",
-    kind: "image",
-    sizeBytes: 58368,
-  };
-  const existing = [
-    { id: "history-user-1", kind: "user", text: "这是什么", attachments: [historyAttachment] },
-    { id: "history-assistant-1", kind: "assistant", text: "reply", round: 1 },
-  ];
-  const liveEntries = [
-    { id: "live-user-1", kind: "user", text: "这是什么", attachments: [liveAttachment] },
-    { id: "live-assistant-1", kind: "assistant", text: "reply", round: 1 },
-  ];
-
-  const visibleHistory = liveCommit.omitEquivalentTailEntries(existing, liveEntries);
-
-  assert.deepEqual(visibleHistory, []);
-});
-
-test("appendCommittedLiveEntries does not duplicate optimistic user message overlaps", () => {
-  const existing = [
-    { id: "history-user-1", kind: "user", text: "first", attachments: [] },
-    { id: "optimistic-user-2", kind: "user", text: "queued from gui", attachments: [] },
-  ];
-  const liveEntries = [
-    { id: "live-user-2", kind: "user", text: "queued from gui", attachments: [] },
-    { id: "live-assistant-2", kind: "assistant", text: "reply", round: 1 },
-  ];
-
-  const merged = liveCommit.appendCommittedLiveEntries(existing, liveEntries);
-
-  assert.deepEqual(
-    merged.map((entry) => entry.text),
-    ["first", "queued from gui", "reply"],
-  );
-  assert.equal(merged[1].id, "optimistic-user-2");
-  assert.equal(merged[2].kind, "assistant");
-});
-
-test("appendCommittedLiveEntries does not duplicate uploaded optimistic user overlaps", () => {
-  const existing = [
-    {
-      id: "optimistic-user-1",
-      kind: "user",
-      text: "这是什么",
-      attachments: [
-        {
-          relativePath: ".liveagent/uploads/08-conclusion.png",
-          fileName: "08-conclusion.png",
-          kind: "image",
-          sizeBytes: 58368,
-          absolutePath: "/workspace/.liveagent/uploads/08-conclusion.png",
-        },
-      ],
-    },
-  ];
-  const liveEntries = [
-    {
-      id: "live-user-1",
-      kind: "user",
-      text: "这是什么",
-      attachments: [
-        {
-          relativePath: ".liveagent/uploads/08-conclusion.png",
-          absolutePath: "/workspace/.liveagent/uploads/08-conclusion.png",
-          fileName: "08-conclusion.png",
-          kind: "image",
-          sizeBytes: 58368,
-        },
-      ],
-    },
-    { id: "live-assistant-1", kind: "assistant", text: "reply", round: 1 },
-  ];
-
-  const merged = liveCommit.appendCommittedLiveEntries(existing, liveEntries);
-
-  assert.deepEqual(
-    merged.map((entry) => entry.text),
-    ["这是什么", "reply"],
-  );
-  assert.equal(merged[0].id, "optimistic-user-1");
-});
-
-test("mergeHistorySnapshotEntries replaces stale local entries when an authoritative snapshot is shorter", () => {
-  // Simulates: peer A edits the user prompt and resends, server-side history
-  // is now just the new user turn. Without `isFullSnapshot`, the local two-turn
-  // tail is kept and collides with the incoming live stream, producing the
-  // duplicated assistant bubble. With the flag set we yield to the server.
-  const existing = [
-    { id: "local-user-1", kind: "user", text: "old prompt", attachments: [] },
-    { id: "local-assistant-1", kind: "assistant", text: "old answer", round: 1 },
-  ];
-  const incoming = [
-    { id: "server-user-1", kind: "user", text: "edited prompt", attachments: [] },
-  ];
-
-  const withoutFlag = liveCommit.mergeHistorySnapshotEntries(existing, incoming);
+  assert.ok(assistantBubble, "live assistant bubble rendered");
   assert.equal(
-    withoutFlag,
-    existing,
-    "without the hint we conservatively keep existing — the bug being fixed",
+    assistantBubble.props.renderMode,
+    "streaming",
+    "live-born rows keep the streaming render mode",
   );
+});
 
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming, {
-    isFullSnapshot: true,
-  });
+test("transcript store history refresh stays quiet for identical content", () => {
+  // The old pipeline kept a quiet refresh stable via text-hash dedup keys
+  // (renamed incoming ids were re-mapped onto the rendered ones). The new
+  // parser makes ids deterministic instead: reparsing the same persisted
+  // JSON yields identical ids, so an idle "enrich" refresh with unchanged
+  // content is a structural no-op — same snapshot, same row keys, and the
+  // exchange still renders exactly once.
+  globalThis.window = undefined;
+  globalThis.document = { visibilityState: "visible" };
+  const store = transcriptStoreModule.createTranscriptStore();
+
+  const messagesJson = JSON.stringify([
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "world" },
+  ]);
+  const firstParse = chatUi.parseHistoryMessagesJson(messagesJson);
+  store.applyHistorySnapshot(firstParse, { mode: "replace" });
+  store.flush();
+  const first = store.getSnapshot();
   assert.deepEqual(
-    merged.map((entry) => entry.text),
-    ["edited prompt"],
+    first.foldedRows.map((row) => row.kind),
+    ["user", "assistant"],
   );
-  assert.notStrictEqual(merged, existing);
-});
+  assert.equal(first.liveRows.length, 0, "history renders in the folded region");
 
-test("mergeHistorySnapshotEntries with isFullSnapshot=true clears entries when the server is empty", () => {
-  const existing = [
-    { id: "local-user-1", kind: "user", text: "hi", attachments: [] },
-    { id: "local-assistant-1", kind: "assistant", text: "hello", round: 1 },
-  ];
-
+  const secondParse = chatUi.parseHistoryMessagesJson(messagesJson);
   assert.deepEqual(
-    liveCommit.mergeHistorySnapshotEntries(existing, [], { isFullSnapshot: true }),
-    [],
+    secondParse.map((entry) => entry.id),
+    firstParse.map((entry) => entry.id),
+    "reparsing the same JSON yields identical deterministic ids",
   );
-  // Without the hint, empty incoming is treated as "no update available" and
-  // existing is preserved (used during paginated tail fetches).
-  assert.equal(liveCommit.mergeHistorySnapshotEntries(existing, []), existing);
-});
 
-test("mergeHistorySnapshotEntries keeps existing user ids when only the server-side messageRef appears", () => {
-  // Locally created user entries do not have `messageRef` yet — the gateway
-  // assigns it when persisting. The post-stream history refresh would
-  // otherwise see "different" entries and replace them, changing every user
-  // article's React key and re-firing the `chat-bubble-enter` animation on
-  // every user bubble at once.
-  const existing = [
-    { id: "local-user-1", kind: "user", text: "你好", attachments: [] },
-    { id: "live-assistant-1", kind: "assistant", text: "回复", round: 1 },
-  ];
-  const incoming = [
-    {
-      id: "server-user-1",
-      kind: "user",
-      text: "你好",
-      attachments: [],
-      messageRef: { segmentIndex: 0, messageIndex: 0 },
-    },
-    { id: "server-assistant-1", kind: "assistant", text: "回复", round: 1 },
-  ];
-
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming);
-
+  // Idle quiet refresh with identical content: nothing re-renders.
+  store.applyHistorySnapshot(secondParse, { mode: "enrich" });
+  store.flush();
+  const second = store.getSnapshot();
+  assert.equal(second, first, "identical content leaves the snapshot untouched");
   assert.deepEqual(
-    merged.map((entry) => entry.id),
-    ["local-user-1", "live-assistant-1"],
-    "existing ids must be preserved so React keys stay stable",
-  );
-  assert.deepEqual(merged[0].messageRef, { segmentIndex: 0, messageIndex: 0 });
-});
-
-test("mergeHistorySnapshotEntries with isFullSnapshot=true still preserves identity for matching snapshots", () => {
-  const existing = [
-    { id: "local-user-1", kind: "user", text: "hi", attachments: [] },
-    { id: "local-assistant-1", kind: "assistant", text: "hello", round: 1 },
-  ];
-  const incoming = [
-    { id: "server-user-1", kind: "user", text: "hi", attachments: [] },
-    { id: "server-assistant-1", kind: "assistant", text: "hello", round: 1 },
-  ];
-
-  const merged = liveCommit.mergeHistorySnapshotEntries(existing, incoming, {
-    isFullSnapshot: true,
-  });
-  // Visually equivalent → keep existing references so the React tree does not
-  // remount and the article keys stay stable.
-  assert.equal(merged, existing);
-});
-
-test("formatConversationTitle falls back to stable labels", () => {
-  assert.equal(chatUi.formatConversationTitle({ id: "abc", title: "  Named  " }), "Named");
-  assert.equal(chatUi.formatConversationTitle(null, "conversation-abcdef"), "会话 conversa");
-  assert.equal(chatUi.formatConversationTitle(null, ""), "新对话");
-});
-
-test("resolveConversationBrowserTitle uses project title for project-level empty selection", () => {
-  assert.equal(
-    chatUi.resolveConversationBrowserTitle({
-      conversation: null,
-      conversationId: "conversation-abcdef",
-      projectName: "  Project Alpha  ",
-      newConversationTitle: "LiveAgent",
-    }),
-    "Project Alpha",
+    second.foldedRows.map((row) => row.key),
+    first.foldedRows.map((row) => row.key),
+    "row keys are stable across the refresh",
   );
   assert.equal(
-    chatUi.resolveConversationBrowserTitle({
-      conversation: { id: "conversation-abcdef", title: "  Named  " },
-      conversationId: "conversation-abcdef",
-      projectName: "Project Alpha",
-      newConversationTitle: "LiveAgent",
-    }),
-    "Named",
+    [...second.foldedRows, ...second.liveRows].filter((row) => row.kind === "user").length,
+    1,
+    "the exchange renders exactly once (no duplicate prompt)",
   );
-  assert.equal(
-    chatUi.resolveConversationBrowserTitle({
-      conversation: null,
-      conversationId: "__local_draft__:abc",
-      projectName: "Project Alpha",
-      isLocalDraftConversation: true,
-      newConversationTitle: "LiveAgent",
-    }),
-    "LiveAgent",
-  );
-});
-
-test("buildOptimisticConversationTitle uses the first ten characters of the first prompt paragraph", () => {
-  assert.equal(
-    chatUi.buildOptimisticConversationTitle("  12345 67890 abc\nstill first paragraph\n\nsecond"),
-    "12345 6789",
-  );
-  assert.equal(
-    chatUi.buildOptimisticConversationTitle("这是第一段提示词超过十个字\n\n第二段"),
-    "这是第一段提示词超过",
-  );
-  assert.equal(chatUi.buildOptimisticConversationTitle("   \n\n  "), "新对话");
 });

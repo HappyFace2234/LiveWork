@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type DragEvent, type RefObject } from "react";
+import { type DragEvent, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { MentionComposerHandle } from "@/components/chat/MentionComposer";
+import { t as translate } from "@/i18n";
 import type { PendingUploadedFile } from "@/lib/chat/uploadedFiles";
 import { mergePendingUploadedFiles } from "@/lib/chat/uploadedFiles";
 import { registerLocalUploadedImagePreviews } from "@/lib/chat/uploadedImagePreview";
@@ -11,7 +12,6 @@ import {
 } from "@/lib/clipboardFiles";
 import type { AppSettings } from "@/lib/settings";
 import { importReadableFiles } from "@/lib/uploadReadableFiles";
-import { t as translate } from "@/i18n";
 
 import { asErrorMessage } from "../chatEventUtils";
 import { MAX_UPLOAD_FILES } from "../constants";
@@ -64,9 +64,7 @@ export function usePendingUploads(params: UsePendingUploadsParams) {
 
   const isDisplayedConversation = useCallback((targetConversationId: string) => {
     const conversationIdValue = targetConversationId.trim();
-    return (
-      conversationIdValue !== "" && displayedConversationIdRef.current === conversationIdValue
-    );
+    return conversationIdValue !== "" && displayedConversationIdRef.current === conversationIdValue;
   }, []);
 
   const getPendingUploadsForConversation = useCallback(

@@ -3,10 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { Tool, ToolCall, ToolResultMessage } from "../agentTypes";
 
-import {
-  createBuiltinMetadataMap,
-  type BuiltinToolBundle,
-} from "./builtinTypes";
+import { type BuiltinToolBundle, createBuiltinMetadataMap } from "./builtinTypes";
 import type { SystemToolRuntimeScope } from "./systemToolOptions";
 
 type SystemHttpGetResponse = {
@@ -25,10 +22,7 @@ type SystemToolDefinition = {
   parameters: Tool["parameters"];
   isReadOnly: boolean;
   runtimeScopes: readonly SystemToolRuntimeScope[];
-  execute: (
-    toolCall: ToolCall,
-    signal?: AbortSignal,
-  ) => Promise<ToolResultMessage>;
+  execute: (toolCall: ToolCall, signal?: AbortSignal) => Promise<ToolResultMessage>;
 };
 
 function asErrorMessage(err: unknown) {

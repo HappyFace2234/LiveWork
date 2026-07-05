@@ -18,7 +18,9 @@ export type PreparedProxyRequest = {
 let proxyServerInfoPromise: Promise<ProxyServerInfo> | null = null;
 
 function normalizeProxyServerInfo(info: ProxyServerInfo): ProxyServerInfo {
-  const baseUrl = String(info.baseUrl ?? "").trim().replace(/\/+$/, "");
+  const baseUrl = String(info.baseUrl ?? "")
+    .trim()
+    .replace(/\/+$/, "");
   const token = String(info.token ?? "").trim();
 
   if (!baseUrl) {

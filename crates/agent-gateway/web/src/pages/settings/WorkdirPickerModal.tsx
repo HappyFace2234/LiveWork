@@ -1,9 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, FolderOpen, HardDrive, Home, Loader2, Plus, X } from "../../components/icons";
-import type { IndividualTreeViewState, TreeItem, TreeItemIndex, TreeViewState } from "react-complex-tree";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+  IndividualTreeViewState,
+  TreeItem,
+  TreeItemIndex,
+  TreeViewState,
+} from "react-complex-tree";
 import { ControlledTreeEnvironment, Tree } from "react-complex-tree";
+import { createPortal } from "react-dom";
+import {
+  AlertTriangle,
+  FolderOpen,
+  HardDrive,
+  Home,
+  Loader2,
+  Plus,
+  X,
+} from "../../components/icons";
 
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -84,29 +97,28 @@ function isSameOrDescendantPath(path: string, ancestor: string) {
 }
 
 function findBestRootForPath(path: string, roots: FsRoot[]) {
-  return roots
-    .filter((root) => root.path && isSameOrDescendantPath(path, root.path))
-    .sort(
-      (left, right) =>
-        normalizePathForCompare(right.path).length -
-        normalizePathForCompare(left.path).length,
-    )[0] ?? null;
+  return (
+    roots
+      .filter((root) => root.path && isSameOrDescendantPath(path, root.path))
+      .sort(
+        (left, right) =>
+          normalizePathForCompare(right.path).length - normalizePathForCompare(left.path).length,
+      )[0] ?? null
+  );
 }
 
 function findRouteChild(targetPath: string, entries: FsListDirsResponse["entries"]) {
-  return entries
-    .filter((entry) => entry.path && isSameOrDescendantPath(targetPath, entry.path))
-    .sort(
-      (left, right) =>
-        normalizePathForCompare(right.path).length -
-        normalizePathForCompare(left.path).length,
-    )[0] ?? null;
+  return (
+    entries
+      .filter((entry) => entry.path && isSameOrDescendantPath(targetPath, entry.path))
+      .sort(
+        (left, right) =>
+          normalizePathForCompare(right.path).length - normalizePathForCompare(left.path).length,
+      )[0] ?? null
+  );
 }
 
-function mergeTreeIndexes(
-  current: TreeItemIndex[] | undefined,
-  additions: TreeItemIndex[],
-) {
+function mergeTreeIndexes(current: TreeItemIndex[] | undefined, additions: TreeItemIndex[]) {
   return Array.from(new Set([...(current ?? []), ...additions]));
 }
 
@@ -161,14 +173,13 @@ export function WorkdirPickerModal(props: WorkdirPickerModalProps) {
   const focusedItem = viewState[TREE_ID]?.focusedItem ?? null;
   const selectedPath =
     typeof selectedItem === "string" && selectedItem !== ROOT_ID ? selectedItem : "";
-  const focusedPath =
-    typeof focusedItem === "string" && focusedItem !== ROOT_ID ? focusedItem : "";
+  const focusedPath = typeof focusedItem === "string" && focusedItem !== ROOT_ID ? focusedItem : "";
   const activePath = (selectedPath || focusedPath).trim();
 
   const headerPath = (selectedPath || initialWorkdir || "").trim();
 
-  const activeMeta = activePath ? items[activePath]?.data ?? null : null;
-  const activeChildren = activePath ? items[activePath]?.children ?? null : null;
+  const activeMeta = activePath ? (items[activePath]?.data ?? null) : null;
+  const activeChildren = activePath ? (items[activePath]?.children ?? null) : null;
   const createFolderName = newFolderName.trim();
   const canCreateFolder = Boolean(activePath && createFolderName && !creatingFolder);
 
@@ -198,7 +209,15 @@ export function WorkdirPickerModal(props: WorkdirPickerModalProps) {
       };
     }
     return null;
-  }, [activeChildren, activeMeta?.loaded, activeMeta?.truncated, loadError, loadingPaths.size, loadingRoots, t]);
+  }, [
+    activeChildren,
+    activeMeta?.loaded,
+    activeMeta?.truncated,
+    loadError,
+    loadingPaths.size,
+    loadingRoots,
+    t,
+  ]);
 
   function updateTreeViewState(
     treeId: string,
@@ -320,7 +339,7 @@ export function WorkdirPickerModal(props: WorkdirPickerModalProps) {
 
       const selectedPathForState = reachedTarget
         ? currentPath
-        : route[route.length - 1] ?? root.path;
+        : (route[route.length - 1] ?? root.path);
       const expandedRoute = [ROOT_ID, ...route];
 
       updateTreeViewState(TREE_ID, (treePrev) => ({
@@ -483,9 +502,7 @@ export function WorkdirPickerModal(props: WorkdirPickerModalProps) {
           </div>
           <div className="min-w-0 flex-1">
             <h2 className="text-base font-semibold">{t("settings.workdirPickerTitle")}</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {t("settings.workdirDesc")}
-            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t("settings.workdirDesc")}</p>
           </div>
           <button
             type="button"
@@ -503,11 +520,7 @@ export function WorkdirPickerModal(props: WorkdirPickerModalProps) {
             <div className="w-24 shrink-0 text-xs font-medium text-muted-foreground">
               {t("settings.workdir")}
             </div>
-            <Input
-              value={headerPath}
-              readOnly
-              className="font-mono text-[13px]"
-            />
+            <Input value={headerPath} readOnly className="font-mono text-[13px]" />
           </div>
         </div>
 
@@ -592,9 +605,7 @@ export function WorkdirPickerModal(props: WorkdirPickerModalProps) {
                 if (!index || index === ROOT_ID) return;
                 updateTreeViewState(treeId, (treePrev) => ({
                   ...treePrev,
-                  expandedItems: (treePrev.expandedItems ?? []).filter(
-                    (entry) => entry !== index,
-                  ),
+                  expandedItems: (treePrev.expandedItems ?? []).filter((entry) => entry !== index),
                 }));
               }}
               onSelectItems={(selectedItems, treeId) => {

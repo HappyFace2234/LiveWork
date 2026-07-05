@@ -85,27 +85,6 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (host, port)
         );
-        CREATE TABLE IF NOT EXISTS hook_settings (
-            hook_id TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL,
-            sort_index INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS cron_settings (
-            task_id TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL,
-            sort_index INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS cron_execution_logs (
-            log_id TEXT PRIMARY KEY,
-            task_id TEXT NOT NULL,
-            started_at INTEGER NOT NULL,
-            success INTEGER NOT NULL DEFAULT 0,
-            duration_ms INTEGER NOT NULL,
-            exit_code INTEGER,
-            output TEXT NOT NULL DEFAULT ''
-        );
         CREATE TABLE IF NOT EXISTS remote_settings (
             config_id TEXT PRIMARY KEY,
             payload_json TEXT NOT NULL,
@@ -116,16 +95,23 @@ pub(crate) fn initialize_schema(conn: &Connection) -> Result<(), String> {
             payload_json TEXT NOT NULL,
             updated_at INTEGER NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_cron_execution_logs_task_started_at
-            ON cron_execution_logs (task_id, started_at DESC);
+        CREATE TABLE IF NOT EXISTS tunnel_settings (
+            tunnel_id TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
         ",
     )
     .map_err(|e| format!("初始化设置表失败：{e}"))?;
     Ok(())
 }
 
+pub(crate) fn config_db_path() -> Result<PathBuf, String> {
+    Ok(config_dir()?.join(DB_FILENAME))
+}
+
 pub(crate) fn open_db() -> Result<Connection, String> {
-    let db_path = config_dir()?.join(DB_FILENAME);
+    let db_path = config_db_path()?;
     let conn = Connection::open(db_path).map_err(|e| format!("打开设置数据库失败：{e}"))?;
     conn.busy_timeout(Duration::from_secs(5))
         .map_err(|e| format!("设置 SQLite busy_timeout 失败：{e}"))?;

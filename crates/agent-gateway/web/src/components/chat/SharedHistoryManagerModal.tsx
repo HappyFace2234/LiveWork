@@ -1,22 +1,21 @@
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  Check,
-  Copy,
-  Eye,
-  ExternalLink,
-  EyeOff,
-  Link2,
-  Loader2,
-  Search,
-  RefreshCw,
-  Share2,
-  X,
-} from "../icons";
-
 import { useLocale } from "../../i18n";
 import type { ChatHistorySummary } from "../../lib/chat/chatHistory";
 import { cn } from "../../lib/shared/utils";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Link2,
+  Loader2,
+  RefreshCw,
+  Search,
+  Share2,
+  X,
+} from "../icons";
 import { Button } from "../ui/button";
 
 export type ManagedHistoryShareStatus = {
@@ -105,10 +104,7 @@ function formatConversationTime(timestamp: number | undefined, locale: string, f
   }).format(new Date(timestamp));
 }
 
-function ShareSwitch(props: {
-  disabled: boolean;
-  onDisable: () => void;
-}) {
+function ShareSwitch(props: { disabled: boolean; onDisable: () => void }) {
   const { disabled, onDisable } = props;
   const { t } = useLocale();
   return (
@@ -299,7 +295,9 @@ export function SharedHistoryManagerModal({
               <div className="truncate text-[10px] font-medium uppercase leading-4 text-muted-foreground sm:text-[11px]">
                 {t("sharedHistory.summaryShared")}
               </div>
-              <div className="mt-1 text-lg font-semibold text-foreground">{conversations.length}</div>
+              <div className="mt-1 text-lg font-semibold text-foreground">
+                {conversations.length}
+              </div>
             </div>
             <div className="min-w-0 rounded-2xl border border-border/60 bg-muted/25 px-2.5 py-2 sm:px-3">
               <div className="truncate text-[10px] font-medium uppercase leading-4 text-muted-foreground sm:text-[11px]">
@@ -361,7 +359,7 @@ export function SharedHistoryManagerModal({
             <div className="space-y-2.5">
               {filteredConversations.map((conversation) => {
                 const status = statuses[conversation.id];
-                const token = status?.enabled === true ? status.token?.trim() ?? "" : "";
+                const token = status?.enabled === true ? (status.token?.trim() ?? "") : "";
                 const redactToolContent = isShareStatusRedacted(status);
                 const shareUrl = buildShareUrl(token, publicOrigin);
                 const isLoading = loadingIds.has(conversation.id);
@@ -411,7 +409,9 @@ export function SharedHistoryManagerModal({
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">
-                        {isLoading ? <Loader2 className="h-4 w-4 animate-spin text-sky-500" /> : null}
+                        {isLoading ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-sky-500" />
+                        ) : null}
                         <ShareSwitch
                           disabled={isUpdating}
                           onDisable={() => onDisableShare(conversation)}

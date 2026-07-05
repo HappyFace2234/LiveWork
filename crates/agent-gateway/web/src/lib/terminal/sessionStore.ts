@@ -9,10 +9,7 @@ export function sortTerminalSessions(sessions: readonly TerminalSession[]) {
   });
 }
 
-export function terminalSessionBelongsToProject(
-  session: TerminalSession,
-  projectPathKey: string,
-) {
+export function terminalSessionBelongsToProject(session: TerminalSession, projectPathKey: string) {
   const wantedProjectKey = workspaceProjectPathKey(projectPathKey);
   if (!wantedProjectKey) return false;
   const sessionProjectKey = workspaceProjectPathKey(session.projectPathKey || session.cwd);

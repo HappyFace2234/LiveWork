@@ -1,33 +1,14 @@
 import type { ToolCall } from "@earendil-works/pi-ai";
 
-export const LIVE_TOOL_PREVIEW_META_KEY = "__liveagent_stream_preview";
+import {
+  countTextLines,
+  FILE_TOOL_TEXT_FIELDS,
+  LIVE_TOOL_PREVIEW_META_KEY,
+  type PreviewFieldMetrics,
+  type StreamPreviewMeta,
+} from "../../../lib/chat/messages/toolPreview";
 
 const GATEWAY_TOOL_TEXT_PREVIEW_MAX_CHARS = 4000;
-
-type PreviewFieldMetrics = {
-  chars: number;
-  lines: number;
-  previewChars: number;
-  truncated: boolean;
-  strategy: "full" | "head-tail";
-};
-
-function countTextLines(input: string) {
-  if (input.length === 0) return 0;
-  let lines = 1;
-  for (let index = 0; index < input.length; index += 1) {
-    const code = input.charCodeAt(index);
-    if (code === 13) {
-      lines += 1;
-      if (input.charCodeAt(index + 1) === 10) {
-        index += 1;
-      }
-    } else if (code === 10) {
-      lines += 1;
-    }
-  }
-  return lines;
-}
 
 function buildHeadTailPreview(input: string, maxChars = GATEWAY_TOOL_TEXT_PREVIEW_MAX_CHARS) {
   if (input.length <= maxChars) {
@@ -36,10 +17,8 @@ function buildHeadTailPreview(input: string, maxChars = GATEWAY_TOOL_TEXT_PREVIE
       metrics: {
         chars: input.length,
         lines: countTextLines(input),
-        previewChars: input.length,
         truncated: false,
-        strategy: "full" as const,
-      },
+      } satisfies PreviewFieldMetrics,
     };
   }
 
@@ -58,48 +37,39 @@ function buildHeadTailPreview(input: string, maxChars = GATEWAY_TOOL_TEXT_PREVIE
     metrics: {
       chars: input.length,
       lines: countTextLines(input),
-      previewChars: text.length,
       truncated: true,
-      strategy: "head-tail" as const,
-    },
+    } satisfies PreviewFieldMetrics,
   };
 }
 
-function previewStringField(
-  args: Record<string, unknown>,
-  fieldName: string,
-  fields: Record<string, PreviewFieldMetrics>,
+// The canonical producer of streaming tool previews: bridge events
+// (tool_call / tool_call_delta / tool_result) and runtime snapshot entries
+// all pass through here, so every remote representation of a file tool's
+// args carries the same truncated text + true metrics + monotonic progress.
+export function buildGatewayToolCallPreviewArguments(
+  toolCall: Pick<ToolCall, "name" | "arguments">,
 ) {
-  const value = args[fieldName];
-  if (typeof value !== "string") {
-    return;
-  }
-  const preview = buildHeadTailPreview(value);
-  args[fieldName] = preview.text;
-  fields[fieldName] = preview.metrics;
-}
-
-export function buildGatewayToolCallPreviewArguments(toolCall: Pick<ToolCall, "name" | "arguments">) {
+  const fieldsToPreview = FILE_TOOL_TEXT_FIELDS[toolCall.name];
   const sourceArgs = toolCall.arguments || {};
-  if (toolCall.name !== "Write" && toolCall.name !== "Edit") {
+  if (!fieldsToPreview) {
     return sourceArgs;
   }
 
   const args: Record<string, unknown> = { ...sourceArgs };
   const fields: Record<string, PreviewFieldMetrics> = {};
+  let progress = 0;
 
-  if (toolCall.name === "Write") {
-    previewStringField(args, "content", fields);
-  } else if (toolCall.name === "Edit") {
-    previewStringField(args, "old_string", fields);
-    previewStringField(args, "new_string", fields);
+  for (const field of fieldsToPreview) {
+    const value = args[field];
+    if (typeof value !== "string") continue;
+    const preview = buildHeadTailPreview(value);
+    args[field] = preview.text;
+    fields[field] = preview.metrics;
+    progress += preview.metrics.chars;
   }
 
   if (Object.keys(fields).length > 0) {
-    args[LIVE_TOOL_PREVIEW_META_KEY] = {
-      version: 1,
-      fields,
-    };
+    args[LIVE_TOOL_PREVIEW_META_KEY] = { v: 2, progress, fields } satisfies StreamPreviewMeta;
   }
 
   return args;

@@ -183,6 +183,25 @@ fn ensure_within_workdir_existing(workdir: &Path, target: &Path) -> Result<PathB
     Ok(canon)
 }
 
+fn is_absolute_cwd_input(value: &str) -> bool {
+    if value.starts_with('/') || value.starts_with('\\') {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn resolve_absolute_cwd(value: &str) -> Result<PathBuf, ShellError> {
+    let invalid =
+        || ShellError::Other(format!("cwd does not exist or is not a directory: {value}"));
+    let canon = fs::canonicalize(value).map_err(|_| invalid())?;
+    let md = fs::metadata(&canon).map_err(|_| invalid())?;
+    if !md.is_dir() {
+        return Err(invalid());
+    }
+    Ok(canon)
+}
+
 #[derive(Default)]
 struct StreamReadState {
     buf: Vec<u8>,
@@ -544,6 +563,7 @@ fn default_platform_shell_profile() -> ShellExecutionProfile {
 pub(crate) fn spawn_platform_shell_command<F>(
     command: &str,
     cwd: &Path,
+    envs: &[(String, String)],
     mut stdio_factory: F,
 ) -> Result<SpawnedPlatformShell, String>
 where
@@ -556,6 +576,7 @@ where
             stdio_factory().map_err(|err| format!("Failed to prepare shell stdio: {err}"))?;
         let mut c = Command::new(&candidate.program);
         c.args(&candidate.args);
+        c.envs(envs.iter().map(|(key, value)| (key.as_str(), value.as_str())));
         if candidate.augment_macos_path {
             maybe_augment_macos_path(&mut c);
         }
@@ -595,8 +616,31 @@ pub(crate) fn run_shell_script(
     cwd: Option<String>,
     timeout_ms: Option<u64>,
     max_timeout_ms: Option<u64>,
+    provider_id: Option<String>,
+    cancel_token: Option<ShellCancelToken>,
+) -> Result<ShellRunResponse, String> {
+    run_shell_script_with_envs(
+        workdir,
+        command,
+        cwd,
+        timeout_ms,
+        max_timeout_ms,
+        provider_id,
+        cancel_token,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_shell_script_with_envs(
+    workdir: String,
+    command: String,
+    cwd: Option<String>,
+    timeout_ms: Option<u64>,
+    max_timeout_ms: Option<u64>,
     _provider_id: Option<String>,
     cancel_token: Option<ShellCancelToken>,
+    envs: &[(String, String)],
 ) -> Result<ShellRunResponse, String> {
     let wd = canonicalize_workdir(&workdir).map_err(|e| e.to_string())?;
 
@@ -607,6 +651,9 @@ pub(crate) fn run_shell_script(
 
     let actual_cwd = match cwd {
         None => wd.clone(),
+        Some(cwd_value) if is_absolute_cwd_input(cwd_value.trim()) => {
+            resolve_absolute_cwd(cwd_value.trim()).map_err(|e| e.to_string())?
+        }
         Some(cwd_rel) => match sanitize_rel_path_core(&cwd_rel).map_err(|e| e.to_string())? {
             None => wd.clone(),
             Some(rel) => {
@@ -628,8 +675,9 @@ pub(crate) fn run_shell_script(
     let timeout = Duration::from_millis(effective_timeout_ms);
     let start = Instant::now();
 
-    let spawned =
-        spawn_platform_shell_command(cmd, &actual_cwd, || Ok((Stdio::piped(), Stdio::piped())))?;
+    let spawned = spawn_platform_shell_command(cmd, &actual_cwd, envs, || {
+        Ok((Stdio::piped(), Stdio::piped()))
+    })?;
     let mut child = spawned.child;
     let shell_profile = spawned.profile;
     let shell_name = shell_basename(shell_profile.display_shell);
@@ -875,5 +923,74 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "background stdio leak should not block until the background process exits"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_shell_script_accepts_absolute_cwd_outside_workdir() {
+        let workdir = std::env::temp_dir().join(format!(
+            "liveagent-shell-abs-cwd-workdir-{}",
+            std::process::id()
+        ));
+        let external = std::env::temp_dir().join(format!(
+            "liveagent-shell-abs-cwd-external-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&workdir);
+        let _ = fs::create_dir_all(&external);
+        let external_canonical = fs::canonicalize(&external).expect("canonical external dir");
+
+        let result = run_shell_script(
+            workdir.display().to_string(),
+            "pwd".to_string(),
+            Some(external.display().to_string()),
+            Some(30_000),
+            None,
+            None,
+            None,
+        )
+        .expect("absolute cwd should run");
+
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result
+                .stdout
+                .contains(&external_canonical.display().to_string()),
+            "unexpected stdout: {}",
+            result.stdout
+        );
+
+        let _ = fs::remove_dir_all(&workdir);
+        let _ = fs::remove_dir_all(&external);
+    }
+
+    #[test]
+    fn run_shell_script_rejects_missing_absolute_cwd() {
+        let workdir = std::env::temp_dir().join(format!(
+            "liveagent-shell-abs-cwd-missing-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&workdir);
+        let missing = std::env::temp_dir()
+            .join(format!("liveagent-missing-cwd-{}", std::process::id()))
+            .join("nope");
+
+        let error = run_shell_script(
+            workdir.display().to_string(),
+            "echo hi".to_string(),
+            Some(missing.display().to_string()),
+            Some(30_000),
+            None,
+            None,
+            None,
+        )
+        .expect_err("missing absolute cwd should fail");
+
+        assert!(
+            error.contains("cwd does not exist or is not a directory"),
+            "unexpected error: {error}"
+        );
+
+        let _ = fs::remove_dir_all(&workdir);
     }
 }

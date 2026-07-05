@@ -1,9 +1,9 @@
 import {
+  type AppSettings,
   normalizeChatRuntimeControls,
   normalizeRightDockSettings,
   normalizeSettings,
   workspaceProjectPathKey,
-  type AppSettings,
 } from "./index";
 
 export type GatewayProviderApiKeyUpdates = Record<string, string>;
@@ -43,8 +43,6 @@ export type GatewaySettingsSyncPayload = {
   mcp: AppSettings["mcp"];
   agents: AppSettings["agents"];
   ssh: AppSettings["ssh"];
-  hooks: AppSettings["hooks"];
-  cron: AppSettings["cron"];
   remote?: Pick<
     AppSettings["remote"],
     "enableWebTerminal" | "enableWebSshTerminal" | "enableWebGit" | "enableWebTunnels"
@@ -68,8 +66,6 @@ const GATEWAY_SETTINGS_SYNC_FIELDS = [
   "mcp",
   "agents",
   "ssh",
-  "hooks",
-  "cron",
   "remote",
   "memory",
   "customSettings",
@@ -165,7 +161,9 @@ function collectProviderApiKeyUpdates(
   return Object.keys(updates).length > 0 ? updates : undefined;
 }
 
-export function collectSshSecretUpdates(ssh: AppSettings["ssh"]): GatewaySshSecretUpdates | undefined {
+export function collectSshSecretUpdates(
+  ssh: AppSettings["ssh"],
+): GatewaySshSecretUpdates | undefined {
   const updates: GatewaySshSecretUpdates = {};
   for (const host of ssh.hosts) {
     const id = host.id.trim();
@@ -195,7 +193,7 @@ function hasSecretUpdateField(
   update: GatewaySshSecretUpdates[string] | undefined,
   key: keyof GatewaySshSecretUpdates[string],
 ) {
-  return update ? Object.prototype.hasOwnProperty.call(update, key) : false;
+  return update ? Object.hasOwn(update, key) : false;
 }
 
 function collectChangedSshSecretUpdates(
@@ -297,9 +295,8 @@ export function buildGatewaySshSyncPatch(
       ? { before: previousOrder, after: nextOrder }
       : undefined;
 
-  const projectAssociationChanges: NonNullable<
-    GatewaySshSyncPatch["projectAssociationChanges"]
-  > = [];
+  const projectAssociationChanges: NonNullable<GatewaySshSyncPatch["projectAssociationChanges"]> =
+    [];
   const previousAssociations = normalizeAssociationEntries(previousSsh.projectHostAssociations);
   const nextAssociations = normalizeAssociationEntries(nextSsh.projectHostAssociations);
   const pathKeys = new Set<string>([
@@ -458,26 +455,20 @@ function normalizeSshSecretUpdates(value: unknown): GatewaySshSecretUpdates {
     if (!normalizedId) continue;
     const updateSource = asObject(rawUpdate);
     const update: GatewaySshSecretUpdates[string] = {};
-    if (
-      Object.prototype.hasOwnProperty.call(updateSource, "password") &&
-      typeof updateSource.password === "string"
-    ) {
+    if (Object.hasOwn(updateSource, "password") && typeof updateSource.password === "string") {
       update.password = updateSource.password.trim();
     }
-    if (
-      Object.prototype.hasOwnProperty.call(updateSource, "privateKey") &&
-      typeof updateSource.privateKey === "string"
-    ) {
+    if (Object.hasOwn(updateSource, "privateKey") && typeof updateSource.privateKey === "string") {
       update.privateKey = updateSource.privateKey.trim();
     }
     if (
-      Object.prototype.hasOwnProperty.call(updateSource, "privateKeyPassphrase") &&
+      Object.hasOwn(updateSource, "privateKeyPassphrase") &&
       typeof updateSource.privateKeyPassphrase === "string"
     ) {
       update.privateKeyPassphrase = updateSource.privateKeyPassphrase.trim();
     }
     if (
-      Object.prototype.hasOwnProperty.call(updateSource, "proxyPassword") &&
+      Object.hasOwn(updateSource, "proxyPassword") &&
       typeof updateSource.proxyPassword === "string"
     ) {
       update.proxyPassword = updateSource.proxyPassword.trim();
@@ -506,10 +497,7 @@ function mergeSyncedCustomProviders(
     const apiKeyUpdate = id ? apiKeyUpdates[id] : undefined;
     const sourceApiKey = typeof source.apiKey === "string" ? source.apiKey.trim() : "";
     const apiKey = (apiKeyUpdate ?? sourceApiKey) || currentProvider?.apiKey || "";
-    const sourceHasConfiguredFlag = Object.prototype.hasOwnProperty.call(
-      source,
-      "apiKeyConfigured",
-    );
+    const sourceHasConfiguredFlag = Object.hasOwn(source, "apiKeyConfigured");
 
     return {
       ...source,
@@ -528,25 +516,25 @@ function mergeSyncedRemoteSettings(
 ): AppSettings["remote"] {
   const source = asObject(incoming);
   if (
-    !Object.prototype.hasOwnProperty.call(source, "enableWebTerminal") &&
-    !Object.prototype.hasOwnProperty.call(source, "enableWebSshTerminal") &&
-    !Object.prototype.hasOwnProperty.call(source, "enableWebGit") &&
-    !Object.prototype.hasOwnProperty.call(source, "enableWebTunnels")
+    !Object.hasOwn(source, "enableWebTerminal") &&
+    !Object.hasOwn(source, "enableWebSshTerminal") &&
+    !Object.hasOwn(source, "enableWebGit") &&
+    !Object.hasOwn(source, "enableWebTunnels")
   ) {
     return current;
   }
   return {
     ...current,
-    enableWebTerminal: Object.prototype.hasOwnProperty.call(source, "enableWebTerminal")
+    enableWebTerminal: Object.hasOwn(source, "enableWebTerminal")
       ? source.enableWebTerminal === true
       : current.enableWebTerminal,
-    enableWebSshTerminal: Object.prototype.hasOwnProperty.call(source, "enableWebSshTerminal")
+    enableWebSshTerminal: Object.hasOwn(source, "enableWebSshTerminal")
       ? source.enableWebSshTerminal === true
       : current.enableWebSshTerminal,
-    enableWebGit: Object.prototype.hasOwnProperty.call(source, "enableWebGit")
+    enableWebGit: Object.hasOwn(source, "enableWebGit")
       ? source.enableWebGit === true
       : current.enableWebGit,
-    enableWebTunnels: Object.prototype.hasOwnProperty.call(source, "enableWebTunnels")
+    enableWebTunnels: Object.hasOwn(source, "enableWebTunnels")
       ? source.enableWebTunnels === true
       : current.enableWebTunnels,
   };
@@ -562,10 +550,7 @@ function mergeSyncedSshSettings(
     ssh: incoming as AppSettings["ssh"],
   }).ssh;
   const currentById = new Map(current.hosts.map((host) => [host.id, host]));
-  const projectHostAssociations = Object.prototype.hasOwnProperty.call(
-    source,
-    "projectHostAssociations",
-  )
+  const projectHostAssociations = Object.hasOwn(source, "projectHostAssociations")
     ? normalized.projectHostAssociations
     : normalizeSettings({
         ssh: {
@@ -581,28 +566,23 @@ function mergeSyncedSshSettings(
       const isAgentAuth = host.authType === "agent";
       const hasPasswordUpdate = hasSecretUpdateField(update, "password");
       const hasPrivateKeyUpdate = hasSecretUpdateField(update, "privateKey");
-      const hasPrivateKeyPassphraseUpdate = hasSecretUpdateField(
-        update,
-        "privateKeyPassphrase",
-      );
+      const hasPrivateKeyPassphraseUpdate = hasSecretUpdateField(update, "privateKeyPassphrase");
       const hasProxyPasswordUpdate = hasSecretUpdateField(update, "proxyPassword");
       const password = isAgentAuth
         ? ""
         : hasPasswordUpdate
           ? readSecret(update?.password)
           : host.password.trim() || currentHost?.password || "";
-      const privateKey =
-        isAgentAuth
-          ? ""
-          : hasPrivateKeyUpdate
-            ? readSecret(update?.privateKey)
-            : host.privateKey.trim() || currentHost?.privateKey || "";
-      const privateKeyPassphrase =
-        isAgentAuth
-          ? ""
-          : hasPrivateKeyPassphraseUpdate
-            ? readSecret(update?.privateKeyPassphrase)
-            : host.privateKeyPassphrase.trim() || currentHost?.privateKeyPassphrase || "";
+      const privateKey = isAgentAuth
+        ? ""
+        : hasPrivateKeyUpdate
+          ? readSecret(update?.privateKey)
+          : host.privateKey.trim() || currentHost?.privateKey || "";
+      const privateKeyPassphrase = isAgentAuth
+        ? ""
+        : hasPrivateKeyPassphraseUpdate
+          ? readSecret(update?.privateKeyPassphrase)
+          : host.privateKeyPassphrase.trim() || currentHost?.privateKeyPassphrase || "";
       const proxyPassword = hasProxyPasswordUpdate
         ? readSecret(update?.proxyPassword)
         : host.proxy.password.trim() || currentHost?.proxy.password || "";
@@ -636,12 +616,11 @@ function mergeSyncedSshSettings(
         proxy: {
           ...host.proxy,
           password: proxyPassword,
-          passwordConfigured:
-            hasProxyPasswordUpdate
-              ? proxyPassword.length > 0
-              : proxyPassword.length > 0 ||
-                host.proxy.passwordConfigured === true ||
-                currentHost?.proxy.passwordConfigured === true,
+          passwordConfigured: hasProxyPasswordUpdate
+            ? proxyPassword.length > 0
+            : proxyPassword.length > 0 ||
+              host.proxy.passwordConfigured === true ||
+              currentHost?.proxy.passwordConfigured === true,
         },
       };
     }),
@@ -675,8 +654,7 @@ function applySyncedSshPatch(
       ...normalized,
       password: normalized.password || existing?.password || "",
       privateKey: normalized.privateKey || existing?.privateKey || "",
-      privateKeyPassphrase:
-        normalized.privateKeyPassphrase || existing?.privateKeyPassphrase || "",
+      privateKeyPassphrase: normalized.privateKeyPassphrase || existing?.privateKeyPassphrase || "",
       proxy: {
         ...normalized.proxy,
         password: normalized.proxy.password || existing?.proxy.password || "",
@@ -746,10 +724,25 @@ function applySyncedSshPatch(
 
   return normalizeSettings({
     ssh: {
-      hosts: hostOrder.map((id) => hostsById.get(id)).filter((host): host is AppSettings["ssh"]["hosts"][number] => Boolean(host)),
+      hosts: hostOrder
+        .map((id) => hostsById.get(id))
+        .filter((host): host is AppSettings["ssh"]["hosts"][number] => Boolean(host)),
       projectHostAssociations,
     },
   }).ssh;
+}
+
+// Per-project last-writer-wins ordered by (stateVersion, writerId): both
+// sides of a sync evaluate the same total order, so concurrent writers
+// converge deterministically instead of relying on tie-break direction.
+function rightDockIncomingWins(
+  incoming: { stateVersion: number; writerId: string },
+  current: { stateVersion: number; writerId: string },
+): boolean {
+  if (incoming.stateVersion !== current.stateVersion) {
+    return incoming.stateVersion > current.stateVersion;
+  }
+  return incoming.writerId > current.writerId;
 }
 
 function mergeSyncedRightDockSettings(
@@ -768,21 +761,22 @@ function mergeSyncedRightDockSettings(
       projects[pathKey] = incomingProject;
       continue;
     }
-    const source =
-      incomingProject.stateVersion >= currentProject.stateVersion ? incomingProject : currentProject;
+    const winner = rightDockIncomingWins(incomingProject, currentProject)
+      ? incomingProject
+      : currentProject;
     projects[pathKey] = {
-      activeTabId: source.activeTabId,
-      tabOrder: source.tabOrder,
-      tabs: source.tabs,
+      ...winner,
       openVersion: Math.max(currentProject.openVersion, incomingProject.openVersion),
       stateVersion: Math.max(currentProject.stateVersion, incomingProject.stateVersion),
+      lastUsedAt: Math.max(currentProject.lastUsedAt, incomingProject.lastUsedAt),
     };
   }
 
-  return {
+  // Width stays device-local; re-normalizing applies the LRU project cap.
+  return normalizeRightDockSettings({
     width: currentState.width,
     projects,
-  };
+  });
 }
 
 export function buildGatewaySettingsSyncPayload(
@@ -795,8 +789,6 @@ export function buildGatewaySettingsSyncPayload(
     mcp: settings.mcp,
     agents: settings.agents,
     ssh: redactSshSettingsForGateway(settings.ssh),
-    hooks: settings.hooks,
-    cron: settings.cron,
     remote: {
       enableWebTerminal: settings.remote.enableWebTerminal,
       enableWebSshTerminal: settings.remote.enableWebSshTerminal,
@@ -878,17 +870,17 @@ export function applyGatewaySettingsSyncPayload(
       ? undefined
       : ((source.selectedModel as AppSettings["selectedModel"] | undefined) ??
         current.selectedModel);
-  const memory = Object.prototype.hasOwnProperty.call(source, "memory")
+  const memory = Object.hasOwn(source, "memory")
     ? ((source.memory as AppSettings["memory"] | null | undefined) ?? {})
     : current.memory;
-  const customSettings = Object.prototype.hasOwnProperty.call(source, "customSettings")
+  const customSettings = Object.hasOwn(source, "customSettings")
     ? ((source.customSettings as GatewaySettingsSyncCustomSettings | null | undefined) ?? {})
     : current.customSettings;
   const incomingCustomSettings = customSettings as GatewaySettingsSyncCustomSettings;
 
   return normalizeSettings({
     ...current,
-    system: Object.prototype.hasOwnProperty.call(source, "system")
+    system: Object.hasOwn(source, "system")
       ? mergeSyncedSystemSettings(current.system, source.system)
       : current.system,
     customProviders: mergeSyncedCustomProviders(
@@ -898,17 +890,15 @@ export function applyGatewaySettingsSyncPayload(
     ),
     mcp: (source.mcp as AppSettings["mcp"] | undefined) ?? current.mcp,
     agents: (source.agents as AppSettings["agents"] | undefined) ?? current.agents,
-    ssh: Object.prototype.hasOwnProperty.call(source, "ssh")
+    ssh: Object.hasOwn(source, "ssh")
       ? mergeSyncedSshSettings(current.ssh, source.ssh, sshSecretUpdates)
-      : Object.prototype.hasOwnProperty.call(source, "sshPatch")
+      : Object.hasOwn(source, "sshPatch")
         ? applySyncedSshPatch(current.ssh, source.sshPatch, sshSecretUpdates)
         : current.ssh,
-    hooks: (source.hooks as AppSettings["hooks"] | undefined) ?? current.hooks,
-    cron: (source.cron as AppSettings["cron"] | undefined) ?? current.cron,
     memory: memory as AppSettings["memory"],
     customSettings: {
       ...incomingCustomSettings,
-      rightDock: Object.prototype.hasOwnProperty.call(incomingCustomSettings, "rightDock")
+      rightDock: Object.hasOwn(incomingCustomSettings, "rightDock")
         ? mergeSyncedRightDockSettings(
             current.customSettings.rightDock,
             incomingCustomSettings.rightDock,
@@ -917,13 +907,13 @@ export function applyGatewaySettingsSyncPayload(
       chatSidebar: current.customSettings.chatSidebar,
     },
     skills: (source.skills as AppSettings["skills"] | undefined) ?? current.skills,
-    chatRuntimeControls: Object.prototype.hasOwnProperty.call(source, "chatRuntimeControls")
+    chatRuntimeControls: Object.hasOwn(source, "chatRuntimeControls")
       ? normalizeChatRuntimeControls(source.chatRuntimeControls)
       : current.chatRuntimeControls,
     selectedModel,
     theme: (source.theme as AppSettings["theme"] | undefined) ?? current.theme,
     locale: (source.locale as AppSettings["locale"] | undefined) ?? current.locale,
-    remote: Object.prototype.hasOwnProperty.call(source, "remote")
+    remote: Object.hasOwn(source, "remote")
       ? mergeSyncedRemoteSettings(current.remote, source.remote)
       : current.remote,
   });

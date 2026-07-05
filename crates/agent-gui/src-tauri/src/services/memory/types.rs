@@ -131,6 +131,10 @@ pub struct MemoryMutationResponse {
     pub deleted: bool,
     pub index_updated: bool,
     pub warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_confidence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_downgraded: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -250,7 +254,15 @@ pub struct MemoryOrganizeRun {
     pub parse_failures: i64,
     pub error: Option<String>,
     pub final_summary: Option<String>,
-    pub trimmed_protocol: Value,
+    pub phase: Option<String>,
+    pub final_count: i64,
+    pub compression_ratio: Option<f64>,
+    pub compression_target: Option<i64>,
+    pub dry_run: bool,
+    pub token_usage_total: i64,
+    pub quota_headroom_at_start: Option<i64>,
+    pub override_reviewed: bool,
+    pub report: Value,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -272,7 +284,7 @@ pub struct MemoryOrganizeRunCreateResponse {
     pub active_run: Option<MemoryOrganizeRun>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryOrganizeRunUpdateArgs {
     pub run_id: String,
@@ -290,7 +302,15 @@ pub struct MemoryOrganizeRunUpdateArgs {
     pub parse_failures: Option<i64>,
     pub error: Option<String>,
     pub final_summary: Option<String>,
-    pub trimmed_protocol: Option<Value>,
+    pub phase: Option<String>,
+    pub final_count: Option<i64>,
+    pub compression_ratio: Option<f64>,
+    pub compression_target: Option<i64>,
+    pub dry_run: Option<bool>,
+    pub token_usage_total: Option<i64>,
+    pub quota_headroom_at_start: Option<i64>,
+    pub override_reviewed: Option<bool>,
+    pub report: Option<Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -375,6 +395,18 @@ pub struct MemorySearchArgs {
     pub history_time_mode: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEvidenceArgs {
+    pub confidence: Option<String>,
+    pub source_quote: Option<String>,
+    pub reasoning: Option<String>,
+    pub aliases: Option<Vec<String>>,
+    pub conflicts_with: Option<Vec<String>>,
+    pub supersedes: Option<String>,
+    pub override_reject: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryWriteArgs {
@@ -387,6 +419,7 @@ pub struct MemoryWriteArgs {
     pub actor: Option<String>,
     pub conversation_id: Option<String>,
     pub model: Option<String>,
+    pub evidence: Option<MemoryEvidenceArgs>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -403,6 +436,7 @@ pub struct MemoryUpdateArgs {
     pub actor: Option<String>,
     pub conversation_id: Option<String>,
     pub model: Option<String>,
+    pub evidence: Option<MemoryEvidenceArgs>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -463,8 +497,35 @@ pub struct MemoryDecisionArgs {
     pub memory_type: Option<String>,
     pub description: Option<String>,
     pub body: Option<String>,
+    pub mode: Option<String>,
     pub reason: Option<String>,
     pub group_id: Option<String>,
+    pub evidence: Option<MemoryEvidenceArgs>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryQuotaSummaryArgs {
+    pub workdir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryQuotaSummaryResponse {
+    pub scopes: Vec<MemoryQuotaScopeSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryQuotaScopeSummary {
+    pub scope: String,
+    pub workdir_hash: String,
+    pub used: usize,
+    pub limit: usize,
+    pub headroom: usize,
+    pub archived_count: usize,
+    pub unreviewed_count: usize,
+    pub oldest_unreviewed_age_days: Option<f64>,
 }
 
 #[derive(Debug, Clone)]

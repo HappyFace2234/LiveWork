@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex, time::Duration};
 
 const DB_FILENAME: &str = "chat-history.sqlite3";
@@ -83,12 +83,15 @@ fn migrate_history_db_inner(conn: &Connection) -> Result<(), String> {
         set_user_version(conn, 1)?;
     }
 
+    // The subagent schema is versioned independently via subagentMeta and is
+    // safe to (re)ensure on every startup.
+    ensure_subagent_schema(conn)?;
+
     Ok(())
 }
 
 fn migrate_to_v1(conn: &Connection) -> Result<(), String> {
     ensure_chat_history_schema(conn)?;
-    ensure_subagent_history_schema(conn)?;
     Ok(())
 }
 
@@ -548,38 +551,79 @@ fn seed_existing_chat_history_fts_index(conn: &Connection) -> Result<(), String>
     Ok(())
 }
 
-fn ensure_subagent_history_schema(conn: &Connection) -> Result<(), String> {
+const SUBAGENT_SCHEMA_VERSION: &str = "2";
+
+/// Versioned bootstrap for the subagent store schema (v2).
+///
+/// The subagent tables are versioned independently of the chat-history
+/// `user_version` via the `subagentMeta` table. When the recorded version is
+/// missing or different from the current one, every subagent table (including
+/// legacy v1 tables) is dropped and recreated — old persisted subagent data is
+/// deliberately discarded.
+pub(crate) fn ensure_subagent_schema(conn: &Connection) -> Result<(), String> {
+    let meta_exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'subagentMeta'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("failed to check subagent meta table: {e}"))?;
+    if meta_exists > 0 {
+        let version: Option<String> = conn
+            .query_row(
+                "SELECT value FROM subagentMeta WHERE key = 'schemaVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("failed to read subagent schema version: {e}"))?;
+        if version.as_deref() == Some(SUBAGENT_SCHEMA_VERSION) {
+            return Ok(());
+        }
+    }
+
     conn.execute_batch(
         "
-        CREATE TABLE IF NOT EXISTS subagentIdentity (
-            parent_conversation_id TEXT NOT NULL,
-            logical_agent_id TEXT NOT NULL,
-            display_name TEXT NOT NULL,
-            role TEXT NOT NULL,
-            identity_prompt TEXT NOT NULL,
-            agent_id TEXT,
-            template_name TEXT,
-            default_mode TEXT NOT NULL,
-            default_task_intent TEXT NOT NULL,
-            default_apply_policy TEXT NOT NULL,
-            created_parent_tool_call_id TEXT,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL,
-            PRIMARY KEY (parent_conversation_id, logical_agent_id)
+        DROP TABLE IF EXISTS subagentRunEvent;
+        DROP TABLE IF EXISTS subagentMessageBusEntry;
+        DROP TABLE IF EXISTS subagentRunSegment;
+        DROP TABLE IF EXISTS subagentRun;
+        DROP TABLE IF EXISTS subagentIdentity;
+        DROP TABLE IF EXISTS subagentMessage;
+        DROP TABLE IF EXISTS subagentMeta;
+        ",
+    )
+    .map_err(|e| format!("failed to drop outdated subagent tables: {e}"))?;
+
+    conn.execute_batch(
+        "
+        CREATE TABLE subagentMeta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS subagentRun (
+        CREATE TABLE subagentIdentity (
+            parent_conversation_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            identity_prompt TEXT NOT NULL,
+            template_id TEXT,
+            last_mode TEXT NOT NULL,
+            created_tool_call_id TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (parent_conversation_id, agent_id)
+        );
+
+        CREATE TABLE subagentRun (
             id TEXT PRIMARY KEY,
-            parent_conversation_id TEXT,
-            parent_session_id TEXT,
+            parent_conversation_id TEXT NOT NULL,
             parent_tool_call_id TEXT NOT NULL,
-            parent_tool_name TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
             agent_index INTEGER NOT NULL,
             agent_total INTEGER NOT NULL,
-            logical_agent_id TEXT NOT NULL DEFAULT '',
-            agent_id TEXT,
-            agent_name TEXT,
-            description TEXT NOT NULL,
+            prompt TEXT NOT NULL,
             mode TEXT NOT NULL,
             status TEXT NOT NULL,
             provider_id TEXT NOT NULL,
@@ -588,22 +632,21 @@ fn ensure_subagent_history_schema(conn: &Connection) -> Result<(), String> {
             workdir TEXT,
             worktree_root TEXT,
             branch_name TEXT,
-            context_meta_json TEXT NOT NULL,
+            context_schema_version INTEGER NOT NULL,
             active_segment_index INTEGER NOT NULL,
             total_segment_count INTEGER NOT NULL,
             total_message_count INTEGER NOT NULL,
-            round_count INTEGER NOT NULL DEFAULT 0,
-            tool_call_count INTEGER NOT NULL DEFAULT 0,
-            compaction_count INTEGER NOT NULL DEFAULT 0,
+            round_count INTEGER NOT NULL,
+            tool_call_count INTEGER NOT NULL,
+            compaction_count INTEGER NOT NULL,
             summary TEXT,
             error TEXT,
             started_at INTEGER NOT NULL,
             ended_at INTEGER,
-            created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS subagentRunSegment (
+        CREATE TABLE subagentRunSegment (
             run_id TEXT NOT NULL,
             segment_index INTEGER NOT NULL,
             segment_id TEXT NOT NULL,
@@ -619,27 +662,14 @@ fn ensure_subagent_history_schema(conn: &Connection) -> Result<(), String> {
             FOREIGN KEY (run_id) REFERENCES subagentRun(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS subagentRunEvent (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            round_index INTEGER,
-            tool_call_id TEXT,
-            tool_name TEXT,
-            is_error INTEGER NOT NULL DEFAULT 0,
-            payload_json TEXT,
-            created_at INTEGER NOT NULL,
-            FOREIGN KEY (run_id) REFERENCES subagentRun(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS subagentMessageBusEntry (
+        CREATE TABLE subagentMessage (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             parent_conversation_id TEXT NOT NULL,
             seq INTEGER NOT NULL,
-            sender_agent_id TEXT NOT NULL,
-            sender_display_name TEXT,
-            recipient_agent_id TEXT NOT NULL,
-            recipient_display_name TEXT,
+            sender_id TEXT NOT NULL,
+            sender_name TEXT,
+            recipient_id TEXT NOT NULL,
+            recipient_name TEXT,
             channel TEXT NOT NULL,
             subject TEXT,
             body_markdown TEXT NOT NULL,
@@ -648,455 +678,28 @@ fn ensure_subagent_history_schema(conn: &Connection) -> Result<(), String> {
             created_at INTEGER NOT NULL,
             UNIQUE (parent_conversation_id, seq)
         );
-        ",
-    )
-    .map_err(|e| format!("初始化子 agent 历史表失败：{e}"))?;
 
-    ensure_subagent_identity_columns(conn)?;
-    ensure_subagent_run_columns(conn)?;
-    ensure_subagent_run_segment_columns(conn)?;
-    ensure_subagent_run_event_columns(conn)?;
-    ensure_subagent_message_bus_columns(conn)?;
-    conn.execute_batch(
-        "
-        CREATE INDEX IF NOT EXISTS idx_subagentIdentity_parent_updated
+        CREATE INDEX idx_subagentIdentity_parent_updated
             ON subagentIdentity(parent_conversation_id, updated_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentRun_parent
-            ON subagentRun(parent_conversation_id, parent_tool_call_id, agent_index);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentRun_updated_at
-            ON subagentRun(updated_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentRun_parent_updated
+        CREATE INDEX idx_subagentRun_parent_updated
             ON subagentRun(parent_conversation_id, updated_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentRun_logical_agent
-            ON subagentRun(parent_conversation_id, logical_agent_id, updated_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentRunSegment_run_updated
-            ON subagentRunSegment(run_id, updated_at DESC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentRunEvent_run_id
-            ON subagentRunEvent(run_id, id ASC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentMessageBusEntry_parent_seq
-            ON subagentMessageBusEntry(parent_conversation_id, seq ASC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentMessageBusEntry_parent_recipient_seq
-            ON subagentMessageBusEntry(parent_conversation_id, recipient_agent_id, seq ASC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentMessageBusEntry_parent_sender_seq
-            ON subagentMessageBusEntry(parent_conversation_id, sender_agent_id, seq ASC);
-
-        CREATE INDEX IF NOT EXISTS idx_subagentMessageBusEntry_source_run
-            ON subagentMessageBusEntry(source_run_id);
+        CREATE INDEX idx_subagentRun_agent
+            ON subagentRun(parent_conversation_id, agent_id, updated_at DESC);
+        CREATE INDEX idx_subagentRun_tool_call
+            ON subagentRun(parent_conversation_id, parent_tool_call_id);
+        CREATE INDEX idx_subagentMessage_parent_seq
+            ON subagentMessage(parent_conversation_id, seq);
         ",
     )
-    .map_err(|e| format!("初始化子 agent 历史索引失败：{e}"))?;
+    .map_err(|e| format!("failed to create subagent schema: {e}"))?;
+
+    conn.execute(
+        "INSERT INTO subagentMeta (key, value) VALUES ('schemaVersion', ?1)",
+        [SUBAGENT_SCHEMA_VERSION],
+    )
+    .map_err(|e| format!("failed to record subagent schema version: {e}"))?;
 
     Ok(())
-}
-
-fn ensure_subagent_identity_columns(conn: &Connection) -> Result<(), String> {
-    ensure_table_columns(
-        conn,
-        "subagentIdentity",
-        "子 agent 身份表",
-        &[
-            (
-                "parent_conversation_id",
-                "ALTER TABLE subagentIdentity ADD COLUMN parent_conversation_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "logical_agent_id",
-                "ALTER TABLE subagentIdentity ADD COLUMN logical_agent_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "display_name",
-                "ALTER TABLE subagentIdentity ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "role",
-                "ALTER TABLE subagentIdentity ADD COLUMN role TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "identity_prompt",
-                "ALTER TABLE subagentIdentity ADD COLUMN identity_prompt TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "agent_id",
-                "ALTER TABLE subagentIdentity ADD COLUMN agent_id TEXT;",
-            ),
-            (
-                "template_name",
-                "ALTER TABLE subagentIdentity ADD COLUMN template_name TEXT;",
-            ),
-            (
-                "default_mode",
-                "ALTER TABLE subagentIdentity ADD COLUMN default_mode TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "default_task_intent",
-                "ALTER TABLE subagentIdentity ADD COLUMN default_task_intent TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "default_apply_policy",
-                "ALTER TABLE subagentIdentity ADD COLUMN default_apply_policy TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "created_parent_tool_call_id",
-                "ALTER TABLE subagentIdentity ADD COLUMN created_parent_tool_call_id TEXT;",
-            ),
-            (
-                "created_at",
-                "ALTER TABLE subagentIdentity ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "updated_at",
-                "ALTER TABLE subagentIdentity ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-        ],
-    )
-}
-
-fn ensure_subagent_run_columns(conn: &Connection) -> Result<(), String> {
-    ensure_table_columns(
-        conn,
-        "subagentRun",
-        "子 agent run 表",
-        &[
-            (
-                "parent_conversation_id",
-                "ALTER TABLE subagentRun ADD COLUMN parent_conversation_id TEXT;",
-            ),
-            (
-                "parent_session_id",
-                "ALTER TABLE subagentRun ADD COLUMN parent_session_id TEXT;",
-            ),
-            (
-                "parent_tool_call_id",
-                "ALTER TABLE subagentRun ADD COLUMN parent_tool_call_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "parent_tool_name",
-                "ALTER TABLE subagentRun ADD COLUMN parent_tool_name TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "agent_index",
-                "ALTER TABLE subagentRun ADD COLUMN agent_index INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "agent_total",
-                "ALTER TABLE subagentRun ADD COLUMN agent_total INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "logical_agent_id",
-                "ALTER TABLE subagentRun ADD COLUMN logical_agent_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "agent_id",
-                "ALTER TABLE subagentRun ADD COLUMN agent_id TEXT;",
-            ),
-            (
-                "agent_name",
-                "ALTER TABLE subagentRun ADD COLUMN agent_name TEXT;",
-            ),
-            (
-                "description",
-                "ALTER TABLE subagentRun ADD COLUMN description TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "mode",
-                "ALTER TABLE subagentRun ADD COLUMN mode TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "status",
-                "ALTER TABLE subagentRun ADD COLUMN status TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "provider_id",
-                "ALTER TABLE subagentRun ADD COLUMN provider_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "model",
-                "ALTER TABLE subagentRun ADD COLUMN model TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "session_id",
-                "ALTER TABLE subagentRun ADD COLUMN session_id TEXT;",
-            ),
-            (
-                "workdir",
-                "ALTER TABLE subagentRun ADD COLUMN workdir TEXT;",
-            ),
-            (
-                "worktree_root",
-                "ALTER TABLE subagentRun ADD COLUMN worktree_root TEXT;",
-            ),
-            (
-                "branch_name",
-                "ALTER TABLE subagentRun ADD COLUMN branch_name TEXT;",
-            ),
-            (
-                "context_meta_json",
-                "ALTER TABLE subagentRun ADD COLUMN context_meta_json TEXT NOT NULL DEFAULT '{}';",
-            ),
-            (
-                "active_segment_index",
-                "ALTER TABLE subagentRun ADD COLUMN active_segment_index INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "total_segment_count",
-                "ALTER TABLE subagentRun ADD COLUMN total_segment_count INTEGER NOT NULL DEFAULT 1;",
-            ),
-            (
-                "total_message_count",
-                "ALTER TABLE subagentRun ADD COLUMN total_message_count INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "round_count",
-                "ALTER TABLE subagentRun ADD COLUMN round_count INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "tool_call_count",
-                "ALTER TABLE subagentRun ADD COLUMN tool_call_count INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "compaction_count",
-                "ALTER TABLE subagentRun ADD COLUMN compaction_count INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "summary",
-                "ALTER TABLE subagentRun ADD COLUMN summary TEXT;",
-            ),
-            ("error", "ALTER TABLE subagentRun ADD COLUMN error TEXT;"),
-            (
-                "started_at",
-                "ALTER TABLE subagentRun ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "ended_at",
-                "ALTER TABLE subagentRun ADD COLUMN ended_at INTEGER;",
-            ),
-            (
-                "created_at",
-                "ALTER TABLE subagentRun ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "updated_at",
-                "ALTER TABLE subagentRun ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-        ],
-    )?;
-
-    conn.execute_batch(
-        "
-        UPDATE subagentRun
-        SET logical_agent_id = ''
-        WHERE logical_agent_id IS NULL;
-
-        UPDATE subagentRun
-        SET context_meta_json = '{}'
-        WHERE context_meta_json IS NULL OR trim(context_meta_json) = '';
-
-        UPDATE subagentRun
-        SET total_segment_count = 1
-        WHERE total_segment_count IS NULL OR total_segment_count < 1;
-
-        UPDATE subagentRun
-        SET active_segment_index = 0
-        WHERE active_segment_index IS NULL OR active_segment_index < 0;
-
-        UPDATE subagentRun
-        SET total_message_count = 0
-        WHERE total_message_count IS NULL OR total_message_count < 0;
-
-        UPDATE subagentRun
-        SET round_count = 0
-        WHERE round_count IS NULL OR round_count < 0;
-
-        UPDATE subagentRun
-        SET tool_call_count = 0
-        WHERE tool_call_count IS NULL OR tool_call_count < 0;
-
-        UPDATE subagentRun
-        SET compaction_count = 0
-        WHERE compaction_count IS NULL OR compaction_count < 0;
-        ",
-    )
-    .map_err(|e| format!("修复子 agent run 表默认字段失败：{e}"))?;
-
-    Ok(())
-}
-
-fn ensure_subagent_run_segment_columns(conn: &Connection) -> Result<(), String> {
-    ensure_table_columns(
-        conn,
-        "subagentRunSegment",
-        "子 agent run 分段表",
-        &[
-            (
-                "run_id",
-                "ALTER TABLE subagentRunSegment ADD COLUMN run_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "segment_index",
-                "ALTER TABLE subagentRunSegment ADD COLUMN segment_index INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "segment_id",
-                "ALTER TABLE subagentRunSegment ADD COLUMN segment_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "summary_json",
-                "ALTER TABLE subagentRunSegment ADD COLUMN summary_json TEXT;",
-            ),
-            (
-                "messages_json",
-                "ALTER TABLE subagentRunSegment ADD COLUMN messages_json TEXT NOT NULL DEFAULT '[]';",
-            ),
-            (
-                "message_count",
-                "ALTER TABLE subagentRunSegment ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "start_message_id",
-                "ALTER TABLE subagentRunSegment ADD COLUMN start_message_id TEXT;",
-            ),
-            (
-                "end_message_id",
-                "ALTER TABLE subagentRunSegment ADD COLUMN end_message_id TEXT;",
-            ),
-            (
-                "created_at",
-                "ALTER TABLE subagentRunSegment ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "updated_at",
-                "ALTER TABLE subagentRunSegment ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-        ],
-    )?;
-
-    conn.execute_batch(
-        "
-        UPDATE subagentRunSegment
-        SET segment_id = 'segment-' || segment_index
-        WHERE segment_id IS NULL OR trim(segment_id) = '';
-
-        UPDATE subagentRunSegment
-        SET messages_json = '[]'
-        WHERE messages_json IS NULL OR trim(messages_json) = '';
-
-        UPDATE subagentRunSegment
-        SET message_count = 0
-        WHERE message_count IS NULL OR message_count < 0;
-        ",
-    )
-    .map_err(|e| format!("修复子 agent run 分段表默认字段失败：{e}"))?;
-
-    Ok(())
-}
-
-fn ensure_subagent_run_event_columns(conn: &Connection) -> Result<(), String> {
-    ensure_table_columns(
-        conn,
-        "subagentRunEvent",
-        "子 agent run 事件表",
-        &[
-            (
-                "run_id",
-                "ALTER TABLE subagentRunEvent ADD COLUMN run_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "event_type",
-                "ALTER TABLE subagentRunEvent ADD COLUMN event_type TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "round_index",
-                "ALTER TABLE subagentRunEvent ADD COLUMN round_index INTEGER;",
-            ),
-            (
-                "tool_call_id",
-                "ALTER TABLE subagentRunEvent ADD COLUMN tool_call_id TEXT;",
-            ),
-            (
-                "tool_name",
-                "ALTER TABLE subagentRunEvent ADD COLUMN tool_name TEXT;",
-            ),
-            (
-                "is_error",
-                "ALTER TABLE subagentRunEvent ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "payload_json",
-                "ALTER TABLE subagentRunEvent ADD COLUMN payload_json TEXT;",
-            ),
-            (
-                "created_at",
-                "ALTER TABLE subagentRunEvent ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-        ],
-    )
-}
-
-fn ensure_subagent_message_bus_columns(conn: &Connection) -> Result<(), String> {
-    ensure_table_columns(
-        conn,
-        "subagentMessageBusEntry",
-        "子 agent message bus 表",
-        &[
-            (
-                "parent_conversation_id",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN parent_conversation_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "seq",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;",
-            ),
-            (
-                "sender_agent_id",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN sender_agent_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "sender_display_name",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN sender_display_name TEXT;",
-            ),
-            (
-                "recipient_agent_id",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN recipient_agent_id TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "recipient_display_name",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN recipient_display_name TEXT;",
-            ),
-            (
-                "channel",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN channel TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "subject",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN subject TEXT;",
-            ),
-            (
-                "body_markdown",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN body_markdown TEXT NOT NULL DEFAULT '';",
-            ),
-            (
-                "source_run_id",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN source_run_id TEXT;",
-            ),
-            (
-                "source_tool_call_id",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN source_tool_call_id TEXT;",
-            ),
-            (
-                "created_at",
-                "ALTER TABLE subagentMessageBusEntry ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0;",
-            ),
-        ],
-    )
 }
 
 #[cfg(test)]
@@ -1123,11 +726,11 @@ mod tests {
             "chatHistorySegment",
             "chatHistoryShare",
             "chatHistoryFtsSegmentIndex",
+            "subagentMeta",
             "subagentIdentity",
             "subagentRun",
             "subagentRunSegment",
-            "subagentRunEvent",
-            "subagentMessageBusEntry",
+            "subagentMessage",
         ] {
             let exists: i64 = conn
                 .query_row(
@@ -1183,7 +786,8 @@ mod tests {
         for (table_name, column_name) in [
             ("chatHistory", "context_meta_json"),
             ("chatHistory", "is_pinned"),
-            ("subagentRun", "logical_agent_id"),
+            ("subagentRun", "prompt"),
+            ("subagentRun", "context_schema_version"),
         ] {
             let columns = read_table_columns(&conn, table_name, table_name)
                 .expect("read migrated table columns");
@@ -1192,5 +796,10 @@ mod tests {
                 "{table_name}.{column_name} should exist"
             );
         }
+        // Legacy v1 subagent columns must be gone after the drop-and-recreate.
+        let subagent_run_columns = read_table_columns(&conn, "subagentRun", "subagentRun")
+            .expect("read recreated subagentRun columns");
+        assert!(!subagent_run_columns.contains("logical_agent_id"));
+        assert!(!subagent_run_columns.contains("context_meta_json"));
     }
 }

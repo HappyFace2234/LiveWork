@@ -165,7 +165,7 @@ test("agent tool rules require Image for chat-visible images", () => {
   );
   assert.match(
     suffix,
-    /Local image: pass `path` exactly as seen, including workspace-relative, absolute, pathRef, or skill:\/\/ paths\./,
+    /Local image: pass `path` exactly as seen, including workspace-relative, absolute, or skill:\/\/ paths\./,
   );
   assert.match(
     suffix,
@@ -192,9 +192,17 @@ test("agent tool rules prefer one parallel Agent batch over sequential calls", (
     "Write",
     "Bash",
   ]);
-  assert.match(suffix, /one Agent tool call with agent_spec so the agents run in parallel/);
-  assert.match(suffix, /do not make separate sequential Agent calls/);
-  assert.match(suffix, /unless later agents depend on earlier results/);
+  assert.match(suffix, /issue ONE Agent call whose `agents` array lists every job/);
+  assert.match(
+    suffix,
+    /Use sequential Agent calls only when a later job needs an earlier job's output/,
+  );
+  assert.match(suffix, /Default to mode=readonly for research, review, and discussion agents/);
+  assert.match(
+    suffix,
+    /call Agent again with the same stable id\(s\) and only the new prompt/,
+  );
+  assert.match(suffix, /If an Agent call is rejected, no subagents were started/);
 });
 
 test("SendMessage tool rules explain parent-private visibility", () => {
@@ -217,7 +225,7 @@ test("agent tool rules keep local file discovery on file tools instead of Bash",
     "Bash",
     "SkillsManager",
   ]);
-  assert.match(suffix, /File tools and Bash accept the path you see/);
+  assert.match(suffix, /Preferred form: workspace-relative paths exactly as tools return them/);
   assert.match(suffix, /For files inside a Skill, call file tools with a path like `skill:\/\/<baseDir>\/references\/guide\.md`/);
   assert.match(suffix, /Do not run Bash cat\/ls\/find\/grep/);
 });
@@ -231,7 +239,7 @@ test("agent tool rules steer new files to concrete Write paths", () => {
   ]);
   assert.match(suffix, /New files: call Write with a file path that includes the filename and the full content/);
   assert.match(suffix, /parent directories are created automatically/);
-  assert.match(suffix, /Do not set `mode`/);
+  assert.match(suffix, /Write and Edit check the file's current on-disk state automatically/);
   assert.match(suffix, /path must include the intended filename, not just a directory/);
   assert.match(suffix, /write \/ create files via heredocs, `tee`, `touch`, `cp`, or `mkdir`/);
 });
@@ -242,7 +250,10 @@ test("agent tool rules keep workspace and Skills deletion on Delete", () => {
     "Bash",
     "SkillsManager",
   ]);
-  assert.match(suffix, /For workspace or Skill deletion, use Delete with the exact path or pathRef/);
+  assert.match(
+    suffix,
+    /For workspace or Skill deletion, use Delete with the exact path returned by List\/Glob\/Grep\/Read/,
+  );
   assert.match(suffix, /Do not run Bash rm, rmdir, unlink, or find -delete/);
 });
 

@@ -15,7 +15,7 @@ import (
 )
 
 func websocketProtoPayload(message proto.Message, useProtoNames bool) map[string]any {
-	if isNilProtoMessage(message) {
+	if message == nil || (reflect.ValueOf(message).Kind() == reflect.Pointer && reflect.ValueOf(message).IsNil()) {
 		return nil
 	}
 	raw, err := protojson.MarshalOptions{
@@ -31,14 +31,6 @@ func websocketProtoPayload(message proto.Message, useProtoNames bool) map[string
 	}
 	coerceProtoJSONNumbers(payload, message.ProtoReflect().Descriptor(), useProtoNames)
 	return payload
-}
-
-func isNilProtoMessage(message proto.Message) bool {
-	if message == nil {
-		return true
-	}
-	value := reflect.ValueOf(message)
-	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 func coerceProtoJSONNumbers(payload map[string]any, descriptor protoreflect.MessageDescriptor, useProtoNames bool) {
@@ -113,84 +105,90 @@ func websocketConversationSummaryPayload(conversation *gatewayv1.ConversationSum
 	return websocketProtoPayload(conversation, true)
 }
 
-func websocketActiveChatRunSummariesPayload(summaries []session.ActiveChatRunSummary) []map[string]any {
-	payload := make([]map[string]any, 0, len(summaries))
-	for _, summary := range summaries {
-		conversationID := strings.TrimSpace(summary.ConversationID)
-		if conversationID == "" {
-			continue
-		}
-		item := map[string]any{
-			"conversation_id": conversationID,
-			"cwd":             strings.TrimSpace(summary.Workdir),
-			"updated_at":      summary.UpdatedAt,
-		}
-		if requestID := strings.TrimSpace(summary.RequestID); requestID != "" {
-			item["run_id"] = requestID
-		}
-		if summary.FirstSeq > 0 {
-			item["first_seq"] = summary.FirstSeq
-		}
-		if summary.LatestSeq > 0 {
-			item["latest_seq"] = summary.LatestSeq
-		}
-		if summary.RunEpoch > 0 {
-			item["run_epoch"] = summary.RunEpoch
-		}
-		payload = append(payload, item)
-	}
-	return payload
-}
-
 func websocketHistoryShareStatusPayload(share *gatewayv1.HistoryShareStatus) map[string]any {
 	return websocketProtoPayload(share, true)
 }
 
-func websocketHistorySyncPayload(
-	event *gatewayv1.HistorySyncEvent,
-	activeRuns ...session.ActiveChatRunSummary,
-) map[string]any {
+func websocketHistorySyncPayload(event *gatewayv1.HistorySyncEvent) map[string]any {
 	payload := map[string]any{
 		"kind":            strings.TrimSpace(event.GetKind()),
 		"conversation_id": strings.TrimSpace(event.GetConversationId()),
 	}
-
 	if conversation := event.GetConversation(); conversation != nil {
 		payload["conversation"] = websocketConversationSummaryPayload(conversation)
 	}
-	if payload["kind"] == "running" {
-		conversationID := strings.TrimSpace(event.GetConversationId())
-		if conversationID == "" && event.GetConversation() != nil {
-			conversationID = strings.TrimSpace(event.GetConversation().GetId())
-		}
-		for _, summary := range activeRuns {
-			if strings.TrimSpace(summary.ConversationID) != conversationID {
-				continue
-			}
-			if requestID := strings.TrimSpace(summary.RequestID); requestID != "" {
-				payload["run_id"] = requestID
-			}
-			if summary.FirstSeq > 0 {
-				payload["first_seq"] = summary.FirstSeq
-			}
-			if summary.LatestSeq > 0 {
-				payload["latest_seq"] = summary.LatestSeq
-			}
-			if summary.RunEpoch > 0 {
-				payload["run_epoch"] = summary.RunEpoch
-			}
-			if summary.UpdatedAt > 0 {
-				payload["updated_at"] = summary.UpdatedAt
-			}
-			break
-		}
-	}
-
 	return payload
 }
 
-func websocketSettingsSyncPayload(event *gatewayv1.SettingsSyncEvent) (map[string]any, error) {
-	return websocketSettingsJSONPayload(event.GetSettingsJson())
+func websocketChatActivityPayload(event session.ConversationActivityEvent) map[string]any {
+	payload := map[string]any{
+		"conversation_id": event.ConversationID,
+		"running":         event.Running,
+		"updated_at":      event.UpdatedAt.UnixMilli(),
+	}
+	if event.RunID != "" {
+		payload["run_id"] = event.RunID
+	}
+	if event.ClientRequestID != "" {
+		payload["client_request_id"] = event.ClientRequestID
+	}
+	if event.State != "" {
+		payload["state"] = event.State
+	}
+	if event.Workdir != "" {
+		payload["workdir"] = event.Workdir
+	}
+	return payload
+}
+
+// websocketRunningConversationsPayload is the wire shape for running-run
+// summaries, shared by history.list and chat.activities.
+func websocketRunningConversationsPayload(activities []session.RunActivity) []map[string]any {
+	runningConversations := make([]map[string]any, 0, len(activities))
+	for _, activity := range activities {
+		runningConversations = append(runningConversations, map[string]any{
+			"conversation_id": activity.ConversationID,
+			"run_id":          activity.RunID,
+			"state":           activity.State,
+			"cwd":             activity.Workdir,
+			"updated_at":      activity.UpdatedAt.UnixMilli(),
+		})
+	}
+	return runningConversations
+}
+
+func websocketRunActivityPayload(activity *session.RunActivity) map[string]any {
+	if activity == nil {
+		return nil
+	}
+	payload := map[string]any{
+		"run_id":      activity.RunID,
+		"state":       activity.State,
+		"started_seq": activity.StartedSeq,
+		"updated_at":  activity.UpdatedAt.UnixMilli(),
+	}
+	if activity.ToolStatus != "" {
+		payload["tool_status"] = activity.ToolStatus
+		payload["tool_status_is_compaction"] = activity.ToolStatusIsCompaction
+	}
+	if activity.ClientRequestID != "" {
+		payload["client_request_id"] = activity.ClientRequestID
+	}
+	return payload
+}
+
+func websocketRunSnapshotPayload(snapshot *session.RunSnapshot) map[string]any {
+	if snapshot == nil {
+		return nil
+	}
+	return map[string]any{
+		"run_id":                    snapshot.RunID,
+		"revision":                  snapshot.Revision,
+		"entries_json":              snapshot.EntriesJSON,
+		"tool_status":               snapshot.ToolStatus,
+		"tool_status_is_compaction": snapshot.ToolStatusIsCompaction,
+		"as_of_seq":                 snapshot.AsOfSeq,
+	}
 }
 
 func websocketSettingsJSONPayload(raw string) (map[string]any, error) {
@@ -390,30 +388,14 @@ func websocketTerminalEventPayload(event *gatewayv1.TerminalEvent) map[string]an
 	return payload
 }
 
-func websocketMemoryResultPayload(raw string) (any, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return map[string]any{}, nil
-	}
-
-	var payload any
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return nil, errors.New("gateway memory response is not valid JSON")
-	}
-	if payload == nil {
-		return map[string]any{}, nil
-	}
-	return payload, nil
-}
-
-func websocketGitResultPayload(raw string) (any, error) {
+func unmarshalJSONPayload(raw string) (any, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return map[string]any{}, nil
 	}
 	var payload any
 	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return nil, errors.New("gateway git response is not valid JSON")
+		return nil, errors.New("response is not valid JSON")
 	}
 	if payload == nil {
 		return map[string]any{}, nil
@@ -440,14 +422,6 @@ func websocketRawPayloadJSON(raw json.RawMessage) (string, error) {
 		return "", errors.New("invalid settings.update payload")
 	}
 	return string(normalized), nil
-}
-
-func nullableTrimmedString(value string) any {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return nil
-	}
-	return trimmed
 }
 
 func websocketOptionalUint32(value *int, field string) (uint32, error) {

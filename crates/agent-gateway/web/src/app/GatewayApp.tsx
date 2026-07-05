@@ -1,48 +1,73 @@
 import {
+  type DragEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type DragEvent,
 } from "react";
 import { flushSync } from "react-dom";
-import {
-  ChevronDown,
-  PanelRightClose,
-  PanelRightOpen,
-  Terminal,
-} from "@/components/icons";
-
-import type { ChatHistorySummary } from "@/lib/chat/chatHistory";
-import type { HistoryMessageRef } from "@/lib/chat/conversationState";
-import type { PendingUploadedFile } from "@/lib/chat/uploadedFiles";
-import { mergePendingUploadedFiles } from "@/lib/chat/uploadedFiles";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { RightDockPanel } from "@/components/project-tools/RightDockPanel";
-import { LocaleContext, t as translate } from "@/i18n";
 import type {
   MentionComposerDraft,
   MentionComposerHandle,
 } from "@/components/chat/MentionComposer";
-import { ChatHistorySidebar } from "@/components/chat/ChatHistorySidebar";
 import { SharedHistoryManagerModal } from "@/components/chat/SharedHistoryManagerModal";
+import { ChevronDown, PanelRightClose, PanelRightOpen, Terminal } from "@/components/icons";
+import type {
+  GitCommitContextPayload,
+  GitFileContextPayload,
+} from "@/components/project-tools/git-review";
+import { RightDockPanel } from "@/components/project-tools/RightDockPanel";
+import { Button } from "@/components/ui/button";
 import { useConfirmDialog } from "@/components/ui/confirm-dialog";
-import { ChatComposerBar, type ChatQueueTurnPreview } from "@/pages/chat/ChatComposerBar";
-import { ChatHeader } from "@/pages/chat/ChatHeader";
-import { SkillsHubPage } from "@/pages/skills-hub/SkillsHubPage";
-import { McpHubPage } from "@/pages/mcp-hub/McpHubPage";
-import type { SectionId } from "@/pages/settings/types";
-import { useChatSkills } from "@/pages/chat/useChatSkills";
-import { queuedChatTurnHasContent } from "@/pages/chat/queue/chatTurnQueue";
-import { mergeAlwaysEnabledSkillNames } from "@/lib/skills";
-import { buildModelOptions, sortHistoryItems, VIBING_STATUS } from "@/lib/chat/chatPageHelpers";
-import { SettingsPage } from "@/pages/SettingsPage";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { LocaleContext, t as translate } from "@/i18n";
+import type { ChatHistorySummary } from "@/lib/chat/chatHistory";
+import { buildModelOptions } from "@/lib/chat/chatPageHelpers";
+import type { HistoryMessageRef } from "@/lib/chat/conversationState";
+import { createActivityStore } from "@/lib/chat/stream/activityStore";
 import {
+  type ChatCommandOutcome,
+  ChatCommandPipeline,
+  type PendingChatCommand,
+} from "@/lib/chat/stream/chatCommandPipeline";
+import {
+  type ChatCommandUpdate,
+  type ConversationActivityEvent,
+  type ConversationStreamEvent,
+  type ConversationSubscribeResult,
+  readEventRunId,
+} from "@/lib/chat/stream/streamTypes";
+import {
+  createTranscriptStoreRegistry,
+  useConversationChat,
+} from "@/lib/chat/stream/useConversationChat";
+import type { PendingUploadedFile } from "@/lib/chat/uploadedFiles";
+import { mergePendingUploadedFiles } from "@/lib/chat/uploadedFiles";
+import {
+  buildOptimisticConversationTitle,
+  type ChatEntry,
+  resolveConversationBrowserTitle,
+} from "@/lib/chatUi";
+import type { GatewayChatCommandInput } from "@/lib/gatewaySocket";
+import type {
+  AgentStatus,
+  ChatEvent,
+  ChatQueueItemSummary,
+  ChatQueueSnapshot,
+  HistoryDetail,
+  HistoryShareStatus,
+} from "@/lib/gatewayTypes";
+import { parseHistoryMessagesJsonAsync } from "@/lib/historyParser";
+import { memoryDeleteProject } from "@/lib/memory/api";
+import { toModelValue } from "@/lib/providers/llm";
+import {
+  type ChatRuntimeControls,
+  DEFAULT_WORKSPACE_PROJECT_ID,
   findProviderModelConfig,
   getChatRuntimeReasoningLevelsForProvider,
+  getNextTheme,
   getRightDockFileTreeState,
   getRightDockProjectState,
   getSshProjectHostIds,
@@ -50,184 +75,121 @@ import {
   isRightDockSingletonTabOpen,
   normalizeChatRuntimeControlsForProvider,
   openRightDockSingletonTab,
+  type RightDockFileTreeStatePatch,
+  type RightDockProjectState,
   removeRightDockProjectState,
+  resolveEffectiveTheme,
   resolveWorkspaceProjects,
-  workspaceProjectPathKey,
   updateChatRuntimeControlsForProvider,
   updateCustomSettings,
   updateRightDockFileTreeState,
   updateRightDockProjectState,
   updateRightDockWidth,
   updateSshProjectHostIds,
-  type AppSettings,
-  type ChatRuntimeControls,
   type WorkspaceProject,
-  DEFAULT_WORKSPACE_PROJECT_ID,
+  workspaceProjectPathKey,
 } from "@/lib/settings";
-import { toModelValue } from "@/lib/providers/llm";
-
+import { mergeAlwaysEnabledSkillNames } from "@/lib/skills";
 import { terminalSessionBelongsToProject } from "@/lib/terminal/sessionStore";
 import type { TerminalSession } from "@/lib/terminal/types";
-import type {
-  AgentStatus,
-  ChatQueueItemSummary,
-  ChatQueueSnapshot,
-  ChatEvent,
-  ConversationSummary,
-  GatewayHistoryEvent,
-  HistoryDetail,
-  HistoryShareStatus,
-  HistoryWorkdirSummary,
-} from "@/lib/gatewayTypes";
-import {
-  filterConversationSummariesForScope,
-  historyConversationMatchesFilter,
-} from "@/lib/chat/historyListScope";
-import {
-  buildOptimisticConversationTitle,
-  resolveConversationBrowserTitle,
-  type ChatEntry,
-} from "@/lib/chatUi";
-import { parseHistoryMessagesJsonAsync } from "@/lib/historyParser";
-import {
-  isChatStreamNotAvailableEvent,
-  isChatStreamNotAvailableMessage,
-  resolveChatStreamUnavailableRecoveryAction,
-  shouldHydrateRestoredConversationSnapshot,
-} from "@/lib/chatStreamRecovery";
-import { memoryDeleteProject } from "@/lib/memory/api";
-import {
-  appendCommittedLiveEntries,
-  hasEquivalentTailEntries,
-  mergeHistorySnapshotEntries,
-} from "@/lib/liveConversationCommit";
-import {
-  createLocalDraftConversationId,
-  isLocalDraftConversationId,
-} from "@/lib/localDraftConversation";
-import {
-  createLiveConversationStreamStore,
-  type LiveConversationStreamStore,
-} from "@/lib/liveConversationStreamStore";
-import {
-  applyGatewayHistoryEvent,
-  normalizeRunningConversations,
-  reconcileConversationSummaries,
-  resolveRunningConversationStreamAfterSeq,
-  upsertConversationSummary,
-} from "@/lib/historySync";
-import { parseHistoryShareToken } from "@/lib/historyShare";
-import { GatewayTranscript } from "@/components/GatewayTranscript";
+import { createGatewayWorkspaceActivityClient } from "@/lib/workspace-activity/gatewayWorkspaceActivityClient";
+import { ChatComposerBar, type ChatQueueTurnPreview } from "@/pages/chat/ChatComposerBar";
+import { ChatHeader } from "@/pages/chat/ChatHeader";
+import { queuedChatTurnHasContent } from "@/pages/chat/queue/chatTurnQueue";
+import { useChatSkills } from "@/pages/chat/useChatSkills";
+import { McpHubPage } from "@/pages/mcp-hub/McpHubPage";
+import { SettingsPage } from "@/pages/SettingsPage";
+import type { SectionId } from "@/pages/settings/types";
+import { SkillsHubPage } from "@/pages/skills-hub/SkillsHubPage";
+
+const LOCAL_DRAFT_PREFIX = "__local_draft__:";
+function createLocalDraftConversationId() {
+  return `${LOCAL_DRAFT_PREFIX}${crypto.randomUUID()}`;
+}
+function isLocalDraftConversationId(id: string) {
+  return id.trim().startsWith(LOCAL_DRAFT_PREFIX);
+}
+
 import { HistoryShareModal } from "@/components/chat/HistoryShareModal";
+import { GatewayTranscript } from "@/components/GatewayTranscript";
 import { useGatewayScrollAffordance } from "@/components/useGatewayScrollAffordance";
+import { parseHistoryShareToken } from "@/lib/historyShare";
+import {
+  type ConversationOpenState,
+  createConversationOpenController,
+} from "@/lib/sidebar/openController";
+import { sortSidebarConversations } from "@/lib/sidebar/reconcile";
+import { createSidebarStore } from "@/lib/sidebar/store";
+import { useSidebarSelector } from "@/lib/sidebar/useSidebarSelector";
+import {
+  createIdleSidebarBackend,
+  createWebSidebarBackend,
+  normalizeGatewayConversationSummary,
+  normalizeRunningConversationItems,
+} from "@/lib/sidebar/webSidebarBackend";
+import { findWorkspaceProject, mergeWorkspaceProjectsWithHistory } from "@/lib/workspaceProjects";
 import { LoginPage } from "@/pages/LoginPage";
 import { SettingsSyncLoading } from "@/pages/SettingsSyncLoading";
 import { SharedHistoryPage } from "@/pages/SharedHistoryPage";
 import { WorkdirPickerModal } from "@/pages/settings/WorkdirPickerModal";
+import { buildTextFromComposerDraft, importPastedTextsAsFiles } from "./chatDraft";
 import {
-  applyWorkspaceProjectConversationActivityMap,
-  buildWorkspaceProjectActivityUpdatedAts,
-  findWorkspaceProject,
-  mergeWorkspaceProjectActivityUpdatedAts,
-  mergeWorkspaceProjectsWithHistory,
-  workspaceProjectActivityUpdatedAtsEqual,
-} from "@/lib/workspaceProjects";
+  asErrorMessage,
+  buildGatewaySelectedModel,
+  buildGatewaySystemSettings,
+  isAbortError,
+  isChatEventTitleFinal,
+  readChatEventTitle,
+  readTunnelManagerToolChange,
+} from "./chatEventUtils";
 import {
   CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS,
   CHAT_RUNTIME_KEEP_WARM_INTERVAL_MS,
   CHAT_RUNTIME_PREPARE_TIMEOUT_MS,
   CHAT_RUNTIME_PREPARING_STATUS,
-  CHAT_RUNTIME_STARTING_STATUS,
-  CHAT_RUNTIME_STARTING_STATUS_DELAY_MS,
   DEFAULT_BROWSER_TITLE,
-  DRAFT_HISTORY_ADOPTION_WINDOW_MS,
   HISTORY_DETAIL_INITIAL_MAX_MESSAGES,
   HISTORY_LIST_PAGE_SIZE,
-  HISTORY_SWITCH_OVERLAY_MIN_MS,
-  HISTORY_TITLE_POSITION_LOCK_MS,
-  LIVE_STREAM_HISTORY_REFRESH_SUPPRESS_MS,
   MAX_UPLOAD_FILES,
   MCP_HUB_BROWSER_TITLE,
   NEW_CONVERSATION_BROWSER_TITLE,
-  PAGE_RESTORE_HISTORY_REFRESH_THROTTLE_MS,
   PROJECT_HISTORY_DELETE_PAGE_SIZE,
   PROTECTED_DRAFT_CONVERSATION,
   SHARED_HISTORY_BROWSER_TITLE,
   SHARED_HISTORY_LIST_PAGE_SIZE,
   SKILLS_HUB_BROWSER_TITLE,
 } from "./constants";
-import {
-  buildGatewaySelectedModel,
-  buildGatewaySystemSettings,
-  asErrorMessage,
-  isAbortError,
-  isChatControlEvent,
-  isChatEventTitleFinal,
-  isTerminalChatEvent,
-  isChatRuntimeReadyStatus,
-  isPreparingChatControlEvent,
-  isRuntimeStartedChatControlEvent,
-  isTerminalChatControlEvent,
-  normalizeGatewayTimestampMs,
-  normalizeOptionalStatus,
-  readChatEventTitle,
-  readTunnelManagerToolChange,
-  waitForMinimumHistoryListLoading,
-} from "./chatEventUtils";
-import {
-  buildTextFromComposerDraft,
-  importPastedTextsAsFiles,
-} from "./chatDraft";
 import { FileDropOverlay } from "./FileDropOverlay";
 import { HistorySwitchLoadingOverlay } from "./HistorySwitchLoadingOverlay";
-import { UserMenu } from "./UserMenu";
-import { WorkspaceOverlayHost } from "./WorkspaceOverlayHost";
 import {
-  createConversationRuntimeEntry,
   createWorkspaceProjectFromPath,
   formatTranslation,
   getDefaultWorkspaceProjectPath,
-  hasDetachedHistorySelection,
-  hasLocalDraftConversation,
   isMobileSidebarLayout,
-  pickConversationSummary,
-  resolveConversationTitle,
   resolveVisibleConversationId,
   shouldOpenSidebarByDefault,
-  toChatHistorySummary,
 } from "./historyUtils";
-import type {
-  ConversationRuntimeEntry,
-  LiveConversationStreamMeta,
-  ModelProviderSource,
-  OverlayState,
-  PendingDraftConversationMigration,
-  ReloadHistoryOptions,
-  RunningConversationRuntime,
-  SendChatFn,
-  SendChatOptions,
-} from "./types";
 import { useGatewayClients } from "./hooks/useGatewayClients";
 import { useGatewaySession } from "./hooks/useGatewaySession";
 import { useGatewaySettingsSync } from "./hooks/useGatewaySettingsSync";
 import { usePendingUploads } from "./hooks/usePendingUploads";
 import { useProjectToolsRuntime } from "./hooks/useProjectToolsRuntime";
+import { GatewaySidebarContainer } from "./sidebar/GatewaySidebarContainer";
+import type { ModelProviderSource, OverlayState, SendChatFn, SendChatOptions } from "./types";
+import { UserMenu } from "./UserMenu";
+import { WorkspaceOverlayHost } from "./WorkspaceOverlayHost";
 
-function resolveRunningConversationRunKey(
-  runtime: Pick<RunningConversationRuntime, "runId" | "runEpoch"> | null | undefined,
-) {
-  const runId = runtime?.runId?.trim() ?? "";
-  if (runId) {
-    return runId;
+// Two-phase open: schedule the quiet full hydration at browser idle time,
+// with a hard timeout so it still runs on busy pages (mirrors the GUI helper
+// semantics).
+const HYDRATE_IDLE_TIMEOUT_MS = 1_500;
+function scheduleIdleTask(task: () => void): () => void {
+  if (typeof window.requestIdleCallback === "function") {
+    const handle = window.requestIdleCallback(() => task(), { timeout: HYDRATE_IDLE_TIMEOUT_MS });
+    return () => window.cancelIdleCallback(handle);
   }
-  return typeof runtime?.runEpoch === "number" && Number.isFinite(runtime.runEpoch)
-    ? `epoch:${Math.floor(runtime.runEpoch)}`
-    : "";
-}
-
-function readGatewayChatEventRunId(event: ChatEvent) {
-  const runId = (event as ChatEvent & { __gatewayRunId?: unknown }).__gatewayRunId;
-  return typeof runId === "string" ? runId.trim() : "";
+  const timeoutId = window.setTimeout(task, 300);
+  return () => window.clearTimeout(timeoutId);
 }
 
 export default function GatewayApp() {
@@ -245,61 +207,38 @@ export default function GatewayApp() {
   const { api, terminalClient, sftpClient, gitClient } = useGatewayClients(token);
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatEntry[]>([]);
   const [conversationId, setConversationId] = useState("");
-  const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [chatToolStatus, setChatToolStatus] = useState<string | null>(null);
-  const [chatToolStatusIsCompaction, setChatToolStatusIsCompaction] = useState(false);
-  const [historyListLoading, setHistoryListLoading] = useState(false);
-  const [historyListLoadingMore, setHistoryListLoadingMore] = useState(false);
-  const [historyDetailLoading, setHistoryDetailLoading] = useState(false);
-  const [historyMutating, setHistoryMutating] = useState(false);
-  const [historyItems, setHistoryItems] = useState<ConversationSummary[]>([]);
-  const [historyWorkdirs, setHistoryWorkdirs] = useState<HistoryWorkdirSummary[]>([]);
-  const [historyTotal, setHistoryTotal] = useState(0);
-  const [historyHasMore, setHistoryHasMore] = useState(false);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const [localRunningConversationIds, setLocalRunningConversationIds] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
+  // Sidebar errors raised outside the sidebar store (project removal flow).
+  const [sidebarActionError, setSidebarActionError] = useState<string | null>(null);
   const [queuedChatTurns, setQueuedChatTurns] = useState<ChatQueueItemSummary[]>([]);
   const [, setChatQueueRevision] = useState(0);
-  const [remoteRunningConversationIds, setRemoteRunningConversationIds] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
-  const [remoteRunningConversationRuntime, setRemoteRunningConversationRuntime] = useState<
-    ReadonlyMap<string, RunningConversationRuntime>
-  >(() => new Map());
-  const [projectActivityUpdatedAtOverrides, setProjectActivityUpdatedAtOverrides] = useState<
-    ReadonlyMap<string, number>
-  >(() => new Map());
-  const [liveConversationStreamMeta, setLiveConversationStreamMetaState] = useState<
-    Record<string, LiveConversationStreamMeta>
-  >({});
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [selectedHistory, setSelectedHistory] = useState<HistoryDetail | null>(null);
-  const [selectedHistoryEntries, setSelectedHistoryEntries] = useState<ChatEntry[]>([]);
-  const [historySwitchOverlay, setHistorySwitchOverlay] = useState<{
-    conversationId: string;
-    startedAt: number;
-  } | null>(null);
+  // Two-phase conversation open (openController): "opening" gates the
+  // composer/transcript loading affordances; showOverlay drives the switch
+  // overlay (appears only after ~150ms of still-loading).
+  const [conversationOpenState, setConversationOpenState] = useState<ConversationOpenState>({
+    conversationId: "",
+    phase: "idle",
+    showOverlay: false,
+    errorCode: null,
+  });
+  // Explicit "load full history" request from the transcript header.
+  const [fullHistoryLoading, setFullHistoryLoading] = useState(false);
+  // Bumped whenever the command pipeline's pending set changes so busy state
+  // re-derives.
+  const [pendingCommandRevision, setPendingCommandRevision] = useState(0);
+  // Bumped inside flushSync to synchronously commit a settled-tail fold.
+  const [, setFoldFlushTick] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SectionId>("system");
   const [overlay, setOverlay] = useState<OverlayState>("closed");
-  const {
-    settings,
-    setSettings,
-    settingsSyncReady,
-    settingsSyncError,
-    settingsSaveState,
-  } = useGatewaySettingsSync({ token, api });
+  const { settings, setSettings, settingsSyncReady, settingsSyncError, settingsSaveState } =
+    useGatewaySettingsSync({ token, api });
+  const effectiveTheme = resolveEffectiveTheme(settings.theme);
   const isAgentMode = settings.system.executionMode !== "text";
-  const workspaceProjects = useMemo(
-    () => mergeWorkspaceProjectsWithHistory(settings.system, historyWorkdirs),
-    [historyWorkdirs, settings.system],
-  );
   const [activeWorkspaceProjectId, setActiveWorkspaceProjectId] = useState<string>(
     () => settings.system.activeWorkspaceProjectId?.trim() || DEFAULT_WORKSPACE_PROJECT_ID,
   );
@@ -307,29 +246,7 @@ export default function GatewayApp() {
     () => new Set(settings.system.missingWorkspaceProjectPaths.map(workspaceProjectPathKey)),
     [settings.system.missingWorkspaceProjectPaths],
   );
-  const activeWorkspaceProject = useMemo(
-    () => findWorkspaceProject(workspaceProjects, activeWorkspaceProjectId),
-    [activeWorkspaceProjectId, workspaceProjects],
-  );
-  useEffect(() => {
-    if (activeWorkspaceProject?.id && activeWorkspaceProject.id !== activeWorkspaceProjectId) {
-      setActiveWorkspaceProjectId(activeWorkspaceProject.id);
-    }
-  }, [activeWorkspaceProject?.id, activeWorkspaceProjectId]);
-  const activeWorkspaceProjectPath = activeWorkspaceProject?.path.trim() ?? "";
-  const historyListFilter = useMemo(
-    () =>
-      isAgentMode
-        ? { cwd: activeWorkspaceProjectPath || "__liveagent_no_project__" }
-        : { cwdEmpty: true },
-    [activeWorkspaceProjectPath, isAgentMode],
-  );
-  const historyScopeKey = isAgentMode
-    ? `cwd:${activeWorkspaceProjectPath || "__liveagent_no_project__"}`
-    : "cwd-empty";
   const [sidebarOpen, setSidebarOpen] = useState(shouldOpenSidebarByDefault);
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [renameDraft, setRenameDraft] = useState("");
   const [projectRenamingId, setProjectRenamingId] = useState<string | null>(null);
   const [projectRenameDraft, setProjectRenameDraft] = useState("");
   const [shareConversation, setShareConversation] = useState<ChatHistorySummary | null>(null);
@@ -354,7 +271,6 @@ export default function GatewayApp() {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<"chat" | "skills-hub" | "mcp-hub">("chat");
   const [rightDockOpen, setRightDockOpen] = useState(false);
-  const [tunnelRefreshToken, setTunnelRefreshToken] = useState(0);
   const { confirm: requestConfirmDialog, dialog: confirmDialog } = useConfirmDialog();
   const {
     scrollAreaRef: transcriptScrollAreaRef,
@@ -371,73 +287,172 @@ export default function GatewayApp() {
   const conversationIdRef = useRef(conversationId);
   const selectedHistoryIdRef = useRef(selectedHistoryId);
   const statusRef = useRef<AgentStatus | null>(status);
-  const chatBusyRef = useRef(chatBusy);
-  const chatMessagesRef = useRef(chatMessages);
-  const chatErrorRef = useRef(chatError);
-  const chatToolStatusRef = useRef(chatToolStatus);
-  const chatToolStatusIsCompactionRef = useRef(chatToolStatusIsCompaction);
   const queuedChatTurnsRef = useRef<ChatQueueItemSummary[]>([]);
   const chatQueueConversationIdRef = useRef("");
   const chatQueueRevisionRef = useRef(0);
   const queuedChatEditSessionRef = useRef<{ itemId: string; revision: number } | null>(null);
   const selectedHistoryRef = useRef(selectedHistory);
-  const selectedHistoryEntriesRef = useRef(selectedHistoryEntries);
-  const historyItemsRef = useRef(historyItems);
-  const historyTotalRef = useRef(historyTotal);
-  const historyHasMoreRef = useRef(historyHasMore);
-  const historyListFilterRef = useRef(historyListFilter);
-  const historyScopeKeyRef = useRef(historyScopeKey);
-  const nextHistoryPageRef = useRef(1);
-  const historyListPageLoadingRef = useRef(false);
   const sharedHistoryItemsRef = useRef<ChatHistorySummary[]>([]);
   const sharedHistoryListRequestRef = useRef<Promise<ChatHistorySummary[]> | null>(null);
-  const localRunningConversationIdsRef = useRef<ReadonlySet<string>>(new Set());
-  const remoteRunningConversationIdsRef = useRef<ReadonlySet<string>>(new Set());
-  const remoteRunningConversationRuntimeRef = useRef<
-    ReadonlyMap<string, RunningConversationRuntime>
-  >(new Map());
-  const liveConversationStreamStoresRef = useRef<Map<string, LiveConversationStreamStore>>(
-    new Map(),
-  );
-  const liveConversationStreamMetaRef = useRef<Record<string, LiveConversationStreamMeta>>({});
-  const conversationRuntimeCacheRef = useRef<Map<string, ConversationRuntimeEntry>>(new Map());
+  // Per-conversation runtime workdir (drafts have no persisted summary yet).
+  const conversationWorkdirsRef = useRef<Map<string, string>>(new Map());
   const displayedConversationWorkdirRef = useRef("");
-  const conversationAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
-  const conversationEventStreamControllersRef = useRef<Map<string, AbortController>>(new Map());
-  const conversationEventStreamRunIdsRef = useRef<Map<string, string>>(new Map());
-  const completedLiveStreamConversationAtRef = useRef<Map<string, number>>(new Map());
-  const completedLiveStreamCleanupTimersRef = useRef<Map<string, number>>(new Map());
-  const pendingHistoryRefreshAfterLiveCompletionRef = useRef<Set<string>>(new Set());
-  const optimisticTitleConversationIdsRef = useRef<Set<string>>(new Set());
-  const titlePositionLockedConversationIdsRef = useRef<Set<string>>(new Set());
-  const titlePositionLockTimeoutsRef = useRef<Map<string, number>>(new Map());
-  const blockedHistoryHydrationConversationIdsRef = useRef<Set<string>>(new Set());
-  const editResendGenerationRef = useRef(0);
-  const activeEditResendTransactionsRef = useRef<
-    Map<string, { generation: number; clientRequestId: string }>
-  >(new Map());
-  const visibleHistorySnapshotRefreshSeqRef = useRef<Map<string, number>>(new Map());
-  const restoredPageHistoryRefreshAtRef = useRef<Map<string, number>>(new Map());
+  const displayedConversationBusyRef = useRef(false);
   const historyLoadSequenceRef = useRef(0);
   const visibleConversationRevisionRef = useRef(0);
   const previousDisplayedConversationIdRef = useRef("");
   const pendingDisplayedConversationAutoBottomRef = useRef<string | null>(null);
-  const draftConversationPinnedRef = useRef(false);
   const protectedConversationRef = useRef("");
-  const chatStartLocksRef = useRef<Set<string>>(new Set());
-  const chatPreflightInFlightRef = useRef(false);
-  const chatStartInFlightRef = useRef(false);
   const chatRuntimePreparePromiseRef = useRef<Promise<AgentStatus> | null>(null);
   const submitInFlightRef = useRef(false);
-  const pendingDraftConversationMigrationRef = useRef<PendingDraftConversationMigration | null>(
-    null,
-  );
+  // clientRequestId → draft conversation id, until the command binds.
+  const draftClientRequestsRef = useRef<Map<string, string>>(new Map());
   const sendChatRef = useRef<SendChatFn | null>(null);
   const isImportingPastedTextRef = useRef(false);
   const resetProjectToolsRuntimeRef = useRef(() => undefined as void);
-  const persistProjectConversationActivityRef = useRef(
-    (_activity: ReadonlyMap<string, number>) => undefined as void,
+
+  // --- Chat streaming infrastructure (Phase 4) -----------------------------
+  // Transcript stores (one per conversation), the global activity map, and
+  // the command pipeline replace the old live-store registry, running-id
+  // unions, and recovery machinery.
+  // Ref indirection: the registry memo is stable across token changes while
+  // the api client is not, and divergence resyncs must reach the live client.
+  const apiRef = useRef(api);
+  apiRef.current = api;
+  const transcriptStoreRegistry = useMemo(
+    () =>
+      createTranscriptStoreRegistry({
+        onDivergence: (divergedConversationId) =>
+          apiRef.current?.resyncConversation(divergedConversationId),
+      }),
+    [],
   );
+  const activityStore = useMemo(() => createActivityStore(), []);
+  const pipelineOnBoundRef = useRef<
+    (update: ChatCommandUpdate, pending: PendingChatCommand) => void
+  >(() => undefined);
+  const pipelineOnQueuedInGuiRef = useRef<
+    (update: ChatCommandUpdate, pending: PendingChatCommand) => void
+  >(() => undefined);
+  const pipelineOnFailedRef = useRef<
+    (pending: PendingChatCommand, errorCode: string | null, message: string) => void
+  >(() => undefined);
+  const chatCommandPipeline = useMemo(
+    () =>
+      new ChatCommandPipeline({
+        getTranscriptStore: (targetConversationId) =>
+          transcriptStoreRegistry.get(targetConversationId),
+        onBound: (update, pending) => pipelineOnBoundRef.current(update, pending),
+        onQueuedInGui: (update, pending) => pipelineOnQueuedInGuiRef.current(update, pending),
+        onFailed: (pending, errorCode, message) =>
+          pipelineOnFailedRef.current(pending, errorCode, message),
+        onPendingChanged: () => setPendingCommandRevision((current) => current + 1),
+      }),
+    [transcriptStoreRegistry],
+  );
+
+  // --- Sidebar state layer --------------------------------------------------
+  // One external store owns the whole sidebar domain (list, workdirs, running
+  // set, per-row mutations); GatewayApp only creates it, feeds it the scope,
+  // and makes imperative peek/upsertLocal/removeLocal calls. All rendering
+  // subscriptions live in <GatewaySidebarContainer/>.
+  const getSidebarProtectedConversationIds = useCallback(() => {
+    // Authoritative reconciles keep only these ids when the server list omits
+    // them: in-flight commands, the protected (displayed) conversation, and
+    // running conversations. Never a blanket retain-all — that resurrects
+    // deletions made by other clients while this one was offline.
+    const ids = new Set<string>(chatCommandPipeline.pendingConversationIds());
+    const protectedId = protectedConversationRef.current.trim();
+    if (protectedId && protectedId !== PROTECTED_DRAFT_CONVERSATION) {
+      ids.add(protectedId);
+    }
+    for (const id of activityStore.getSnapshot().activities.keys()) {
+      ids.add(id);
+    }
+    return ids;
+  }, [activityStore, chatCommandPipeline]);
+  const getActivityKeepConversationIds = useCallback(
+    () => chatCommandPipeline.pendingConversationIds(),
+    [chatCommandPipeline],
+  );
+  const sidebarStore = useMemo(
+    () =>
+      createSidebarStore(
+        api
+          ? createWebSidebarBackend({
+              api,
+              activityStore,
+              getProtectedConversationIds: getSidebarProtectedConversationIds,
+              getActivityKeepConversationIds,
+            })
+          : createIdleSidebarBackend(),
+        { pageSize: HISTORY_LIST_PAGE_SIZE },
+      ),
+    [activityStore, api, getActivityKeepConversationIds, getSidebarProtectedConversationIds],
+  );
+  useEffect(() => {
+    if (!api) {
+      return;
+    }
+    sidebarStore.start();
+    return () => {
+      sidebarStore.stop();
+    };
+  }, [api, sidebarStore]);
+
+  // Narrow app-root subscriptions: workdirs (rare commits — project merge
+  // inputs) and the byId index (list commits only; never running/idle ticks).
+  const sidebarWorkdirs = useSidebarSelector(sidebarStore, (snapshot) => snapshot.workdirs);
+  const sidebarConversationsById = useSidebarSelector(sidebarStore, (snapshot) => snapshot.byId);
+
+  const workspaceProjects = useMemo(
+    () => mergeWorkspaceProjectsWithHistory(settings.system, sidebarWorkdirs),
+    [settings.system, sidebarWorkdirs],
+  );
+  const activeWorkspaceProject = useMemo(
+    () => findWorkspaceProject(workspaceProjects, activeWorkspaceProjectId),
+    [activeWorkspaceProjectId, workspaceProjects],
+  );
+  useEffect(() => {
+    if (activeWorkspaceProject?.id && activeWorkspaceProject.id !== activeWorkspaceProjectId) {
+      setActiveWorkspaceProjectId(activeWorkspaceProject.id);
+    }
+  }, [activeWorkspaceProject?.id, activeWorkspaceProjectId]);
+  const activeWorkspaceProjectPath = activeWorkspaceProject?.path.trim() ?? "";
+
+  // Scope derivation: agent mode with a project → that workdir; agent mode
+  // without a project → "none" (resolves to an empty list locally, no wire
+  // sentinel); text mode → unscoped.
+  useEffect(() => {
+    sidebarStore.setScope(
+      isAgentMode
+        ? activeWorkspaceProjectPath
+          ? { kind: "workdir", cwd: activeWorkspaceProjectPath }
+          : { kind: "none" }
+        : { kind: "unscoped" },
+    );
+  }, [activeWorkspaceProjectPath, isAgentMode, sidebarStore]);
+
+  // Two-phase open controller: phase 1 paints the message tail fast, phase 2
+  // hydrates the full transcript at idle. Deps go through refs (assigned per
+  // render) so the controller instance stays stable.
+  const openInitialRef = useRef<(id: string, seq: number) => Promise<"cache-hit" | "painted">>(() =>
+    Promise.resolve("painted"),
+  );
+  const hydrateFullRef = useRef<(id: string, seq: number) => Promise<void>>(() =>
+    Promise.resolve(),
+  );
+  const openController = useMemo(
+    () =>
+      createConversationOpenController({
+        openInitial: (id, seq) => openInitialRef.current(id, seq),
+        hydrateFull: (id, seq) => hydrateFullRef.current(id, seq),
+        scheduleIdle: scheduleIdleTask,
+        onStateChange: setConversationOpenState,
+      }),
+    [],
+  );
+
   const {
     pendingUploadedFiles,
     pendingUploadedFilesRef,
@@ -492,48 +507,12 @@ export default function GatewayApp() {
     setQueuedChatTurns(snapshot.items.slice());
   }, []);
 
-  const recordProjectActivity = useCallback(
-    (workdir?: string | null, updatedAt?: number | null) => {
-      const pathKey = workspaceProjectPathKey(workdir ?? "");
-      if (!pathKey) {
-        return;
-      }
-      const nextUpdatedAt =
-        typeof updatedAt === "number" && Number.isFinite(updatedAt) && updatedAt > 0
-          ? updatedAt
-          : Date.now();
-      setProjectActivityUpdatedAtOverrides((current) => {
-        if ((current.get(pathKey) ?? 0) >= nextUpdatedAt) {
-          return current;
-        }
-        return mergeWorkspaceProjectActivityUpdatedAts(
-          current,
-          new Map([[pathKey, nextUpdatedAt]]),
-        );
-      });
-      persistProjectConversationActivityRef.current(new Map([[pathKey, nextUpdatedAt]]));
-    },
-    [],
-  );
-
   useEffect(() => {
     if (!api) return;
     return api.subscribeChatQueue((snapshot) => {
       applyChatQueueSnapshot(snapshot);
     });
   }, [api, applyChatQueueSnapshot]);
-
-  useEffect(() => {
-    const historyActivity = buildWorkspaceProjectActivityUpdatedAts(historyWorkdirs);
-    if (historyActivity.size === 0) {
-      return;
-    }
-    setProjectActivityUpdatedAtOverrides((current) => {
-      const next = mergeWorkspaceProjectActivityUpdatedAts(current, historyActivity);
-      return workspaceProjectActivityUpdatedAtsEqual(current, next) ? current : next;
-    });
-    persistProjectConversationActivityRef.current(historyActivity);
-  }, [historyWorkdirs]);
 
   function getVisibleComposerConversationId() {
     return resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current);
@@ -563,102 +542,6 @@ export default function GatewayApp() {
     composerDraftCacheRef.current.delete(targetConversationId);
   }
 
-  const commitHistoryListState = useCallback(
-    (conversations: ConversationSummary[], total: number, nextPage: number, hasMore?: boolean) => {
-      const scopedConversations = filterConversationSummariesForScope(
-        conversations,
-        historyListFilterRef.current,
-      );
-      const nextTotal = Math.max(0, total);
-      const nextHasMore = hasMore ?? scopedConversations.length < nextTotal;
-
-      historyItemsRef.current = scopedConversations;
-      historyTotalRef.current = nextTotal;
-      historyHasMoreRef.current = nextHasMore;
-      nextHistoryPageRef.current = Math.max(1, nextPage);
-      setHistoryItems(scopedConversations);
-      setHistoryTotal(nextTotal);
-      setHistoryHasMore(nextHasMore);
-    },
-    [],
-  );
-
-  const updateHistoryItems = useCallback(
-    (updater: (current: ConversationSummary[]) => ConversationSummary[]) => {
-      const current = historyItemsRef.current;
-      const next = filterConversationSummariesForScope(
-        updater(current),
-        historyListFilterRef.current,
-      );
-      const delta = next.length - current.length;
-      commitHistoryListState(
-        next,
-        Math.max(next.length, historyTotalRef.current + delta),
-        nextHistoryPageRef.current,
-      );
-    },
-    [commitHistoryListState],
-  );
-
-  const unlockHistoryTitlePosition = useCallback((conversationIdValue: string) => {
-    const conversationId = conversationIdValue.trim();
-    if (!conversationId) {
-      return;
-    }
-    const timeoutId = titlePositionLockTimeoutsRef.current.get(conversationId);
-    if (timeoutId !== undefined) {
-      window.clearTimeout(timeoutId);
-      titlePositionLockTimeoutsRef.current.delete(conversationId);
-    }
-    titlePositionLockedConversationIdsRef.current.delete(conversationId);
-  }, []);
-
-  const lockHistoryTitlePosition = useCallback((conversationIdValue: string) => {
-    const conversationId = conversationIdValue.trim();
-    if (!conversationId) {
-      return;
-    }
-
-    const existingTimeoutId = titlePositionLockTimeoutsRef.current.get(conversationId);
-    if (existingTimeoutId !== undefined) {
-      window.clearTimeout(existingTimeoutId);
-    }
-
-    titlePositionLockedConversationIdsRef.current.add(conversationId);
-    const timeoutId = window.setTimeout(() => {
-      titlePositionLockTimeoutsRef.current.delete(conversationId);
-      titlePositionLockedConversationIdsRef.current.delete(conversationId);
-    }, HISTORY_TITLE_POSITION_LOCK_MS);
-    titlePositionLockTimeoutsRef.current.set(conversationId, timeoutId);
-  }, []);
-
-  const getHistoryPositionLockedConversationIds = useCallback(() => {
-    const conversationIds = new Set<string>();
-    const appendConversationIds = (ids: Iterable<string>) => {
-      for (const id of ids) {
-        const conversationId = id.trim();
-        if (conversationId) {
-          conversationIds.add(conversationId);
-        }
-      }
-    };
-
-    appendConversationIds(optimisticTitleConversationIdsRef.current);
-    appendConversationIds(titlePositionLockedConversationIdsRef.current);
-    appendConversationIds(blockedHistoryHydrationConversationIdsRef.current);
-    return conversationIds;
-  }, []);
-
-  const clearHistoryTitlePositionLocks = useCallback(() => {
-    for (const timeoutId of titlePositionLockTimeoutsRef.current.values()) {
-      window.clearTimeout(timeoutId);
-    }
-    titlePositionLockTimeoutsRef.current.clear();
-    titlePositionLockedConversationIdsRef.current.clear();
-  }, []);
-
-  useEffect(() => clearHistoryTitlePositionLocks, [clearHistoryTitlePositionLocks]);
-
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
@@ -672,56 +555,8 @@ export default function GatewayApp() {
   }, [status]);
 
   useEffect(() => {
-    chatBusyRef.current = chatBusy;
-  }, [chatBusy]);
-
-  useEffect(() => {
-    chatMessagesRef.current = chatMessages;
-  }, [chatMessages]);
-
-  useEffect(() => {
-    chatErrorRef.current = chatError;
-  }, [chatError]);
-
-  useEffect(() => {
-    chatToolStatusRef.current = chatToolStatus;
-  }, [chatToolStatus]);
-
-  useEffect(() => {
-    chatToolStatusIsCompactionRef.current = chatToolStatusIsCompaction;
-  }, [chatToolStatusIsCompaction]);
-
-  useEffect(() => {
     selectedHistoryRef.current = selectedHistory;
   }, [selectedHistory]);
-
-  useEffect(() => {
-    selectedHistoryEntriesRef.current = selectedHistoryEntries;
-  }, [selectedHistoryEntries]);
-
-  useEffect(() => {
-    historyItemsRef.current = historyItems;
-  }, [historyItems]);
-
-  useEffect(() => {
-    historyTotalRef.current = historyTotal;
-  }, [historyTotal]);
-
-  useEffect(() => {
-    historyHasMoreRef.current = historyHasMore;
-  }, [historyHasMore]);
-
-  useEffect(() => {
-    historyListFilterRef.current = historyListFilter;
-    if (historyScopeKeyRef.current === historyScopeKey) {
-      return;
-    }
-    historyScopeKeyRef.current = historyScopeKey;
-    historyListPageLoadingRef.current = false;
-    commitHistoryListState([], 0, 1, false);
-    setHistoryError(null);
-    setHistoryListLoading(true);
-  }, [commitHistoryListState, historyListFilter, historyScopeKey]);
 
   function getDisplayedConversationId() {
     return resolveVisibleConversationId(
@@ -735,218 +570,63 @@ export default function GatewayApp() {
     return conversationIdValue !== "" && getDisplayedConversationId() === conversationIdValue;
   }
 
-  useEffect(() => {
-    localRunningConversationIdsRef.current = localRunningConversationIds;
-  }, [localRunningConversationIds]);
-
   const applyLiveConversationTitle = useCallback(
-    (
-      targetConversationId: string,
-      nextTitle: string,
-      options?: {
-        isFinal?: boolean;
-      },
-    ) => {
+    (targetConversationId: string, nextTitle: string) => {
       const conversationIdValue = targetConversationId.trim();
       const title = nextTitle.trim();
       if (!conversationIdValue || !title) {
         return;
       }
 
-      const updatedAt = Date.now();
-      lockHistoryTitlePosition(conversationIdValue);
-      if (options?.isFinal) {
-        optimisticTitleConversationIdsRef.current.delete(conversationIdValue);
-      }
-      updateHistoryItems((current) => {
-        const existing = pickConversationSummary(current, conversationIdValue);
-        return upsertConversationSummary(
-          current,
-          {
-            id: conversationIdValue,
-            title,
-            created_at: existing?.created_at ?? updatedAt,
-            updated_at: existing?.updated_at ?? updatedAt,
-            message_count: existing?.message_count ?? 1,
-          },
-          { preserveExistingUpdatedAt: existing !== null },
-        );
+      // Position-preserving local upsert: reuse the existing row's updatedAt
+      // so a live title never reorders the sidebar (the store's own position
+      // locks cover mutation confirmations).
+      const now = Date.now();
+      const existing = sidebarStore.peek(conversationIdValue);
+      sidebarStore.upsertLocal({
+        id: conversationIdValue,
+        title,
+        providerId: existing?.providerId ?? "",
+        model: existing?.model ?? "",
+        sessionId: existing?.sessionId,
+        cwd: existing?.cwd,
+        messageCount: existing?.messageCount ?? 1,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: existing?.updatedAt ?? now,
+        isPinned: existing?.isPinned,
+        pinnedAt: existing ? existing.pinnedAt : null,
+        isShared: existing?.isShared,
+        isPending: existing?.isPending,
       });
     },
-    [lockHistoryTitlePosition, updateHistoryItems],
+    [sidebarStore],
   );
 
-  const applyChatToolStatus = useCallback(
-    (nextStatus: string | null | undefined, isCompaction = false) => {
-      const status = typeof nextStatus === "string" ? nextStatus.trim() : "";
-      setChatToolStatus(status || null);
-      setChatToolStatusIsCompaction(Boolean(status) && isCompaction);
+  // Total entry count of a conversation's transcript store.
+  const getConversationTranscriptEntryCount = useCallback(
+    (targetConversationId: string) => {
+      const store = transcriptStoreRegistry.peek(targetConversationId.trim());
+      return store ? store.getSnapshot().entryCount : 0;
     },
-    [],
+    [transcriptStoreRegistry],
   );
 
-  const getConversationLiveStreamStore = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    if (!conversationIdValue) {
-      return null;
-    }
-    const existing = liveConversationStreamStoresRef.current.get(conversationIdValue);
-    if (existing) {
-      return existing;
-    }
-    const created = createLiveConversationStreamStore();
-    liveConversationStreamStoresRef.current.set(conversationIdValue, created);
-    return created;
-  }, []);
-
-  const updateLiveConversationStreamMeta = useCallback(
-    (
-      targetConversationId: string,
-      updater: (previous: LiveConversationStreamMeta) => LiveConversationStreamMeta,
-    ) => {
+  const isConversationBusy = useCallback(
+    (targetConversationId: string) => {
       const conversationIdValue = targetConversationId.trim();
       if (!conversationIdValue) {
-        return;
+        return false;
       }
-      const previous = liveConversationStreamMetaRef.current[conversationIdValue] ?? {
-        hasStream: false,
-        toolStatus: null,
-        toolStatusIsCompaction: false,
-      };
-      const next = updater(previous);
-      if (
-        previous.hasStream === next.hasStream &&
-        previous.toolStatus === next.toolStatus &&
-        previous.toolStatusIsCompaction === next.toolStatusIsCompaction
-      ) {
-        return;
-      }
-      const nextRecord = {
-        ...liveConversationStreamMetaRef.current,
-        [conversationIdValue]: next,
-      };
-      liveConversationStreamMetaRef.current = nextRecord;
-      setLiveConversationStreamMetaState(nextRecord);
-    },
-    [],
-  );
-
-  const markLiveConversationStreamActive = useCallback(
-    (targetConversationId: string) => {
-      updateLiveConversationStreamMeta(targetConversationId, (previous) =>
-        previous.hasStream ? previous : { ...previous, hasStream: true },
+      return (
+        activityStore.isRunning(conversationIdValue) ||
+        chatCommandPipeline.hasPending(conversationIdValue) ||
+        transcriptStoreRegistry.peek(conversationIdValue)?.getSnapshot().activeRun != null
       );
     },
-    [updateLiveConversationStreamMeta],
+    [activityStore, chatCommandPipeline, transcriptStoreRegistry],
   );
 
-  const setLiveConversationStreamStatus = useCallback(
-    (targetConversationId: string, nextStatus: string | null | undefined, isCompaction = false) => {
-      const status = normalizeOptionalStatus(nextStatus);
-      updateLiveConversationStreamMeta(targetConversationId, (previous) => ({
-        ...previous,
-        toolStatus: status,
-        toolStatusIsCompaction: Boolean(status) && isCompaction,
-      }));
-    },
-    [updateLiveConversationStreamMeta],
-  );
-
-  const clearLiveConversationStreamMeta = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    if (!conversationIdValue || !liveConversationStreamMetaRef.current[conversationIdValue]) {
-      return;
-    }
-    const nextRecord = { ...liveConversationStreamMetaRef.current };
-    delete nextRecord[conversationIdValue];
-    liveConversationStreamMetaRef.current = nextRecord;
-    setLiveConversationStreamMetaState(nextRecord);
-  }, []);
-
-  const buildVisibleRuntimeEntry = useCallback(
-    () =>
-      createConversationRuntimeEntry({
-        messages: chatMessagesRef.current,
-        error: chatErrorRef.current,
-        toolStatus: chatToolStatusRef.current,
-        toolStatusIsCompaction: chatToolStatusIsCompactionRef.current,
-        isSending: chatBusyRef.current,
-        workdir: conversationRuntimeCacheRef.current.get(conversationIdRef.current.trim())?.workdir,
-      }),
-    [],
-  );
-
-  const syncVisibleConversationRuntime = useCallback(
-    (targetConversationId: string, entry: ConversationRuntimeEntry) => {
-      conversationIdRef.current = targetConversationId;
-      selectedHistoryIdRef.current = targetConversationId;
-      chatMessagesRef.current = entry.messages;
-      chatErrorRef.current = entry.error;
-      chatToolStatusRef.current = entry.toolStatus;
-      chatToolStatusIsCompactionRef.current = entry.toolStatusIsCompaction;
-      chatBusyRef.current = entry.isSending;
-      setConversationId(targetConversationId);
-      setSelectedHistoryId(targetConversationId);
-      setChatMessages(entry.messages);
-      setChatError(entry.error);
-      applyChatToolStatus(entry.toolStatus, entry.toolStatusIsCompaction);
-      setChatBusy(entry.isSending);
-    },
-    [applyChatToolStatus],
-  );
-
-  const cacheVisibleConversationRuntime = useCallback(
-    (targetConversationId?: string) => {
-      const conversationIdValue = (targetConversationId ?? conversationIdRef.current).trim();
-      if (!conversationIdValue) {
-        return;
-      }
-      conversationRuntimeCacheRef.current.set(conversationIdValue, buildVisibleRuntimeEntry());
-    },
-    [buildVisibleRuntimeEntry],
-  );
-
-  const updateConversationRuntimeEntry = useCallback(
-    (
-      targetConversationId: string,
-      updater: (previous: ConversationRuntimeEntry) => ConversationRuntimeEntry,
-    ) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return createConversationRuntimeEntry();
-      }
-
-      const previous =
-        conversationIdRef.current === conversationIdValue &&
-        (selectedHistoryIdRef.current === "" ||
-          selectedHistoryIdRef.current === conversationIdValue)
-          ? buildVisibleRuntimeEntry()
-          : (conversationRuntimeCacheRef.current.get(conversationIdValue) ??
-            createConversationRuntimeEntry());
-      const next = createConversationRuntimeEntry(updater(previous));
-      conversationRuntimeCacheRef.current.set(conversationIdValue, next);
-
-      if (
-        conversationIdRef.current === conversationIdValue &&
-        (selectedHistoryIdRef.current === "" ||
-          selectedHistoryIdRef.current === conversationIdValue)
-      ) {
-        chatMessagesRef.current = next.messages;
-        chatErrorRef.current = next.error;
-        chatToolStatusRef.current = next.toolStatus;
-        chatToolStatusIsCompactionRef.current = next.toolStatusIsCompaction;
-        chatBusyRef.current = next.isSending;
-        setChatMessages(next.messages);
-        setChatError(next.error);
-        applyChatToolStatus(next.toolStatus, next.toolStatusIsCompaction);
-        setChatBusy(next.isSending);
-      }
-
-      return next;
-    },
-    [applyChatToolStatus, buildVisibleRuntimeEntry],
-  );
-
+  // Keep an empty draft conversation's workdir following the active project.
   useEffect(() => {
     const nextWorkdir = activeWorkspaceProjectPath.trim();
     if (!isAgentMode || !nextWorkdir) {
@@ -959,321 +639,86 @@ export default function GatewayApp() {
     if (!conversationIdValue || !isLocalDraftConversationId(conversationIdValue)) {
       return;
     }
+    if (isConversationBusy(conversationIdValue)) {
+      return;
+    }
     if (
-      chatBusyRef.current ||
-      localRunningConversationIdsRef.current.has(conversationIdValue) ||
-      remoteRunningConversationIdsRef.current.has(conversationIdValue)
+      getConversationTranscriptEntryCount(conversationIdValue) > 0 ||
+      pendingUploadedFilesRef.current.length > 0
     ) {
       return;
     }
-    if (chatMessagesRef.current.length > 0 || pendingUploadedFilesRef.current.length > 0) {
-      return;
-    }
-    const currentWorkdir =
-      conversationRuntimeCacheRef.current.get(conversationIdValue)?.workdir?.trim() || "";
-    if (currentWorkdir === nextWorkdir) {
-      return;
-    }
-    updateConversationRuntimeEntry(conversationIdValue, (current) => ({
-      ...current,
-      workdir: nextWorkdir,
-    }));
-  }, [activeWorkspaceProjectPath, isAgentMode, updateConversationRuntimeEntry]);
+    conversationWorkdirsRef.current.set(conversationIdValue, nextWorkdir);
+  }, [
+    activeWorkspaceProjectPath,
+    getConversationTranscriptEntryCount,
+    isAgentMode,
+    isConversationBusy,
+    pendingUploadedFilesRef,
+  ]);
 
-  const setConversationRunningState = useCallback(
-    (targetConversationId: string, isRunning: boolean) => {
+  // Quiet history refresh for the displayed conversation: fetch → parse →
+  // id-preserving merge into the transcript store (no flicker, no remount).
+  // Only runs while the conversation is idle; a run started mid-fetch aborts
+  // the merge so a stale snapshot can never truncate freshly folded entries.
+  const refreshDisplayedConversationHistorySnapshot = useCallback(
+    async (targetConversationId: string, currentApi = api, options?: { forceFull?: boolean }) => {
       const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
+      if (!currentApi || !conversationIdValue || isLocalDraftConversationId(conversationIdValue)) {
         return;
       }
 
-      const runtimeWorkdir =
-        conversationRuntimeCacheRef.current.get(conversationIdValue)?.workdir?.trim() || "";
-      const persistedWorkdir =
-        historyItemsRef.current.find((item) => item.id === conversationIdValue)?.cwd?.trim() || "";
-      recordProjectActivity(runtimeWorkdir || persistedWorkdir, Date.now());
-
-      updateConversationRuntimeEntry(conversationIdValue, (previous) => ({
-        ...previous,
-        isSending: isRunning,
-      }));
-      setLocalRunningConversationIds((current) => {
-        const hasConversation = current.has(conversationIdValue);
-        if ((isRunning && hasConversation) || (!isRunning && !hasConversation)) {
-          return current;
-        }
-        const next = new Set(current);
-        if (isRunning) {
-          next.add(conversationIdValue);
-        } else {
-          next.delete(conversationIdValue);
-        }
-        localRunningConversationIdsRef.current = next;
-        return next;
-      });
-    },
-    [recordProjectActivity, updateConversationRuntimeEntry],
-  );
-
-  const setConversationAbortController = useCallback(
-    (targetConversationId: string, controller: AbortController | null) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return;
-      }
-      if (controller) {
-        conversationAbortControllersRef.current.set(conversationIdValue, controller);
-        return;
-      }
-      conversationAbortControllersRef.current.delete(conversationIdValue);
-    },
-    [],
-  );
-
-  const getConversationAbortController = useCallback((targetConversationId: string) => {
-    return conversationAbortControllersRef.current.get(targetConversationId.trim()) ?? null;
-  }, []);
-
-  const clearConversationLiveStream = useCallback(
-    (targetConversationId: string) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return;
-      }
-      liveConversationStreamStoresRef.current.get(conversationIdValue)?.reset();
-      liveConversationStreamStoresRef.current.delete(conversationIdValue);
-      pendingHistoryRefreshAfterLiveCompletionRef.current.delete(conversationIdValue);
-      clearLiveConversationStreamMeta(conversationIdValue);
-    },
-    [clearLiveConversationStreamMeta],
-  );
-
-  const clearAllConversationLiveStreams = useCallback(() => {
-    liveConversationStreamStoresRef.current.forEach((store) => store.reset());
-    liveConversationStreamStoresRef.current.clear();
-    pendingHistoryRefreshAfterLiveCompletionRef.current.clear();
-    liveConversationStreamMetaRef.current = {};
-    setLiveConversationStreamMetaState({});
-  }, []);
-
-  const hasRetainedConversationLiveStream = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    if (!conversationIdValue) {
-      return false;
-    }
-    const store = liveConversationStreamStoresRef.current.get(conversationIdValue);
-    return (
-      liveConversationStreamMetaRef.current[conversationIdValue]?.hasStream === true ||
-      (store?.getSnapshot().entries.length ?? 0) > 0
-    );
-  }, []);
-
-  const commitConversationLiveStreamToRuntime = useCallback(
-    (
-      targetConversationId: string,
-      options?: {
-        clearLiveStream?: boolean;
-      },
-    ) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return false;
-      }
-
-      const liveStore = liveConversationStreamStoresRef.current.get(conversationIdValue);
-      liveStore?.flush();
-      const liveEntries = liveStore?.getSnapshot().entries ?? [];
-      if (liveEntries.length === 0) {
-        if (options?.clearLiveStream) {
-          clearConversationLiveStream(conversationIdValue);
-        }
-        return false;
-      }
-
-      updateConversationRuntimeEntry(conversationIdValue, (current) => {
-        const nextMessages = appendCommittedLiveEntries(current.messages, liveEntries);
-        if (nextMessages === current.messages) {
-          return current;
-        }
-        return {
-          ...current,
-          messages: nextMessages,
-        };
-      });
-
-      const selectedConversationId = selectedHistoryIdRef.current.trim();
-      const visibleConversationId = conversationIdRef.current.trim();
-      if (
-        selectedConversationId === conversationIdValue &&
-        visibleConversationId !== conversationIdValue
-      ) {
-        setSelectedHistoryEntries((current) => appendCommittedLiveEntries(current, liveEntries));
-      }
-
-      if (options?.clearLiveStream) {
-        clearConversationLiveStream(conversationIdValue);
-      }
-      return true;
-    },
-    [clearConversationLiveStream, updateConversationRuntimeEntry],
-  );
-
-  const refreshVisibleConversationHistorySnapshot = useCallback(
-    async (
-      targetConversationId: string,
-      currentApi = api,
-      options?: { allowIdle?: boolean; allowDuringEditTransaction?: boolean },
-    ) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!currentApi || !conversationIdValue) {
-        return;
-      }
-      if (
-        options?.allowDuringEditTransaction !== true &&
-        activeEditResendTransactionsRef.current.has(conversationIdValue)
-      ) {
-        return;
-      }
-
-      const isStillVisible = () =>
+      const isStillDisplayedAndIdle = () =>
         resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) ===
-        conversationIdValue;
-
-      if (
-        !isStillVisible() ||
-        getConversationAbortController(conversationIdValue) !== null ||
-        localRunningConversationIdsRef.current.has(conversationIdValue)
-      ) {
+          conversationIdValue && !isConversationBusy(conversationIdValue);
+      if (!isStillDisplayedAndIdle()) {
         return;
       }
 
-      const refreshSeq =
-        (visibleHistorySnapshotRefreshSeqRef.current.get(conversationIdValue) ?? 0) + 1;
-      visibleHistorySnapshotRefreshSeqRef.current.set(conversationIdValue, refreshSeq);
+      // If the full history is already loaded, refresh the full transcript so
+      // the merge cannot truncate it back to the most recent page.
+      const hasFullHistoryLoaded =
+        options?.forceFull === true ||
+        (selectedHistoryRef.current?.conversation_id === conversationIdValue &&
+          selectedHistoryRef.current.has_more === false);
 
       let detail: HistoryDetail;
       let entries: ChatEntry[];
       try {
-        detail = await currentApi.getHistory(conversationIdValue, {
-          maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES,
-        });
+        detail = await currentApi.getHistory(
+          conversationIdValue,
+          hasFullHistoryLoaded ? undefined : { maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES },
+        );
         entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
+        if (
+          detail.has_more === true &&
+          entries.length < getConversationTranscriptEntryCount(conversationIdValue)
+        ) {
+          // Partial window smaller than what is currently rendered: merging
+          // it would truncate the top of a longer transcript. Refetch full.
+          detail = await currentApi.getHistory(conversationIdValue);
+          entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
+        }
       } catch {
         return;
       }
-
-      if (
-        visibleHistorySnapshotRefreshSeqRef.current.get(conversationIdValue) !== refreshSeq ||
-        !isStillVisible() ||
-        getConversationAbortController(conversationIdValue) !== null ||
-        localRunningConversationIdsRef.current.has(conversationIdValue) ||
-        (options?.allowIdle !== true &&
-          !remoteRunningConversationIdsRef.current.has(conversationIdValue) &&
-          !hasRetainedConversationLiveStream(conversationIdValue))
-      ) {
+      if (!isStillDisplayedAndIdle()) {
         return;
       }
-
       const detailConversationId = detail.conversation_id.trim();
       if (detailConversationId !== "" && detailConversationId !== conversationIdValue) {
         return;
       }
 
-      // `has_more === false` tells us the server returned the full
-      // conversation — any local entries that don't reconcile with it (e.g.
-      // a peer truncated the conversation and resent) must yield to the
-      // server, otherwise the stale tail collides with the new live stream
-      // and produces duplicate assistant content in the transcript.
-      const isFullSnapshot = detail.has_more === false;
-      const mergeOptions = { isFullSnapshot };
-      const liveStore = liveConversationStreamStoresRef.current.get(conversationIdValue);
-      const liveSnapshotEntries = liveStore?.getSnapshot().entries ?? [];
-      // Only treat a non-matching live snapshot as stale when it's the
-      // post-`done` retention from a previously completed stream on THIS
-      // client. For a second webui that's catching up to a peer's in-flight
-      // stream via SSE replay, the live snapshot legitimately holds events
-      // the server has not persisted yet — wiping it here would destroy the
-      // in-flight content and leave the joiner staring at a blank transcript
-      // until the stream ends.
-      //
-      // Inlined instead of calling `hasRecentlyCompletedLiveStream` because
-      // that helper is declared later in this component (TDZ); the marker
-      // ref it reads has its own setTimeout-based expiry so we don't need
-      // the helper's lazy-cleanup side effect here.
-      const liveStreamCompletedAt =
-        completedLiveStreamConversationAtRef.current.get(conversationIdValue);
-      const liveSnapshotIsCompletedRetention =
-        typeof liveStreamCompletedAt === "number" &&
-        Date.now() - liveStreamCompletedAt <= LIVE_STREAM_HISTORY_REFRESH_SUPPRESS_MS;
-      const liveStreamConflictsWithSnapshot =
-        isFullSnapshot &&
-        liveSnapshotEntries.length > 0 &&
-        liveSnapshotIsCompletedRetention &&
-        !hasEquivalentTailEntries(entries, liveSnapshotEntries);
-
       if (selectedHistoryIdRef.current.trim() === conversationIdValue) {
         selectedHistoryRef.current = detail;
         setSelectedHistory(detail);
-        setSelectedHistoryEntries((current) =>
-          mergeHistorySnapshotEntries(current, entries, mergeOptions),
-        );
       }
-
-      updateConversationRuntimeEntry(conversationIdValue, (current) => {
-        const nextMessages = mergeHistorySnapshotEntries(current.messages, entries, mergeOptions);
-        if (nextMessages === current.messages) {
-          return current;
-        }
-        return {
-          ...current,
-          messages: nextMessages,
-        };
-      });
-
-      // Once we've replaced the runtime from an authoritative full snapshot,
-      // discard any retained live snapshot that no longer fits the new
-      // server-side timeline. Without this the post-`done` retention from the
-      // previous turn lives on alongside the freshly fetched history, which
-      // is exactly what produces the duplicated assistant bubble after a
-      // peer's edit-and-resend.
-      if (liveStreamConflictsWithSnapshot) {
-        clearConversationLiveStream(conversationIdValue);
-      }
+      transcriptStoreRegistry
+        .get(conversationIdValue)
+        .applyHistorySnapshot(entries, { mode: "enrich" });
     },
-    [
-      api,
-      clearConversationLiveStream,
-      getConversationAbortController,
-      hasRetainedConversationLiveStream,
-      updateConversationRuntimeEntry,
-    ],
-  );
-
-  const migrateConversationLiveStream = useCallback(
-    (previousConversationId: string, nextConversationId: string) => {
-      const previousId = previousConversationId.trim();
-      const nextId = nextConversationId.trim();
-      if (!previousId || !nextId || previousId === nextId) {
-        return;
-      }
-
-      const previousStore = liveConversationStreamStoresRef.current.get(previousId);
-      if (previousStore) {
-        liveConversationStreamStoresRef.current.delete(previousId);
-        liveConversationStreamStoresRef.current.set(nextId, previousStore);
-      }
-
-      const previousMeta = liveConversationStreamMetaRef.current[previousId];
-      if (!previousMeta) {
-        return;
-      }
-      const nextRecord = { ...liveConversationStreamMetaRef.current };
-      delete nextRecord[previousId];
-      nextRecord[nextId] = previousMeta;
-      liveConversationStreamMetaRef.current = nextRecord;
-      setLiveConversationStreamMetaState(nextRecord);
-    },
-    [],
+    [api, getConversationTranscriptEntryCount, isConversationBusy, transcriptStoreRegistry],
   );
 
   const markVisibleConversationRevision = useCallback(() => {
@@ -1286,7 +731,9 @@ export default function GatewayApp() {
     return historyLoadSequenceRef.current;
   }, []);
 
-  const migrateConversationRuntime = useCallback(
+  // A draft conversation got its real id (authoritative `command_update
+  // bound`): re-key every draft-scoped resource onto the real conversation.
+  const bindDraftConversation = useCallback(
     (previousConversationId: string, nextConversationId: string) => {
       const previousId = previousConversationId.trim();
       const nextId = nextConversationId.trim();
@@ -1294,32 +741,27 @@ export default function GatewayApp() {
         return;
       }
 
-      const previousRuntime =
-        conversationRuntimeCacheRef.current.get(previousId) ??
-        (conversationIdRef.current === previousId ? buildVisibleRuntimeEntry() : null);
-      if (previousRuntime) {
-        conversationRuntimeCacheRef.current.set(nextId, previousRuntime);
-      }
-      conversationRuntimeCacheRef.current.delete(previousId);
+      transcriptStoreRegistry.move(previousId, nextId);
 
-      const controller = conversationAbortControllersRef.current.get(previousId);
-      if (controller) {
-        conversationAbortControllersRef.current.delete(previousId);
-        conversationAbortControllersRef.current.set(nextId, controller);
+      const workdir = conversationWorkdirsRef.current.get(previousId);
+      if (workdir !== undefined) {
+        conversationWorkdirsRef.current.delete(previousId);
+        conversationWorkdirsRef.current.set(nextId, workdir);
       }
 
-      setLocalRunningConversationIds((current) => {
-        if (!current.has(previousId)) {
-          return current;
-        }
-        const next = new Set(current);
-        next.delete(previousId);
-        next.add(nextId);
-        localRunningConversationIdsRef.current = next;
-        return next;
-      });
-
-      migrateConversationLiveStream(previousId, nextId);
+      const cachedComposerDraft = composerDraftCacheRef.current.get(previousId);
+      if (cachedComposerDraft) {
+        composerDraftCacheRef.current.delete(previousId);
+        composerDraftCacheRef.current.set(nextId, cachedComposerDraft);
+      }
+      const pendingUploads = pendingUploadsByConversationRef.current.get(previousId);
+      if (pendingUploads !== undefined) {
+        pendingUploadsByConversationRef.current.delete(previousId);
+        pendingUploadsByConversationRef.current.set(nextId, pendingUploads);
+      }
+      if (chatQueueConversationIdRef.current === previousId) {
+        chatQueueConversationIdRef.current = nextId;
+      }
 
       if (conversationIdRef.current === previousId) {
         conversationIdRef.current = nextId;
@@ -1332,170 +774,31 @@ export default function GatewayApp() {
       if (protectedConversationRef.current.trim() === previousId) {
         protectedConversationRef.current = nextId;
       }
-      if (blockedHistoryHydrationConversationIdsRef.current.delete(previousId)) {
-        blockedHistoryHydrationConversationIdsRef.current.add(nextId);
-      }
-    },
-    [buildVisibleRuntimeEntry, migrateConversationLiveStream],
-  );
 
-  const migrateConversationSummary = useCallback(
-    (previousConversationId: string, nextConversationId: string) => {
-      const previousId = previousConversationId.trim();
-      const nextId = nextConversationId.trim();
-      if (!previousId || !nextId || previousId === nextId) {
-        return;
-      }
-
-      const shouldPreserveOptimisticTitle =
-        optimisticTitleConversationIdsRef.current.delete(previousId);
-      if (shouldPreserveOptimisticTitle) {
-        optimisticTitleConversationIdsRef.current.add(nextId);
-      }
-      if (titlePositionLockedConversationIdsRef.current.has(previousId)) {
-        unlockHistoryTitlePosition(previousId);
-        lockHistoryTitlePosition(nextId);
-      }
-
-      updateHistoryItems((current) => {
-        const previousSummary = pickConversationSummary(current, previousId);
-        if (!previousSummary) {
-          return current;
-        }
-
-        const nextSummary = pickConversationSummary(current, nextId);
-        const mergedSummary = {
-          ...previousSummary,
-          ...(nextSummary ?? {}),
+      // Re-key the sidebar row: drop the draft row, merge its fields under
+      // the real id. The row stays pending until a server upsert confirms it.
+      const draftRow = sidebarStore.peek(previousId);
+      sidebarStore.removeLocal(previousId);
+      if (draftRow) {
+        const existingNext = sidebarStore.peek(nextId);
+        sidebarStore.upsertLocal({
           id: nextId,
-          title: shouldPreserveOptimisticTitle
-            ? previousSummary.title
-            : nextSummary?.title?.trim() || previousSummary.title,
-          provider_id: nextSummary?.provider_id || previousSummary.provider_id,
-          model: nextSummary?.model || previousSummary.model,
-          session_id: nextSummary?.session_id || previousSummary.session_id,
-          cwd: nextSummary?.cwd || previousSummary.cwd,
-          is_pinned: nextSummary?.is_pinned ?? previousSummary.is_pinned,
-          pinned_at:
-            "pinned_at" in (nextSummary ?? {}) ? nextSummary?.pinned_at : previousSummary.pinned_at,
-          is_shared: nextSummary?.is_shared ?? previousSummary.is_shared,
-        };
-        const withoutMigratedRows = current.filter(
-          (item) => item.id !== previousId && item.id !== nextId,
-        );
-        return upsertConversationSummary(withoutMigratedRows, mergedSummary, {
-          preserveExistingTitle: shouldPreserveOptimisticTitle,
+          title: existingNext?.title?.trim() || draftRow.title,
+          providerId: existingNext?.providerId || draftRow.providerId,
+          model: existingNext?.model || draftRow.model,
+          sessionId: existingNext?.sessionId || draftRow.sessionId,
+          cwd: existingNext?.cwd || draftRow.cwd,
+          messageCount: existingNext?.messageCount ?? draftRow.messageCount,
+          createdAt: existingNext?.createdAt ?? draftRow.createdAt,
+          updatedAt: existingNext?.updatedAt ?? draftRow.updatedAt,
+          isPinned: existingNext?.isPinned ?? draftRow.isPinned,
+          pinnedAt: existingNext ? existingNext.pinnedAt : draftRow.pinnedAt,
+          isShared: existingNext?.isShared ?? draftRow.isShared,
+          isPending: existingNext && existingNext.isPending !== true ? undefined : true,
         });
-      });
+      }
     },
-    [lockHistoryTitlePosition, unlockHistoryTitlePosition, updateHistoryItems],
-  );
-
-  const getActivePendingDraftMigration = useCallback(() => {
-    const pending = pendingDraftConversationMigrationRef.current;
-    if (!pending) {
-      return null;
-    }
-
-    const draftId = pending.draftConversationId.trim();
-    if (
-      !draftId ||
-      !isLocalDraftConversationId(draftId) ||
-      conversationIdRef.current.trim() !== draftId ||
-      selectedHistoryIdRef.current.trim() !== draftId ||
-      protectedConversationRef.current.trim() !== draftId
-    ) {
-      return null;
-    }
-
-    const isDraftInFlight =
-      localRunningConversationIdsRef.current.has(draftId) ||
-      getConversationAbortController(draftId) !== null ||
-      blockedHistoryHydrationConversationIdsRef.current.has(draftId);
-    if (!isDraftInFlight) {
-      return null;
-    }
-
-    return pending;
-  }, [getConversationAbortController]);
-
-  const isRecentPendingDraftConversation = useCallback(
-    (
-      conversation: Pick<ConversationSummary, "created_at" | "updated_at"> | undefined,
-      pending: PendingDraftConversationMigration,
-    ) => {
-      const createdAt = normalizeGatewayTimestampMs(conversation?.created_at);
-      const updatedAt = normalizeGatewayTimestampMs(conversation?.updated_at);
-      const conversationTimestamp = createdAt || updatedAt;
-      return (
-        conversationTimestamp <= 0 ||
-        conversationTimestamp >= pending.startedAt - DRAFT_HISTORY_ADOPTION_WINDOW_MS
-      );
-    },
-    [],
-  );
-
-  const shouldSuppressPendingDraftBroadcast = useCallback(
-    (targetConversationId: string) => {
-      const targetId = targetConversationId.trim();
-      const pending = getActivePendingDraftMigration();
-      if (!pending || !targetId || isLocalDraftConversationId(targetId)) {
-        return false;
-      }
-      if (targetId === pending.draftConversationId.trim()) {
-        return false;
-      }
-
-      const existing = pickConversationSummary(historyItemsRef.current, targetId);
-      if (existing && !isRecentPendingDraftConversation(existing, pending)) {
-        return false;
-      }
-
-      return true;
-    },
-    [getActivePendingDraftMigration, isRecentPendingDraftConversation],
-  );
-
-  const maybeAdoptActiveDraftConversation = useCallback(
-    (conversation: ConversationSummary | undefined) => {
-      const nextId = conversation?.id?.trim() ?? "";
-      const pending = getActivePendingDraftMigration();
-      if (!pending || !nextId || isLocalDraftConversationId(nextId)) {
-        return false;
-      }
-
-      const draftId = pending.draftConversationId.trim();
-      if (!draftId || draftId === nextId) {
-        return false;
-      }
-
-      if (!isRecentPendingDraftConversation(conversation, pending)) {
-        return false;
-      }
-
-      pendingDraftConversationMigrationRef.current = null;
-      migrateConversationRuntime(draftId, nextId);
-      migrateConversationSummary(draftId, nextId);
-      return true;
-    },
-    [
-      getActivePendingDraftMigration,
-      isRecentPendingDraftConversation,
-      migrateConversationRuntime,
-      migrateConversationSummary,
-    ],
-  );
-
-  const adoptPendingDraftConversationFromHistoryList = useCallback(
-    (conversations: ConversationSummary[]) => {
-      for (const conversation of conversations) {
-        if (maybeAdoptActiveDraftConversation(conversation)) {
-          return conversation.id.trim();
-        }
-      }
-      return "";
-    },
-    [maybeAdoptActiveDraftConversation],
+    [pendingUploadsByConversationRef, sidebarStore, transcriptStoreRegistry],
   );
 
   const ensureTunnelToolTab = useCallback(
@@ -1509,70 +812,18 @@ export default function GatewayApp() {
     [activeWorkspaceProjectPath, setSettings],
   );
 
+  // Tunnel list refreshes arrive through the tunnel.state push; the chat
+  // event only opens the tunnel tool tab when the agent creates a tunnel.
   const handleTunnelManagerChatEvent = useCallback(
     (event: ChatEvent) => {
       const change = readTunnelManagerToolChange(event);
       if (!change) return;
-      setTunnelRefreshToken((current) => current + 1);
       if (change.action === "create") {
         ensureTunnelToolTab(change.projectPathKey);
       }
     },
     [ensureTunnelToolTab],
   );
-
-  const persistProjectConversationActivity = useCallback(
-    (activity: ReadonlyMap<string, number>) => {
-      if (activity.size === 0) {
-        return;
-      }
-      setSettings((prev) => {
-        const hiddenProjectPathKeys = new Set(
-          prev.system.hiddenWorkspaceProjectPaths.map(workspaceProjectPathKey),
-        );
-        const workspaceProjects = applyWorkspaceProjectConversationActivityMap(
-          prev.system.workspaceProjects,
-          activity,
-          { hiddenProjectPathKeys },
-        );
-        if (!workspaceProjects) {
-          return prev;
-        }
-        return {
-          ...prev,
-          system: resolveWorkspaceProjects(
-            {
-              ...prev.system,
-              workspaceProjects,
-            },
-            getDefaultWorkspaceProjectPath(prev.system),
-          ),
-        };
-      });
-    },
-    [setSettings],
-  );
-  persistProjectConversationActivityRef.current = persistProjectConversationActivity;
-
-  const refreshHistoryWorkdirs = useCallback(
-    async (currentApi = api) => {
-      if (!currentApi) {
-        setHistoryWorkdirs([]);
-        return;
-      }
-      try {
-        const response = await currentApi.listHistoryWorkdirs();
-        setHistoryWorkdirs(response.workdirs);
-      } catch (error) {
-        console.warn("Failed to load chat history workdirs", error);
-      }
-    },
-    [api],
-  );
-
-  useEffect(() => {
-    void refreshHistoryWorkdirs(api);
-  }, [api, refreshHistoryWorkdirs]);
 
   const setWorkspaceProjectDirectoryMissing = useCallback(
     (project: WorkspaceProject, missing: boolean) => {
@@ -1746,9 +997,9 @@ export default function GatewayApp() {
       const normalizedPath = path.trim();
       if (!normalizedPath) return;
       activateWorkspaceProject(createWorkspaceProjectFromPath(normalizedPath, "managed"));
-      void refreshHistoryWorkdirs(api);
+      void sidebarStore.refreshWorkdirs("new-workdir");
     },
-    [activateWorkspaceProject, api, refreshHistoryWorkdirs],
+    [activateWorkspaceProject, sidebarStore],
   );
 
   const commitWorkspaceProjectRename = useCallback(
@@ -1903,1387 +1154,403 @@ export default function GatewayApp() {
     };
   }, [api]);
 
+  const refreshChatQueueSnapshot = useCallback(
+    (targetConversationId: string, currentApi = api) => {
+      const conversationIdValue = targetConversationId.trim();
+      if (!currentApi || !conversationIdValue) {
+        return;
+      }
+      void currentApi
+        .chatQueueGet(conversationIdValue)
+        .then((response) => applyChatQueueSnapshot(response.snapshot))
+        .catch(() => undefined);
+    },
+    [api, applyChatQueueSnapshot],
+  );
+
+  // Command pipeline hooks (assigned per render so they see fresh closures).
+  pipelineOnBoundRef.current = (update, pending) => {
+    const draftId = draftClientRequestsRef.current.get(pending.clientRequestId)?.trim() ?? "";
+    draftClientRequestsRef.current.delete(pending.clientRequestId);
+    const realId = update.conversationId?.trim() ?? "";
+    if (draftId && realId && draftId !== realId) {
+      bindDraftConversation(draftId, realId);
+    }
+  };
+  pipelineOnQueuedInGuiRef.current = (update, pending) => {
+    draftClientRequestsRef.current.delete(pending.clientRequestId);
+    refreshChatQueueSnapshot(update.conversationId?.trim() || pending.conversationId);
+    if (pending.isEditResend) {
+      // The seeded `rebased` already truncated committed optimistically, but
+      // the command was parked — server-side history is unchanged; a full
+      // quiet refresh restores the truncated suffix.
+      void refreshDisplayedConversationHistorySnapshot(
+        update.conversationId?.trim() || pending.conversationId,
+        api,
+        { forceFull: true },
+      );
+    }
+  };
+  pipelineOnFailedRef.current = (pending, _errorCode, message) => {
+    draftClientRequestsRef.current.delete(pending.clientRequestId);
+    const conversationIdValue = pending.conversationId.trim();
+    if (pending.isEditResend) {
+      void refreshDisplayedConversationHistorySnapshot(conversationIdValue, api, {
+        forceFull: true,
+      });
+    }
+    if (isLocalDraftConversationId(conversationIdValue)) {
+      // The draft never materialized: drop its optimistic sidebar row. The
+      // transcript keeps the pipeline's error entry.
+      sidebarStore.removeLocal(conversationIdValue);
+    }
+    if (isDisplayedConversation(conversationIdValue)) {
+      setChatError(message);
+    }
+  };
+
+  // chat.activity ingestion: the activity store stays the app-wide running
+  // authority; the sidebar store consumes it through the adapter's diff
+  // bridge (running/idle events also carry the workdir-activity bumps).
   useEffect(() => {
-    remoteRunningConversationIdsRef.current = remoteRunningConversationIds;
-  }, [remoteRunningConversationIds]);
+    if (!api) {
+      activityStore.clear();
+      return;
+    }
+    const unsubscribe = api.subscribeChatActivity((event: ConversationActivityEvent) => {
+      activityStore.applyActivityEvent(event);
+      // Settle pending commands from the always-on hub too: the run may
+      // start (or finish) while its conversation is not the displayed one,
+      // and without this the 60s startup watchdog would fire spuriously.
+      // The `queued` state stays armed — the gateway watchdog plus
+      // command_update failed cover that phase.
+      if (event.runId && (event.running ? event.state !== "queued" : true)) {
+        chatCommandPipeline.handleRunSignal(
+          event.conversationId,
+          event.runId,
+          event.clientRequestId ?? undefined,
+        );
+      }
+    });
+    return unsubscribe;
+  }, [activityStore, api, chatCommandPipeline]);
 
   useEffect(() => {
-    remoteRunningConversationRuntimeRef.current = remoteRunningConversationRuntime;
-  }, [remoteRunningConversationRuntime]);
+    if (!api) {
+      return;
+    }
+    return api.subscribeChatCommandUpdates((update) => {
+      chatCommandPipeline.handleCommandUpdate(update);
+    });
+  }, [api, chatCommandPipeline]);
 
-  const setRemoteConversationRunningState = useCallback(
+  // Every (re)connect re-baselines the activity store from the gateway's
+  // authoritative registry: chat.activity broadcasts are single-shot, so a
+  // stop that raced a dropped socket would otherwise leave the green dot
+  // (and streaming cursor fallback) stuck until the next history.list.
+  useEffect(() => {
+    if (!api) {
+      return;
+    }
+    let cancelled = false;
+    const unsubscribe = api.subscribeConnection((connected) => {
+      if (!connected || cancelled) {
+        return;
+      }
+      void api
+        .listChatActivities()
+        .then((items) => {
+          if (cancelled) {
+            return;
+          }
+          activityStore.hydrate(normalizeRunningConversationItems(items), {
+            keepConversationIds: chatCommandPipeline.pendingConversationIds(),
+          });
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [activityStore, api, chatCommandPipeline]);
+
+  // App-level observation of the displayed conversation's stream: titles,
+  // pipeline settlement, queue refreshes, tunnel side effects, and the one
+  // scroll-compensated fold commit at run_started.
+  const observeConversationStreamEvent = useCallback(
     (
       targetConversationId: string,
-      isRunning: boolean,
-      runtime?: {
-        runId?: string;
-        workdir?: string;
-        firstSeq?: number;
-        runEpoch?: number;
-        updatedAt?: number;
-      },
+      event: ConversationStreamEvent,
+      options?: { replay?: boolean },
     ) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return;
-      }
-      const current = remoteRunningConversationIdsRef.current;
-      const hasConversation = current.has(conversationIdValue);
-      const existingRuntime = remoteRunningConversationRuntimeRef.current.get(conversationIdValue);
-      const runtimeRunId = runtime?.runId?.trim() || existingRuntime?.runId || "";
-      const runtimeWorkdir = runtime?.workdir?.trim() || existingRuntime?.workdir || "";
-      const runtimeFirstSeq =
-        typeof runtime?.firstSeq === "number" &&
-        Number.isFinite(runtime.firstSeq) &&
-        runtime.firstSeq > 0
-          ? Math.floor(runtime.firstSeq)
-          : existingRuntime?.firstSeq;
-      const runtimeRunEpoch =
-        typeof runtime?.runEpoch === "number" &&
-        Number.isFinite(runtime.runEpoch) &&
-        runtime.runEpoch > 0
-          ? Math.floor(runtime.runEpoch)
-          : existingRuntime?.runEpoch;
-      const runtimeUpdatedAt =
-        typeof runtime?.updatedAt === "number" &&
-        Number.isFinite(runtime.updatedAt) &&
-        runtime.updatedAt > 0
-          ? runtime.updatedAt
-          : existingRuntime?.updatedAt || Date.now();
-      const nextRunKey = isRunning
-        ? resolveRunningConversationRunKey({
-            runId: runtimeRunId || undefined,
-            runEpoch: runtimeRunEpoch,
-          })
-        : "";
-      const previousRunKey =
-        resolveRunningConversationRunKey(existingRuntime) ||
-        (conversationEventStreamRunIdsRef.current.get(conversationIdValue) ?? "");
-      if (isRunning && nextRunKey && previousRunKey && previousRunKey !== nextRunKey) {
-        const existingController =
-          conversationEventStreamControllersRef.current.get(conversationIdValue);
-        if (existingController) {
-          conversationEventStreamControllersRef.current.delete(conversationIdValue);
-          conversationEventStreamRunIdsRef.current.delete(conversationIdValue);
-          existingController.abort();
-        }
-        const completedTimeoutId =
-          completedLiveStreamCleanupTimersRef.current.get(conversationIdValue);
-        if (completedTimeoutId !== undefined) {
-          window.clearTimeout(completedTimeoutId);
-          completedLiveStreamCleanupTimersRef.current.delete(conversationIdValue);
-        }
-        completedLiveStreamConversationAtRef.current.delete(conversationIdValue);
-        clearConversationLiveStream(conversationIdValue);
-      }
-      recordProjectActivity(runtimeWorkdir, runtimeUpdatedAt);
-      if (!isRunning && !hasConversation && !existingRuntime) {
-        return;
-      }
-      if (!isRunning || !hasConversation) {
-        const next = new Set(current);
-        if (isRunning) {
-          next.add(conversationIdValue);
-        } else {
-          next.delete(conversationIdValue);
-        }
-        remoteRunningConversationIdsRef.current = next;
-        setRemoteRunningConversationIds(next);
-      }
-
-      const currentRuntime = remoteRunningConversationRuntimeRef.current;
-      const existing = currentRuntime.get(conversationIdValue);
-      if (!isRunning) {
-        if (!existing) {
+      const isReplay = options?.replay === true;
+      const eventClientRequestId =
+        typeof (event as { client_request_id?: unknown }).client_request_id === "string"
+          ? ((event as { client_request_id: string }).client_request_id ?? "").trim()
+          : "";
+      switch (event.type) {
+        case "run_started": {
+          chatCommandPipeline.handleRunSignal(
+            targetConversationId,
+            readEventRunId(event),
+            eventClientRequestId || undefined,
+          );
+          if (!isReplay && isDisplayedConversation(targetConversationId)) {
+            // The transcript store folded the settled tail into committed
+            // when it applied this event. Commit that fold to the DOM in one
+            // synchronous, scroll-compensated pass — otherwise the
+            // virtualizer paints a frame with estimated row heights and the
+            // transcript visibly jumps right as the next run starts.
+            const shouldKeepBottom = isTranscriptAtBottom();
+            preserveTranscriptScrollPosition(
+              () => {
+                flushSync(() => {
+                  setFoldFlushTick((current) => current + 1);
+                });
+              },
+              { stickToBottom: shouldKeepBottom },
+            );
+            if (shouldKeepBottom) {
+              stickTranscriptToBottom();
+            } else {
+              refreshTranscriptScrollState();
+            }
+          }
           return;
         }
-        const nextRuntime = new Map(currentRuntime);
-        nextRuntime.delete(conversationIdValue);
-        remoteRunningConversationRuntimeRef.current = nextRuntime;
-        setRemoteRunningConversationRuntime(nextRuntime);
-        return;
-      }
-
-      const nextRuntimeEntry: RunningConversationRuntime = {
-        runId: runtimeRunId || undefined,
-        workdir: runtimeWorkdir || undefined,
-        firstSeq: runtimeFirstSeq,
-        runEpoch: runtimeRunEpoch,
-        updatedAt: Math.max(existing?.updatedAt ?? 0, runtimeUpdatedAt),
-      };
-      if (
-        existing?.runId === nextRuntimeEntry.runId &&
-        existing?.workdir === nextRuntimeEntry.workdir &&
-        existing?.firstSeq === nextRuntimeEntry.firstSeq &&
-        existing?.runEpoch === nextRuntimeEntry.runEpoch &&
-        existing?.updatedAt === nextRuntimeEntry.updatedAt
-      ) {
-        return;
-      }
-      const nextRuntime = new Map(currentRuntime);
-      nextRuntime.set(conversationIdValue, nextRuntimeEntry);
-      remoteRunningConversationRuntimeRef.current = nextRuntime;
-      setRemoteRunningConversationRuntime(nextRuntime);
-    },
-    [clearConversationLiveStream, recordProjectActivity],
-  );
-
-  const isConversationEventStreamSubscribed = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    return (
-      conversationIdValue !== "" &&
-      conversationEventStreamControllersRef.current.has(conversationIdValue)
-    );
-  }, []);
-
-  const stopConversationEventStreamSubscription = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    if (!conversationIdValue) {
-      return;
-    }
-    const controller = conversationEventStreamControllersRef.current.get(conversationIdValue);
-    if (!controller) {
-      return;
-    }
-    conversationEventStreamControllersRef.current.delete(conversationIdValue);
-    conversationEventStreamRunIdsRef.current.delete(conversationIdValue);
-    controller.abort();
-  }, []);
-
-  const stopAllConversationEventStreamSubscriptions = useCallback(() => {
-    const controllers = [...conversationEventStreamControllersRef.current.values()];
-    conversationEventStreamControllersRef.current.clear();
-    conversationEventStreamRunIdsRef.current.clear();
-    for (const controller of controllers) {
-      controller.abort();
-    }
-  }, []);
-
-  const clearCompletedLiveStreamMarker = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    if (!conversationIdValue) {
-      return;
-    }
-    completedLiveStreamConversationAtRef.current.delete(conversationIdValue);
-    const timeoutId = completedLiveStreamCleanupTimersRef.current.get(conversationIdValue);
-    if (timeoutId !== undefined) {
-      window.clearTimeout(timeoutId);
-      completedLiveStreamCleanupTimersRef.current.delete(conversationIdValue);
-    }
-  }, []);
-
-  const clearAllCompletedLiveStreamMarkers = useCallback(() => {
-    for (const timeoutId of completedLiveStreamCleanupTimersRef.current.values()) {
-      window.clearTimeout(timeoutId);
-    }
-    completedLiveStreamCleanupTimersRef.current.clear();
-    completedLiveStreamConversationAtRef.current.clear();
-  }, []);
-
-  const markCompletedLiveStream = useCallback((targetConversationId: string) => {
-    const conversationIdValue = targetConversationId.trim();
-    if (!conversationIdValue) {
-      return;
-    }
-    const existingTimeoutId = completedLiveStreamCleanupTimersRef.current.get(conversationIdValue);
-    if (existingTimeoutId !== undefined) {
-      window.clearTimeout(existingTimeoutId);
-    }
-    completedLiveStreamConversationAtRef.current.set(conversationIdValue, Date.now());
-    const timeoutId = window.setTimeout(() => {
-      completedLiveStreamConversationAtRef.current.delete(conversationIdValue);
-      completedLiveStreamCleanupTimersRef.current.delete(conversationIdValue);
-    }, LIVE_STREAM_HISTORY_REFRESH_SUPPRESS_MS);
-    completedLiveStreamCleanupTimersRef.current.set(conversationIdValue, timeoutId);
-  }, []);
-
-  const hasRecentlyCompletedLiveStream = useCallback(
-    (targetConversationId: string) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return false;
-      }
-      const completedAt = completedLiveStreamConversationAtRef.current.get(conversationIdValue);
-      if (typeof completedAt !== "number") {
-        return false;
-      }
-      if (Date.now() - completedAt > LIVE_STREAM_HISTORY_REFRESH_SUPPRESS_MS) {
-        clearCompletedLiveStreamMarker(conversationIdValue);
-        return false;
-      }
-      return true;
-    },
-    [clearCompletedLiveStreamMarker],
-  );
-
-  const clearConversationStreamingState = useCallback(
-    (
-      targetConversationId: string,
-      options?: { remoteRunId?: string; preserveRemoteRunOnMismatch?: boolean },
-    ) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return;
-      }
-
-      liveConversationStreamStoresRef.current
-        .get(conversationIdValue)
-        ?.setToolStatus(null, false, { flush: true });
-      setLiveConversationStreamStatus(conversationIdValue, null);
-      const expectedRemoteRunKey = resolveRunningConversationRunKey({
-        runId: options?.remoteRunId,
-      });
-      const currentRemoteRunKey = resolveRunningConversationRunKey(
-        remoteRunningConversationRuntimeRef.current.get(conversationIdValue),
-      );
-      const shouldClearRemoteRunning =
-        !options?.preserveRemoteRunOnMismatch ||
-        !expectedRemoteRunKey ||
-        !currentRemoteRunKey ||
-        expectedRemoteRunKey === currentRemoteRunKey;
-      if (shouldClearRemoteRunning) {
-        setRemoteConversationRunningState(conversationIdValue, false);
-      }
-      setConversationAbortController(conversationIdValue, null);
-      setConversationRunningState(conversationIdValue, false);
-      updateConversationRuntimeEntry(conversationIdValue, (current) => {
-        if (!current.isSending && current.toolStatus === null && !current.toolStatusIsCompaction) {
-          return current;
+        case "run_finished": {
+          chatCommandPipeline.handleRunSignal(
+            targetConversationId,
+            readEventRunId(event),
+            eventClientRequestId || undefined,
+          );
+          // Settle the sidebar dot by run identity: the stream's terminal is
+          // authoritative even when the chat.activity broadcast was missed.
+          activityStore.settleRun(targetConversationId, readEventRunId(event));
+          const finishedTitle =
+            typeof (event as { title?: unknown }).title === "string"
+              ? ((event as { title: string }).title ?? "").trim()
+              : "";
+          if (finishedTitle) {
+            applyLiveConversationTitle(targetConversationId, finishedTitle);
+          }
+          return;
         }
-        return {
-          ...current,
-          isSending: false,
-          toolStatus: null,
-          toolStatusIsCompaction: false,
-        };
-      });
-    },
-    [
-      setConversationAbortController,
-      setConversationRunningState,
-      setLiveConversationStreamStatus,
-      setRemoteConversationRunningState,
-      updateConversationRuntimeEntry,
-    ],
-  );
-
-  const commitTerminalConversationLiveStream = useCallback(
-    (targetConversationId: string) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!conversationIdValue) {
-        return;
-      }
-
-      const isVisibleConversation =
-        resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) ===
-        conversationIdValue;
-      const shouldKeepBottom = isVisibleConversation && isTranscriptAtBottom();
-
-      if (!isVisibleConversation) {
-        // Background broadcasts do not include the persisted user turn. Let
-        // history.get be the source of truth when the user opens this chat.
-        flushSync(() => {
-          clearConversationLiveStream(conversationIdValue);
-          clearConversationStreamingState(conversationIdValue);
-        });
-        return;
-      }
-
-      preserveTranscriptScrollPosition(
-        () => {
-          flushSync(() => {
-            commitConversationLiveStreamToRuntime(conversationIdValue, {
-              clearLiveStream: false,
-            });
-            clearConversationStreamingState(conversationIdValue);
-          });
-        },
-        { stickToBottom: shouldKeepBottom },
-      );
-
-      if (shouldKeepBottom) {
-        stickTranscriptToBottom();
-      } else {
-        refreshTranscriptScrollState();
+        case "run_queued": {
+          chatCommandPipeline.handleRunSignal(
+            targetConversationId,
+            readEventRunId(event),
+            eventClientRequestId || undefined,
+          );
+          if (!isReplay) {
+            refreshChatQueueSnapshot(targetConversationId);
+          }
+          return;
+        }
+        default: {
+          const chatEvent = event as ChatEvent;
+          const liveTitle = readChatEventTitle(chatEvent);
+          if (liveTitle && isChatEventTitleFinal(chatEvent)) {
+            applyLiveConversationTitle(targetConversationId, liveTitle);
+          }
+          if (!isReplay) {
+            handleTunnelManagerChatEvent(chatEvent);
+          }
+        }
       }
     },
     [
-      clearConversationLiveStream,
-      clearConversationStreamingState,
-      commitConversationLiveStreamToRuntime,
+      activityStore,
+      applyLiveConversationTitle,
+      chatCommandPipeline,
+      handleTunnelManagerChatEvent,
       isTranscriptAtBottom,
       preserveTranscriptScrollPosition,
+      refreshChatQueueSnapshot,
       refreshTranscriptScrollState,
       stickTranscriptToBottom,
     ],
   );
 
-  const refreshHistoryAfterCompletedLiveStream = useCallback(
-    (targetConversationId: string, currentApi = api) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!currentApi || !conversationIdValue) {
-        return false;
-      }
-      if (!pendingHistoryRefreshAfterLiveCompletionRef.current.has(conversationIdValue)) {
-        return false;
-      }
-
-      pendingHistoryRefreshAfterLiveCompletionRef.current.delete(conversationIdValue);
-      void refreshVisibleConversationHistorySnapshot(conversationIdValue, currentApi, {
-        allowIdle: true,
-      });
-      return true;
-    },
-    [api, refreshVisibleConversationHistorySnapshot],
-  );
-
-  const recoverUnavailableConversationStream = useCallback(
-    (targetConversationId: string, currentApi = api) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!currentApi || !conversationIdValue) {
-        return;
-      }
-
-      clearConversationLiveStream(conversationIdValue);
-      clearConversationStreamingState(conversationIdValue);
-      void refreshVisibleConversationHistorySnapshot(conversationIdValue, currentApi, {
-        allowIdle: true,
-      });
-    },
-    [
-      api,
-      clearConversationLiveStream,
-      clearConversationStreamingState,
-      refreshVisibleConversationHistorySnapshot,
-    ],
-  );
-
-  const subscribeVisibleConversationEventStream = useCallback(
-    (targetConversationId: string, currentApi = api) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!currentApi || !conversationIdValue) {
-        return;
-      }
-      if (isLocalDraftConversationId(conversationIdValue)) {
-        return;
-      }
-      if (!remoteRunningConversationIdsRef.current.has(conversationIdValue)) {
-        return;
-      }
-      if (
-        localRunningConversationIdsRef.current.has(conversationIdValue) ||
-        getConversationAbortController(conversationIdValue) !== null
-      ) {
-        return;
-      }
-      if (
-        resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) !==
-        conversationIdValue
-      ) {
-        return;
-      }
-
-      const runtime = remoteRunningConversationRuntimeRef.current.get(conversationIdValue);
-      const nextRunKey = resolveRunningConversationRunKey(runtime);
-      const existingController =
-        conversationEventStreamControllersRef.current.get(conversationIdValue);
-      if (existingController) {
-        const existingRunKey =
-          conversationEventStreamRunIdsRef.current.get(conversationIdValue) ?? "";
-        if (!nextRunKey || existingRunKey === nextRunKey) {
-          return;
-        }
-        conversationEventStreamControllersRef.current.delete(conversationIdValue);
-        conversationEventStreamRunIdsRef.current.delete(conversationIdValue);
-        existingController.abort();
-      }
-
-      const controller = new AbortController();
-      conversationEventStreamControllersRef.current.set(conversationIdValue, controller);
-      conversationEventStreamRunIdsRef.current.set(conversationIdValue, nextRunKey);
-      clearCompletedLiveStreamMarker(conversationIdValue);
-      clearConversationLiveStream(conversationIdValue);
-      const liveStore = getConversationLiveStreamStore(conversationIdValue);
-      if (!liveStore) {
-        conversationEventStreamControllersRef.current.delete(conversationIdValue);
-        conversationEventStreamRunIdsRef.current.delete(conversationIdValue);
-        return;
-      }
-      void refreshVisibleConversationHistorySnapshot(conversationIdValue, currentApi);
-      const streamAfterSeq = resolveRunningConversationStreamAfterSeq(runtime?.firstSeq, {
-        runId: runtime?.runId,
-      });
-
-      void (async () => {
-        let terminalEventSeen = false;
-        try {
-          for await (const event of currentApi.streamChatEvents(conversationIdValue, {
-            runId: runtime?.runId,
-            afterSeq: streamAfterSeq,
-            signal: controller.signal,
-          })) {
-            if (controller.signal.aborted) {
-              return;
-            }
-
-            const eventConversationId = event.conversation_id?.trim() || conversationIdValue;
-            const liveTitle = readChatEventTitle(event);
-            if (liveTitle && isChatEventTitleFinal(event)) {
-              applyLiveConversationTitle(eventConversationId, liveTitle, {
-                isFinal: true,
-              });
-            }
-
-            if (event.type === "tool_status") {
-              const normalizedStatus = normalizeOptionalStatus(event.status);
-              const isCompaction = normalizedStatus !== null && event.isCompaction === true;
-              liveStore.setToolStatus(normalizedStatus, isCompaction);
-              setLiveConversationStreamStatus(conversationIdValue, normalizedStatus, isCompaction);
-              continue;
-            }
-
-            if (isChatStreamNotAvailableEvent(event)) {
-              terminalEventSeen = true;
-              recoverUnavailableConversationStream(conversationIdValue, currentApi);
-              return;
-            }
-
-            const terminalEvent = isTerminalChatEvent(event);
-            liveStore.appendEvent(event, { flush: terminalEvent });
-            handleTunnelManagerChatEvent(event);
-
-            if (terminalEvent) {
-              terminalEventSeen = true;
-              markCompletedLiveStream(conversationIdValue);
-              commitTerminalConversationLiveStream(conversationIdValue);
-              refreshHistoryAfterCompletedLiveStream(conversationIdValue, currentApi);
-              return;
-            }
-
-            markLiveConversationStreamActive(conversationIdValue);
-          }
-        } catch (error) {
-          if (!isAbortError(error)) {
-            const message = asErrorMessage(error, "chat event stream failed");
-            if (isChatStreamNotAvailableMessage(message)) {
-              terminalEventSeen = true;
-              recoverUnavailableConversationStream(conversationIdValue, currentApi);
-              return;
-            }
-            liveStore.appendEvent(
-              {
-                type: "error",
-                message,
-                conversation_id: conversationIdValue,
-              },
-              { flush: true },
-            );
-            terminalEventSeen = true;
-            markCompletedLiveStream(conversationIdValue);
-            commitTerminalConversationLiveStream(conversationIdValue);
-            refreshHistoryAfterCompletedLiveStream(conversationIdValue, currentApi);
-          }
-        } finally {
-          if (
-            conversationEventStreamControllersRef.current.get(conversationIdValue) === controller
-          ) {
-            conversationEventStreamControllersRef.current.delete(conversationIdValue);
-            conversationEventStreamRunIdsRef.current.delete(conversationIdValue);
-          }
-          if (!terminalEventSeen && controller.signal.aborted) {
-            liveStore.flush();
-          }
-          if (!terminalEventSeen && !controller.signal.aborted) {
-            liveStore.flush();
-            clearConversationStreamingState(conversationIdValue);
-            setLiveConversationStreamStatus(conversationIdValue, null);
-          }
-        }
-      })();
-    },
-    [
-      api,
-      applyLiveConversationTitle,
-      clearCompletedLiveStreamMarker,
-      clearConversationLiveStream,
-      clearConversationStreamingState,
-      commitTerminalConversationLiveStream,
-      getConversationAbortController,
-      getConversationLiveStreamStore,
-      handleTunnelManagerChatEvent,
-      markCompletedLiveStream,
-      markLiveConversationStreamActive,
-      recoverUnavailableConversationStream,
-      refreshHistoryAfterCompletedLiveStream,
-      refreshVisibleConversationHistorySnapshot,
-      setLiveConversationStreamStatus,
-    ],
-  );
-
-  useEffect(() => {
-    if (!api) {
-      remoteRunningConversationIdsRef.current = new Set();
-      setRemoteRunningConversationIds(new Set());
-      remoteRunningConversationRuntimeRef.current = new Map();
-      setRemoteRunningConversationRuntime(new Map());
-      stopAllConversationEventStreamSubscriptions();
-      clearAllCompletedLiveStreamMarkers();
-      clearAllConversationLiveStreams();
-      return;
-    }
-
-    const unsubscribe = api.subscribeHistory((event: GatewayHistoryEvent) => {
-      const targetConversationId = event.conversation_id.trim();
-      if (!targetConversationId) {
-        return;
-      }
-
-      if (
-        (event.kind === "running" || event.kind === "idle") &&
-        shouldSuppressPendingDraftBroadcast(targetConversationId)
-      ) {
-        return;
-      }
-
-      if (event.kind === "running" || event.kind === "idle") {
-        const eventRunKey =
-          event.kind === "running"
-            ? resolveRunningConversationRunKey({
-                runId: event.run_id,
-                runEpoch: event.run_epoch,
-              })
-            : "";
-        if (event.kind === "idle" && !eventRunKey) {
-          const activeRunKey =
-            conversationEventStreamRunIdsRef.current.get(targetConversationId) ??
-            resolveRunningConversationRunKey(
-              remoteRunningConversationRuntimeRef.current.get(targetConversationId),
-            );
-          if (
-            activeRunKey &&
-            conversationEventStreamControllersRef.current.has(targetConversationId)
-          ) {
-            void refreshHistoryWorkdirs(api);
-            return;
-          }
-        }
-        setRemoteConversationRunningState(targetConversationId, event.kind === "running", {
-          runId: event.run_id,
-          workdir: event.conversation?.cwd,
-          firstSeq: event.first_seq,
-          runEpoch: event.run_epoch,
-          updatedAt: event.updated_at ?? event.conversation?.updated_at,
-        });
-        if (event.kind === "running") {
-          if (!isConversationEventStreamSubscribed(targetConversationId)) {
-            clearConversationLiveStream(targetConversationId);
-          }
-          subscribeVisibleConversationEventStream(targetConversationId, api);
-          return;
-        }
-
-        void refreshHistoryWorkdirs(api);
-
-        if (hasRecentlyCompletedLiveStream(targetConversationId)) {
-          return;
-        }
-
-        const visibleConversationId = resolveVisibleConversationId(
-          selectedHistoryIdRef.current,
-          conversationIdRef.current,
+  const handleConversationStreamSync = useCallback(
+    (targetConversationId: string, result: ConversationSubscribeResult) => {
+      if (result.activity) {
+        chatCommandPipeline.handleRunSignal(
+          targetConversationId,
+          result.activity.runId,
+          result.activity.clientRequestId,
         );
-        const isHistoryHydrationBlocked =
-          blockedHistoryHydrationConversationIdsRef.current.has(targetConversationId) ||
-          getConversationAbortController(targetConversationId) !== null;
-        const hasLocalDraft =
-          pendingUploadedFilesRef.current.length > 0 ||
-          (composerRef.current?.hasContent() ?? false);
-        const hasRetainedLiveTranscript = hasRetainedConversationLiveStream(targetConversationId);
-        if (
-          visibleConversationId === targetConversationId &&
-          !isHistoryHydrationBlocked &&
-          !chatBusyRef.current &&
-          !hasLocalDraft &&
-          !hasRetainedLiveTranscript
-        ) {
-          void refreshVisibleConversationHistorySnapshot(targetConversationId, api, {
-            allowIdle: true,
-          });
-        } else if (!hasRetainedLiveTranscript) {
-          clearConversationLiveStream(targetConversationId);
+      } else if (!chatCommandPipeline.hasPending(targetConversationId)) {
+        // The authoritative subscribe says nothing is running and no local
+        // submission is in flight: a lingering dot for this conversation is
+        // a missed-stop zombie — settle it by its own run identity.
+        const currentActivity = activityStore.get(targetConversationId);
+        if (currentActivity) {
+          activityStore.settleRun(targetConversationId, currentActivity.runId);
         }
-        return;
       }
+      for (const event of result.events) {
+        observeConversationStreamEvent(targetConversationId, event, { replay: true });
+      }
+    },
+    [activityStore, chatCommandPipeline, observeConversationStreamEvent],
+  );
 
-      if (event.kind === "upsert") {
-        recordProjectActivity(event.conversation.cwd, event.conversation.updated_at);
-        maybeAdoptActiveDraftConversation(event.conversation);
-      }
+  const handleConversationStreamEvent = useCallback(
+    (targetConversationId: string, event: ConversationStreamEvent) => {
+      observeConversationStreamEvent(targetConversationId, event);
+    },
+    [observeConversationStreamEvent],
+  );
 
-      const matchesCurrentHistoryScope =
-        event.kind !== "upsert" ||
-        historyConversationMatchesFilter(event.conversation, historyListFilterRef.current);
-      updateHistoryItems((current) => {
-        if (event.kind === "upsert" && !matchesCurrentHistoryScope) {
-          return current.filter((item) => item.id !== targetConversationId);
-        }
-        return applyGatewayHistoryEvent(current, event, {
-          preserveTitleConversationIds: optimisticTitleConversationIdsRef.current,
-          preserveUpdatedAtConversationIds: getHistoryPositionLockedConversationIds(),
-        });
-      });
-      if (event.kind === "upsert" || event.kind === "delete" || event.kind === "idle") {
-        void refreshHistoryWorkdirs(api);
-      }
-      setHistoryError(null);
-      setRemoteRunningConversationIds((current) => {
-        if (event.kind !== "delete" || !current.has(targetConversationId)) {
-          return current;
-        }
-        const next = new Set(current);
-        next.delete(targetConversationId);
-        remoteRunningConversationIdsRef.current = next;
-        return next;
-      });
-      if (event.kind === "delete") {
-        setRemoteRunningConversationRuntime((current) => {
-          if (!current.has(targetConversationId)) {
-            return current;
-          }
-          const next = new Map(current);
-          next.delete(targetConversationId);
-          remoteRunningConversationRuntimeRef.current = next;
-          return next;
-        });
-      }
+  const hasPendingChatCommand = useCallback(
+    (targetConversationId: string) => chatCommandPipeline.hasPending(targetConversationId),
+    [chatCommandPipeline],
+  );
 
-      // Keep the current draft/selection stable: remote changes only refresh
-      // the recent-conversations list unless they target the active row.
-      if (event.kind === "delete") {
-        optimisticTitleConversationIdsRef.current.delete(targetConversationId);
-        unlockHistoryTitlePosition(targetConversationId);
-        stopConversationEventStreamSubscription(targetConversationId);
-        clearCompletedLiveStreamMarker(targetConversationId);
-        clearConversationLiveStream(targetConversationId);
-        if (
-          conversationIdRef.current === targetConversationId ||
-          selectedHistoryIdRef.current === targetConversationId
-        ) {
-          startNewConversation({
-            workdir: isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
-          });
-        }
-        return;
-      }
+  // THE transcript source: the displayed conversation's store snapshot plus a
+  // persistent stream subscription (subscribed whenever the id is real —
+  // regardless of running state, which is what makes GUI queue auto-sends
+  // race-free: the next run's events simply flow in).
+  const displayedConversationId = resolveVisibleConversationId(selectedHistoryId, conversationId);
+  const { transcript: displayedTranscript, busy: displayedConversationBusy } = useConversationChat({
+    api,
+    conversationId: displayedConversationId || null,
+    registry: transcriptStoreRegistry,
+    activityStore,
+    isLocalDraft: isLocalDraftConversationId,
+    onStreamEvent: handleConversationStreamEvent,
+    onStreamSync: handleConversationStreamSync,
+    hasPendingCommand: hasPendingChatCommand,
+    pendingRevision: pendingCommandRevision,
+  });
+  displayedConversationBusyRef.current = displayedConversationBusy;
 
-      const visibleConversationId = resolveVisibleConversationId(
-        selectedHistoryIdRef.current,
-        conversationIdRef.current,
-      );
-      const isRemoteConversationRunning =
-        remoteRunningConversationIdsRef.current.has(targetConversationId);
-      const isHistoryHydrationBlocked =
-        blockedHistoryHydrationConversationIdsRef.current.has(targetConversationId) ||
-        getConversationAbortController(targetConversationId) !== null;
-      const hasLocalDraft =
-        pendingUploadedFilesRef.current.length > 0 || (composerRef.current?.hasContent() ?? false);
-      if (
-        event.kind === "upsert" &&
-        visibleConversationId === targetConversationId &&
-        !isRemoteConversationRunning &&
-        hasRecentlyCompletedLiveStream(targetConversationId)
-      ) {
-        pendingHistoryRefreshAfterLiveCompletionRef.current.delete(targetConversationId);
-        // The visible transcript already contains the committed live stream;
-        // refresh the persisted snapshot so remote observers also receive the
-        // user turn that is not part of chat stream events.
-        void refreshVisibleConversationHistorySnapshot(targetConversationId, api, {
-          allowIdle: true,
-        });
-        return;
-      }
-      if (
-        event.kind === "upsert" &&
-        visibleConversationId === targetConversationId &&
-        isRemoteConversationRunning &&
-        !isHistoryHydrationBlocked &&
-        !localRunningConversationIdsRef.current.has(targetConversationId)
-      ) {
-        pendingHistoryRefreshAfterLiveCompletionRef.current.add(targetConversationId);
-        subscribeVisibleConversationEventStream(targetConversationId, api);
-        void refreshVisibleConversationHistorySnapshot(targetConversationId, api);
-      }
-      if (
-        event.kind === "upsert" &&
-        visibleConversationId === targetConversationId &&
-        !isRemoteConversationRunning &&
-        !isHistoryHydrationBlocked &&
-        !chatBusyRef.current &&
-        !hasLocalDraft &&
-        !hasRetainedConversationLiveStream(targetConversationId)
-      ) {
-        void refreshVisibleConversationHistorySnapshot(targetConversationId, api, {
-          allowIdle: true,
-        });
-      }
-    });
+  // Phase-1 open in flight (initial tail fetch). The quiet phase-2 hydration
+  // ("hydrating") intentionally does NOT gate the composer or transcript.
+  const historyDetailLoading = conversationOpenState.phase === "opening";
 
-    return () => {
-      unsubscribe();
+  // Deterministic messageRef attachment: when the displayed conversation
+  // transitions busy → idle (run finished), run the quiet enrich refresh so
+  // the settled tail's user bubbles gain their persisted messageRef (edit
+  // affordance) without waiting for a history upsert to race the idle gate.
+  // The upsert-while-idle path below stays as the backstop for the
+  // persist-after-done ordering.
+  const previousDisplayedBusyRef = useRef({ id: "", busy: false });
+  useEffect(() => {
+    const prev = previousDisplayedBusyRef.current;
+    previousDisplayedBusyRef.current = {
+      id: displayedConversationId,
+      busy: displayedConversationBusy,
     };
+    if (
+      prev.id === displayedConversationId &&
+      prev.busy &&
+      !displayedConversationBusy &&
+      displayedConversationId
+    ) {
+      void refreshDisplayedConversationHistorySnapshot(displayedConversationId, api);
+    }
   }, [
     api,
-    activeWorkspaceProjectPath,
-    subscribeVisibleConversationEventStream,
-    clearAllCompletedLiveStreamMarkers,
-    clearAllConversationLiveStreams,
-    clearCompletedLiveStreamMarker,
-    clearConversationLiveStream,
-    getConversationAbortController,
-    getHistoryPositionLockedConversationIds,
-    handleTunnelManagerChatEvent,
-    hasRecentlyCompletedLiveStream,
-    hasRetainedConversationLiveStream,
-    isAgentMode,
-    isConversationEventStreamSubscribed,
-    maybeAdoptActiveDraftConversation,
-    recordProjectActivity,
-    refreshVisibleConversationHistorySnapshot,
-    refreshHistoryWorkdirs,
-    setRemoteConversationRunningState,
-    shouldSuppressPendingDraftBroadcast,
-    stopAllConversationEventStreamSubscriptions,
-    stopConversationEventStreamSubscription,
-    unlockHistoryTitlePosition,
-    updateHistoryItems,
+    displayedConversationBusy,
+    displayedConversationId,
+    refreshDisplayedConversationHistorySnapshot,
   ]);
 
-  useEffect(() => {
-    if (status?.online) {
-      return;
-    }
-    setRemoteRunningConversationIds((current) => {
-      if (current.size === 0) {
-        remoteRunningConversationIdsRef.current = current;
-        return current;
-      }
-      const next = new Set<string>();
-      remoteRunningConversationIdsRef.current = next;
-      return next;
-    });
-    setRemoteRunningConversationRuntime((current) => {
-      if (current.size === 0) {
-        remoteRunningConversationRuntimeRef.current = current;
-        return current;
-      }
-      const next = new Map<string, RunningConversationRuntime>();
-      remoteRunningConversationRuntimeRef.current = next;
-      return next;
-    });
-  }, [status?.online]);
-
-  async function selectHistory(
+  // --- Two-phase conversation open (controller deps) ------------------------
+  // Phase 1: paint the message tail fast. Sets the selection state
+  // synchronously (controller.open calls this in the same tick), fetches the
+  // initial slice, and replace-applies it to the transcript store. The web
+  // end has no synchronous local-activation path, so it always resolves
+  // "painted" (never "cache-hit") — revisits still show the cached transcript
+  // instantly because the registry store keeps rendering underneath.
+  async function openConversationInitial(
     conversationIdValue: string,
-    currentApi = api,
-    options?: {
-      syncChat?: boolean;
-      resetLiveStream?: boolean;
-      clearLiveStream?: boolean;
-      fullHistory?: boolean;
-      scrollToBottom?: boolean;
-    },
-  ) {
+    _seq: number,
+  ): Promise<"cache-hit" | "painted"> {
+    const currentApi = api;
     if (!currentApi) {
-      return;
+      throw new Error("Gateway client is not ready.");
     }
 
     const loadSequence = invalidateHistoryLoad();
     const selectionRevision = markVisibleConversationRevision();
-    const currentVisibleConversationId = conversationIdRef.current.trim();
-    const previousSelectedHistoryId = selectedHistoryIdRef.current.trim();
-    const isChangingSelectedHistory = previousSelectedHistoryId !== conversationIdValue;
-    const isSwitchingVisibleConversation =
-      currentVisibleConversationId !== "" && currentVisibleConversationId !== conversationIdValue;
-    if (options?.scrollToBottom) {
-      pendingDisplayedConversationAutoBottomRef.current = conversationIdValue;
-    }
-    if (options?.syncChat && isSwitchingVisibleConversation) {
-      cacheVisibleConversationRuntime(currentVisibleConversationId);
+    const isStale = () =>
+      historyLoadSequenceRef.current !== loadSequence ||
+      visibleConversationRevisionRef.current !== selectionRevision;
+    const previousDisplayedConversationId = getDisplayedConversationId();
+    const isChangingConversation = previousDisplayedConversationId !== conversationIdValue;
+    pendingDisplayedConversationAutoBottomRef.current = conversationIdValue;
+    if (isChangingConversation && previousDisplayedConversationId) {
+      // Fold the previous conversation's settled turns so a revisit starts
+      // with a clean virtualized transcript.
+      transcriptStoreRegistry.peek(previousDisplayedConversationId)?.foldSettledTurns();
     }
 
-    draftConversationPinnedRef.current = false;
     protectedConversationRef.current = conversationIdValue;
+    conversationIdRef.current = conversationIdValue;
     selectedHistoryIdRef.current = conversationIdValue;
+    setConversationId(conversationIdValue);
     setSelectedHistoryId(conversationIdValue);
-    if (isChangingSelectedHistory) {
+    if (isChangingConversation) {
+      setChatError(null);
       setSelectedHistory(null);
-      setSelectedHistoryEntries([]);
     }
 
-    if (options?.resetLiveStream) {
-      clearConversationLiveStream(conversationIdValue);
-    }
-
-    setHistoryDetailLoading(true);
     try {
-      const detail = await currentApi.getHistory(
-        conversationIdValue,
-        options?.fullHistory ? undefined : { maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES },
-      );
-      if (
-        historyLoadSequenceRef.current !== loadSequence ||
-        visibleConversationRevisionRef.current !== selectionRevision
-      ) {
-        return;
+      const detail = await currentApi.getHistory(conversationIdValue, {
+        maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES,
+      });
+      if (isStale()) {
+        return "painted";
       }
       const entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
-      if (
-        historyLoadSequenceRef.current !== loadSequence ||
-        visibleConversationRevisionRef.current !== selectionRevision
-      ) {
-        return;
+      if (isStale()) {
+        return "painted";
       }
       setSelectedHistory(detail);
-      setSelectedHistoryEntries(entries);
-      if (options?.syncChat) {
-        const shouldPreserveLiveRuntime =
-          blockedHistoryHydrationConversationIdsRef.current.has(detail.conversation_id) ||
-          getConversationAbortController(detail.conversation_id) !== null;
-        if (shouldPreserveLiveRuntime) {
-          return;
-        }
-        if (options.clearLiveStream) {
-          clearConversationLiveStream(conversationIdValue);
-        }
-        const currentRuntime =
-          conversationIdRef.current.trim() === detail.conversation_id &&
-          (selectedHistoryIdRef.current.trim() === "" ||
-            selectedHistoryIdRef.current.trim() === detail.conversation_id)
-            ? buildVisibleRuntimeEntry()
-            : (conversationRuntimeCacheRef.current.get(detail.conversation_id) ??
-              createConversationRuntimeEntry());
-        const nextMessages = mergeHistorySnapshotEntries(currentRuntime.messages, entries, {
-          isFullSnapshot: detail.has_more === false,
-        });
-        const nextRuntime = createConversationRuntimeEntry({
-          messages: nextMessages,
-          error: null,
-          toolStatus: null,
-          isSending: localRunningConversationIdsRef.current.has(detail.conversation_id),
-          workdir: detail.conversation?.cwd,
-        });
-        conversationRuntimeCacheRef.current.set(detail.conversation_id, nextRuntime);
-        const shouldSyncRuntime =
-          conversationIdRef.current.trim() !== detail.conversation_id ||
-          selectedHistoryIdRef.current.trim() !== detail.conversation_id ||
-          nextRuntime.messages !== currentRuntime.messages ||
-          nextRuntime.error !== currentRuntime.error ||
-          nextRuntime.toolStatus !== currentRuntime.toolStatus ||
-          nextRuntime.toolStatusIsCompaction !== currentRuntime.toolStatusIsCompaction ||
-          nextRuntime.isSending !== currentRuntime.isSending ||
-          nextRuntime.workdir !== currentRuntime.workdir;
-        if (!shouldSyncRuntime) {
-          return;
-        }
-        syncVisibleConversationRuntime(detail.conversation_id, nextRuntime);
+      transcriptStoreRegistry
+        .get(conversationIdValue)
+        .applyHistorySnapshot(entries, { mode: "replace" });
+      const detailWorkdir = detail.conversation?.cwd?.trim();
+      if (detailWorkdir) {
+        conversationWorkdirsRef.current.set(conversationIdValue, detailWorkdir);
       }
+      return "painted";
     } catch (error) {
-      if (
-        historyLoadSequenceRef.current !== loadSequence ||
-        visibleConversationRevisionRef.current !== selectionRevision
-      ) {
-        return;
-      }
-      const message = asErrorMessage(error, "history detail request failed");
-      const fallbackDetail = {
-        conversation_id: conversationIdValue,
-        messages_json: message,
-        has_more: false,
-      } satisfies HistoryDetail;
-      const fallbackEntries: ChatEntry[] = [
-        {
-          id: `history-error-${conversationIdValue}`,
-          kind: "error",
-          text: message,
-        },
-      ];
-      setSelectedHistory(fallbackDetail);
-      setSelectedHistoryEntries(fallbackEntries);
-      if (options?.syncChat) {
-        const shouldPreserveLiveRuntime =
-          blockedHistoryHydrationConversationIdsRef.current.has(conversationIdValue) ||
-          getConversationAbortController(conversationIdValue) !== null;
-        if (shouldPreserveLiveRuntime) {
-          return;
-        }
-        if (options.clearLiveStream) {
-          clearConversationLiveStream(conversationIdValue);
-        }
-        const nextRuntime = createConversationRuntimeEntry({
-          messages: fallbackEntries,
-          error: message,
-          toolStatus: null,
-          isSending: localRunningConversationIdsRef.current.has(conversationIdValue),
-          workdir: conversationRuntimeCacheRef.current.get(conversationIdValue)?.workdir,
-        });
-        conversationRuntimeCacheRef.current.set(conversationIdValue, nextRuntime);
-        syncVisibleConversationRuntime(conversationIdValue, nextRuntime);
-      }
-    } finally {
-      if (
-        historyLoadSequenceRef.current === loadSequence &&
-        visibleConversationRevisionRef.current === selectionRevision
-      ) {
-        setHistoryDetailLoading(false);
-      }
-    }
-  }
-
-  async function reloadHistory(currentApi = api, options?: ReloadHistoryOptions) {
-    if (!currentApi) {
-      return;
-    }
-
-    const silent = options?.silent === true;
-    const loadingStartedAt = Date.now();
-    if (!silent) {
-      setHistoryListLoading(true);
-      setHistoryError(null);
-    }
-    const requestScopeKey = historyScopeKeyRef.current;
-    const requestFilter = historyListFilterRef.current;
-    try {
-      const response = await currentApi.listHistory(1, HISTORY_LIST_PAGE_SIZE, requestFilter);
-      if (requestScopeKey !== historyScopeKeyRef.current) {
-        return;
-      }
-      const runningConversations = normalizeRunningConversations(
-        response.running_conversations,
-        response.running_conversation_ids,
-      );
-      for (const runningConversation of runningConversations) {
-        setRemoteConversationRunningState(runningConversation.conversation_id, true, {
-          runId: runningConversation.run_id,
-          workdir: runningConversation.cwd,
-          firstSeq: runningConversation.first_seq,
-          runEpoch: runningConversation.run_epoch,
-          updatedAt: runningConversation.updated_at,
-        });
-      }
-      const runningConversationIds = runningConversations.map((item) => item.conversation_id);
-      const retainedConversationIds = new Set<string>();
-      for (const id of blockedHistoryHydrationConversationIdsRef.current) {
-        retainedConversationIds.add(id);
-      }
-      for (const id of localRunningConversationIdsRef.current) {
-        retainedConversationIds.add(id);
-      }
-      for (const id of remoteRunningConversationIdsRef.current) {
-        retainedConversationIds.add(id);
-      }
-      for (const id of runningConversationIds) {
-        retainedConversationIds.add(id);
-      }
-      for (const [id, store] of liveConversationStreamStoresRef.current) {
-        if (store.getSnapshot().entries.length > 0) {
-          retainedConversationIds.add(id);
-        }
-      }
-      if (silent) {
-        for (const item of historyItemsRef.current) {
-          retainedConversationIds.add(item.id);
-        }
-      }
-      const conversations = reconcileConversationSummaries(
-        historyItemsRef.current,
-        response.conversations,
-        {
-          preserveTitleConversationIds: optimisticTitleConversationIdsRef.current,
-          preserveUpdatedAtConversationIds: getHistoryPositionLockedConversationIds(),
-          retainConversationIds: retainedConversationIds,
-        },
-      );
-      const refreshedNextPage = response.conversations.length > 0 ? 2 : 1;
-      const nextPage = silent
-        ? Math.max(nextHistoryPageRef.current, refreshedNextPage)
-        : refreshedNextPage;
-      commitHistoryListState(conversations, response.total_count, nextPage);
-
-      const adoptedPendingDraftConversationId =
-        options?.adoptPendingDraftConversation === true
-          ? adoptPendingDraftConversationFromHistoryList(conversations)
-          : "";
-      if (
-        options?.adoptPendingDraftConversation === true &&
-        adoptedPendingDraftConversationId !== ""
-      ) {
-        // `chat stream not available` recovery clears the draft's running state
-        // before reloading history. If the draft is then adopted into a real
-        // conversation, only the temporary hydration block survives migration;
-        // release it here so this same reload/select cycle can hydrate the
-        // recovered history snapshot immediately.
-        blockedHistoryHydrationConversationIdsRef.current.delete(adoptedPendingDraftConversationId);
-      }
-
-      if (options?.skipSelectionSync) {
-        return;
-      }
-
-      const currentConversationId = conversationIdRef.current;
-      const currentSelectedHistoryId = selectedHistoryIdRef.current;
-      const currentChatMessages = chatMessagesRef.current;
-      const currentSelectedHistory = selectedHistoryRef.current;
-      const requestedPreferredConversationId = options?.preferredConversationId?.trim() ?? "";
-      const requestedConversationId =
-        requestedPreferredConversationId !== "" &&
-        !isLocalDraftConversationId(requestedPreferredConversationId)
-          ? requestedPreferredConversationId
-          : adoptedPendingDraftConversationId || requestedPreferredConversationId;
-      const protectedConversationId = protectedConversationRef.current.trim();
-      const isProtectedDraftConversation = protectedConversationId === PROTECTED_DRAFT_CONVERSATION;
-      const hadCurrentConversationInHistory =
-        pickConversationSummary(historyItemsRef.current, currentConversationId) !== null;
-
-      const currentSummary = pickConversationSummary(conversations, currentConversationId);
-      const protectedConversationSummary =
-        protectedConversationId && !isProtectedDraftConversation
-          ? pickConversationSummary(conversations, protectedConversationId)
-          : null;
-
-      if (
-        currentConversationId &&
-        !isLocalDraftConversationId(currentConversationId) &&
-        hadCurrentConversationInHistory &&
-        currentSummary === null
-      ) {
-        startNewConversation({
-          workdir: isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
-        });
-        return;
-      }
-
-      if (isProtectedDraftConversation) {
-        return;
-      }
-
-      if (
-        protectedConversationId &&
-        protectedConversationSummary === null &&
-        (requestedConversationId === "" || requestedConversationId === protectedConversationId) &&
-        (currentConversationId === protectedConversationId ||
-          currentSelectedHistoryId === protectedConversationId)
-      ) {
-        return;
-      }
-
-      const requestedConversationSummary =
-        requestedConversationId !== ""
-          ? pickConversationSummary(conversations, requestedConversationId)
-          : null;
-      const shouldKeepCurrentConversation =
-        requestedConversationId !== "" &&
-        requestedConversationSummary === null &&
-        currentConversationId === requestedConversationId &&
-        currentChatMessages.length > 0;
-
-      if (shouldKeepCurrentConversation) {
-        return;
-      }
-
-      const shouldKeepDraftConversation = hasLocalDraftConversation({
-        conversationId: currentConversationId,
-        selectedHistoryId: currentSelectedHistoryId,
-        requestedConversationId,
-        chatMessageCount: currentChatMessages.length,
-        pendingUploadCount: pendingUploadedFilesRef.current.length,
-        draftPinned: draftConversationPinnedRef.current,
-      });
-      if (shouldKeepDraftConversation) {
-        return;
-      }
-
-      const isCurrentConversationRunning =
-        currentConversationId !== "" &&
-        localRunningConversationIdsRef.current.has(currentConversationId) &&
-        (currentSelectedHistoryId === "" || currentSelectedHistoryId === currentConversationId) &&
-        requestedConversationId === "";
-      if (isCurrentConversationRunning) {
-        return;
-      }
-
-      const preferredConversationId =
-        requestedConversationSummary?.id ??
-        protectedConversationSummary?.id ??
-        (pickConversationSummary(conversations, currentSelectedHistoryId)
-          ? currentSelectedHistoryId
-          : pickConversationSummary(conversations, currentConversationId)
-            ? currentConversationId
-            : currentConversationId && currentChatMessages.length > 0
-              ? ""
-              : (conversations[0]?.id ?? ""));
-
-      if (!preferredConversationId) {
-        if (!currentConversationId) {
-          setSelectedHistoryId("");
-          setSelectedHistory(null);
-          setSelectedHistoryEntries([]);
-        }
-        return;
-      }
-
-      setSelectedHistoryId(preferredConversationId);
-      protectedConversationRef.current = preferredConversationId;
-
-      const shouldSyncChat =
-        options?.hydrateSelection === true ||
-        ((currentConversationId === "" || isLocalDraftConversationId(currentConversationId)) &&
-          currentChatMessages.length === 0);
-      const shouldHydrateSelection =
-        shouldSyncChat || currentSelectedHistory?.conversation_id !== preferredConversationId;
-
-      if (shouldHydrateSelection) {
-        await selectHistory(preferredConversationId, currentApi, {
-          syncChat: shouldSyncChat,
-          resetLiveStream:
-            shouldSyncChat && remoteRunningConversationIdsRef.current.has(preferredConversationId),
-          scrollToBottom: shouldSyncChat,
-        });
-      }
-    } catch (error) {
-      if (requestScopeKey !== historyScopeKeyRef.current) {
-        return;
-      }
-      const message = asErrorMessage(error, "history request failed");
-      setHistoryError(message);
-      if (silent) {
-        return;
-      }
-      setSelectedHistory({
-        conversation_id: "",
-        messages_json: message,
-      });
-      setSelectedHistoryEntries([
-        {
-          id: "history-list-error",
-          kind: "error",
-          text: message,
-        },
-      ]);
-    } finally {
-      if (!silent && requestScopeKey === historyScopeKeyRef.current) {
-        await waitForMinimumHistoryListLoading(loadingStartedAt);
-        setHistoryListLoading(false);
-      }
-    }
-  }
-
-  const loadMoreHistory = useCallback(async () => {
-    if (!api || historyListPageLoadingRef.current || !historyHasMoreRef.current) {
-      return;
-    }
-
-    historyListPageLoadingRef.current = true;
-    setHistoryListLoadingMore(true);
-    const requestScopeKey = historyScopeKeyRef.current;
-    const requestFilter = historyListFilterRef.current;
-    try {
-      const pageNumber = nextHistoryPageRef.current;
-      const response = await api.listHistory(pageNumber, HISTORY_LIST_PAGE_SIZE, requestFilter);
-      if (requestScopeKey !== historyScopeKeyRef.current) {
-        return;
-      }
-      const runningConversations = normalizeRunningConversations(
-        response.running_conversations,
-        response.running_conversation_ids,
-      );
-      for (const runningConversation of runningConversations) {
-        setRemoteConversationRunningState(runningConversation.conversation_id, true, {
-          runId: runningConversation.run_id,
-          workdir: runningConversation.cwd,
-          firstSeq: runningConversation.first_seq,
-          runEpoch: runningConversation.run_epoch,
-          updatedAt: runningConversation.updated_at,
-        });
-      }
-      const retainConversationIds = new Set(historyItemsRef.current.map((item) => item.id));
-      const conversations = reconcileConversationSummaries(
-        historyItemsRef.current,
-        response.conversations,
-        {
-          preserveTitleConversationIds: optimisticTitleConversationIdsRef.current,
-          preserveUpdatedAtConversationIds: getHistoryPositionLockedConversationIds(),
-          retainConversationIds,
-        },
-      );
-      const nextPage = response.conversations.length === 0 ? pageNumber : pageNumber + 1;
-      commitHistoryListState(conversations, response.total_count, nextPage);
-      setHistoryError(null);
-    } catch (error) {
-      if (requestScopeKey !== historyScopeKeyRef.current) {
-        return;
-      }
-      setHistoryError(asErrorMessage(error, "读取更多历史列表失败"));
-    } finally {
-      if (requestScopeKey === historyScopeKeyRef.current) {
-        historyListPageLoadingRef.current = false;
-        setHistoryListLoadingMore(false);
-      }
-    }
-  }, [
-    api,
-    commitHistoryListState,
-    getHistoryPositionLockedConversationIds,
-    setRemoteConversationRunningState,
-  ]);
-
-  const recoverUnavailableActiveConversationStream = useCallback(
-    (targetConversationId: string, currentApi = api) => {
-      const targetId = targetConversationId.trim();
-      if (!currentApi || !targetId) {
-        return;
-      }
-
-      const visibleConversationId = resolveVisibleConversationId(
-        selectedHistoryIdRef.current,
-        conversationIdRef.current,
-      ).trim();
-      const effectiveConversationId =
-        !isLocalDraftConversationId(targetId) && targetId !== ""
-          ? targetId
-          : visibleConversationId !== "" && !isLocalDraftConversationId(visibleConversationId)
-            ? visibleConversationId
-            : targetId;
-
-      clearConversationLiveStream(targetId);
-      clearConversationStreamingState(targetId);
-      if (effectiveConversationId !== targetId) {
-        clearConversationLiveStream(effectiveConversationId);
-        clearConversationStreamingState(effectiveConversationId);
-      }
-
-      if (
-        resolveChatStreamUnavailableRecoveryAction(effectiveConversationId) ===
-        "refresh-history-snapshot"
-      ) {
-        recoverUnavailableConversationStream(effectiveConversationId, currentApi);
-        return;
-      }
-
-      void reloadHistory(currentApi, {
-        hydrateSelection: true,
-        silent: true,
-        adoptPendingDraftConversation: true,
-      });
-    },
-    [
-      api,
-      clearConversationLiveStream,
-      clearConversationStreamingState,
-      recoverUnavailableConversationStream,
-      reloadHistory,
-    ],
-  );
-
-  const recoverCompletedVisibleConversationFromHistorySnapshot = useCallback(
-    async (targetConversationId: string, currentApi = api) => {
-      const conversationIdValue = targetConversationId.trim();
-      if (!currentApi || !conversationIdValue) {
-        return false;
-      }
-      if (activeEditResendTransactionsRef.current.has(conversationIdValue)) {
-        return false;
-      }
-
-      const isStillVisible = () =>
-        resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) ===
-        conversationIdValue;
-
-      if (!isStillVisible()) {
-        return false;
-      }
-
-      const refreshSeq =
-        (visibleHistorySnapshotRefreshSeqRef.current.get(conversationIdValue) ?? 0) + 1;
-      visibleHistorySnapshotRefreshSeqRef.current.set(conversationIdValue, refreshSeq);
-
-      let detail: HistoryDetail;
-      let entries: ChatEntry[];
-      try {
-        detail = await currentApi.getHistory(conversationIdValue, {
-          maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES,
-        });
-        entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
-      } catch {
-        return false;
-      }
-
-      if (
-        visibleHistorySnapshotRefreshSeqRef.current.get(conversationIdValue) !== refreshSeq ||
-        !isStillVisible()
-      ) {
-        return false;
-      }
-
-      const detailConversationId = detail.conversation_id.trim();
-      if (detailConversationId !== "" && detailConversationId !== conversationIdValue) {
-        return false;
-      }
-
-      const liveStore = liveConversationStreamStoresRef.current.get(conversationIdValue);
-      liveStore?.flush();
-      const liveEntries = liveStore?.getSnapshot().entries ?? [];
-      const currentEntries =
-        conversationIdRef.current.trim() === conversationIdValue &&
-        (selectedHistoryIdRef.current.trim() === "" ||
-          selectedHistoryIdRef.current.trim() === conversationIdValue)
-          ? chatMessagesRef.current
-          : selectedHistoryIdRef.current.trim() === conversationIdValue
-            ? selectedHistoryEntriesRef.current
-            : (conversationRuntimeCacheRef.current.get(conversationIdValue)?.messages ?? []);
-
-      if (
-        !shouldHydrateRestoredConversationSnapshot({
-          currentEntries,
-          historyEntries: entries,
-          liveEntries,
-        })
-      ) {
-        return false;
-      }
-
-      const mergeOptions = { isFullSnapshot: detail.has_more === false };
-      pendingHistoryRefreshAfterLiveCompletionRef.current.delete(conversationIdValue);
-      blockedHistoryHydrationConversationIdsRef.current.delete(conversationIdValue);
-      clearConversationLiveStream(conversationIdValue);
-      clearConversationStreamingState(conversationIdValue);
-      setHistoryDetailLoading(false);
-
-      if (selectedHistoryIdRef.current.trim() === conversationIdValue) {
-        selectedHistoryRef.current = detail;
-        setSelectedHistory(detail);
-        setSelectedHistoryEntries((current) =>
-          mergeHistorySnapshotEntries(current, entries, mergeOptions),
+      if (!isStale()) {
+        const message = asErrorMessage(
+          error,
+          translate("chat.history.openFailed", settings.locale),
         );
+        setSelectedHistory({
+          conversation_id: conversationIdValue,
+          messages_json: message,
+          has_more: false,
+        } satisfies HistoryDetail);
+        setChatError(message);
       }
+      throw error;
+    }
+  }
 
-      updateConversationRuntimeEntry(conversationIdValue, (current) => ({
-        ...current,
-        messages: mergeHistorySnapshotEntries(current.messages, entries, mergeOptions),
-        error: null,
-        toolStatus: null,
-        toolStatusIsCompaction: false,
-        isSending: false,
-      }));
-      pendingDisplayedConversationAutoBottomRef.current = conversationIdValue;
-      return true;
-    },
-    [
-      api,
-      clearConversationLiveStream,
-      clearConversationStreamingState,
-      updateConversationRuntimeEntry,
-    ],
-  );
+  // Phase 2: quiet full hydration at idle, through the id-preserving enrich
+  // path — it never clobbers live-stream transcript entries and it skips
+  // entirely when phase 1 already returned the whole conversation.
+  async function hydrateConversationFull(conversationIdValue: string, _seq: number): Promise<void> {
+    const selected = selectedHistoryRef.current;
+    if (selected?.conversation_id === conversationIdValue && selected.has_more !== true) {
+      return;
+    }
+    await refreshDisplayedConversationHistorySnapshot(conversationIdValue, api, {
+      forceFull: true,
+    });
+  }
+
+  openInitialRef.current = openConversationInitial;
+  hydrateFullRef.current = hydrateConversationFull;
 
   const prepareChatRuntime = useCallback(
     async (
@@ -3296,7 +1563,6 @@ export default function GatewayApp() {
       }
 
       if (!chatRuntimePreparePromiseRef.current) {
-        chatPreflightInFlightRef.current = true;
         chatRuntimePreparePromiseRef.current = currentApi
           .prepareChatRuntime(reason)
           .then((nextStatus) => {
@@ -3311,7 +1577,6 @@ export default function GatewayApp() {
           })
           .finally(() => {
             chatRuntimePreparePromiseRef.current = null;
-            chatPreflightInFlightRef.current = false;
           });
       }
 
@@ -3342,162 +1607,44 @@ export default function GatewayApp() {
     [api],
   );
 
-  const recoverVisibleConversationAfterPageRestore = useCallback(
-    (currentApi = api) => {
-      if (!currentApi) {
-        return;
-      }
+  // List loading, reconnect reconciliation, and the 60s silent reconcile all
+  // live in the sidebar store now (start/refresh/subscribeConnection); the
+  // old mount/online reload effects are gone with reloadHistory.
 
-      if (
-        chatPreflightInFlightRef.current ||
-        chatStartInFlightRef.current ||
-        submitInFlightRef.current
-      ) {
-        return;
-      }
-
-      const visibleConversationId = resolveVisibleConversationId(
-        selectedHistoryIdRef.current,
-        conversationIdRef.current,
-      ).trim();
-      if (!visibleConversationId) {
-        return;
-      }
-
-      const now = Date.now();
-      const lastRefreshAt =
-        restoredPageHistoryRefreshAtRef.current.get(visibleConversationId) ?? 0;
-      if (now - lastRefreshAt < PAGE_RESTORE_HISTORY_REFRESH_THROTTLE_MS) {
-        return;
-      }
-      restoredPageHistoryRefreshAtRef.current.set(visibleConversationId, now);
-
-      if (isLocalDraftConversationId(visibleConversationId)) {
-        void reloadHistory(currentApi, {
-          preferredConversationId: visibleConversationId,
-          hydrateSelection: true,
-          silent: true,
-          adoptPendingDraftConversation: true,
-        });
-        return;
-      }
-
-      const hasLocalRunningState =
-        getConversationAbortController(visibleConversationId) !== null ||
-        localRunningConversationIdsRef.current.has(visibleConversationId) ||
-        blockedHistoryHydrationConversationIdsRef.current.has(visibleConversationId);
-      const hasRetainedLiveStream = hasRetainedConversationLiveStream(visibleConversationId);
-      const isRemoteRunning = remoteRunningConversationIdsRef.current.has(visibleConversationId);
-
-      if (hasLocalRunningState || hasRetainedLiveStream || isRemoteRunning) {
-        void recoverCompletedVisibleConversationFromHistorySnapshot(
-          visibleConversationId,
-          currentApi,
-        ).then((hydrated) => {
-          if (hydrated) {
-            return;
-          }
-          if (remoteRunningConversationIdsRef.current.has(visibleConversationId)) {
-            subscribeVisibleConversationEventStream(visibleConversationId, currentApi);
-          }
-        });
-        return;
-      }
-
-      void refreshVisibleConversationHistorySnapshot(visibleConversationId, currentApi, {
-        allowIdle: true,
-      });
-    },
-    [
-      api,
-      subscribeVisibleConversationEventStream,
-      getConversationAbortController,
-      hasRetainedConversationLiveStream,
-      recoverCompletedVisibleConversationFromHistorySnapshot,
-      refreshVisibleConversationHistorySnapshot,
-      reloadHistory,
-    ],
-  );
-  const recoverVisibleConversationAfterPageRestoreRef = useRef(
-    recoverVisibleConversationAfterPageRestore,
-  );
-
-  useEffect(() => {
-    recoverVisibleConversationAfterPageRestoreRef.current =
-      recoverVisibleConversationAfterPageRestore;
-  }, [recoverVisibleConversationAfterPageRestore]);
-
-  useEffect(() => {
-    if (!api || !status?.online) {
-      return;
-    }
-    if (chatPreflightInFlightRef.current || chatStartInFlightRef.current) {
-      return;
-    }
-
-    const currentConversationId = conversationIdRef.current.trim();
-    const shouldKeepNewConversation =
-      chatMessagesRef.current.length === 0 &&
-      selectedHistoryIdRef.current.trim() === "" &&
-      (currentConversationId === "" || isLocalDraftConversationId(currentConversationId));
-
-    void reloadHistory(api, {
-      skipSelectionSync: shouldKeepNewConversation,
-      hydrateSelection:
-        !shouldKeepNewConversation &&
-        chatMessagesRef.current.length === 0 &&
-        (currentConversationId === "" || isLocalDraftConversationId(currentConversationId)),
-    });
-  }, [api, historyScopeKey, status?.online]);
-
+  // Foreground nudge: waking the page just pings the runtime keep-warm; the
+  // socket's own wakeup/reconnect plus per-conversation subscription resume
+  // replaces the old page-restore recovery machinery.
   useEffect(() => {
     if (!api || historyShareToken || status?.online !== true) {
       return;
     }
 
-    let delayedRestoreTimer: number | null = null;
-    const runRecovery = () => {
+    const nudgeRuntime = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
-      void prepareChatRuntime(
-        "foreground",
-        api,
-        CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS,
-      )
-        .catch(() => undefined)
-        .finally(() => {
-          recoverVisibleConversationAfterPageRestoreRef.current(api);
-          if (delayedRestoreTimer !== null) {
-            window.clearTimeout(delayedRestoreTimer);
-          }
-          delayedRestoreTimer = window.setTimeout(() => {
-            delayedRestoreTimer = null;
-            recoverVisibleConversationAfterPageRestoreRef.current(api);
-          }, PAGE_RESTORE_HISTORY_REFRESH_THROTTLE_MS + 350);
-        });
+      void prepareChatRuntime("foreground", api, CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS).catch(
+        () => undefined,
+      );
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        runRecovery();
+        nudgeRuntime();
       }
     };
 
-    window.addEventListener("pageshow", runRecovery);
-    window.addEventListener("focus", runRecovery);
+    window.addEventListener("pageshow", nudgeRuntime);
+    window.addEventListener("focus", nudgeRuntime);
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    document.addEventListener("resume", runRecovery);
-    runRecovery();
+    document.addEventListener("resume", nudgeRuntime);
+    nudgeRuntime();
 
     return () => {
-      if (delayedRestoreTimer !== null) {
-        window.clearTimeout(delayedRestoreTimer);
-      }
-      window.removeEventListener("pageshow", runRecovery);
-      window.removeEventListener("focus", runRecovery);
+      window.removeEventListener("pageshow", nudgeRuntime);
+      window.removeEventListener("focus", nudgeRuntime);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      document.removeEventListener("resume", runRecovery);
+      document.removeEventListener("resume", nudgeRuntime);
     };
   }, [api, historyShareToken, prepareChatRuntime, status?.online]);
 
@@ -3507,17 +1654,12 @@ export default function GatewayApp() {
     }
 
     const keepWarm = () => {
-      if (
-        typeof document !== "undefined" &&
-        document.visibilityState === "hidden"
-      ) {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
-      void prepareChatRuntime(
-        "keep-warm",
-        api,
-        CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS,
-      ).catch(() => undefined);
+      void prepareChatRuntime("keep-warm", api, CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS).catch(
+        () => undefined,
+      );
     };
 
     keepWarm();
@@ -3527,9 +1669,15 @@ export default function GatewayApp() {
     };
   }, [api, historyShareToken, prepareChatRuntime, status?.online]);
 
-  async function sendChat(message: string, options?: SendChatOptions) {
-    if (!api || chatBusyRef.current) {
-      return;
+  // Lean submission flow: optimistic echo + chat.command through the pipeline.
+  // Everything after run start flows through the persistent conversation
+  // stream subscription — sendChat does not consume stream events at all.
+  async function sendChat(
+    message: string,
+    options?: SendChatOptions,
+  ): Promise<ChatCommandOutcome | null> {
+    if (!api) {
+      return null;
     }
 
     const uploadedFiles = options?.uploadedFiles ?? [];
@@ -3542,41 +1690,18 @@ export default function GatewayApp() {
       setSelectedHistoryId(activeConversationId);
     }
     const startedAsDraftConversation = isLocalDraftConversationId(activeConversationId);
-    const pendingDraftConversationId =
-      pendingDraftConversationMigrationRef.current?.draftConversationId.trim() ?? "";
-    if (pendingDraftConversationId && pendingDraftConversationId !== activeConversationId) {
-      const message = "上一条新会话仍在创建，请等待它出现在历史记录后再发送新会话。";
-      updateConversationRuntimeEntry(activeConversationId, (current) => ({
-        ...current,
-        error: message,
-      }));
-      return;
-    }
-    if (
-      chatStartLocksRef.current.has(activeConversationId) ||
-      getConversationAbortController(activeConversationId) !== null ||
-      localRunningConversationIdsRef.current.has(activeConversationId)
-    ) {
-      return;
+    if (chatCommandPipeline.hasPending(activeConversationId)) {
+      // One in-flight submission per conversation; the composer routes busy
+      // conversations to the GUI queue instead.
+      return null;
     }
     clearCachedComposerDraft(activeConversationId);
-    const lockedConversationIds = new Set<string>([activeConversationId]);
-    chatStartLocksRef.current.add(activeConversationId);
 
-    commitConversationLiveStreamToRuntime(activeConversationId, {
-      clearLiveStream: true,
-    });
-    getConversationLiveStreamStore(activeConversationId);
-    const controller = new AbortController();
-    setConversationAbortController(activeConversationId, controller);
-    const clientRequestId =
-      options?.clientRequestId?.trim() ||
-      `webui-chat-${activeConversationId}-${crypto.randomUUID()}`;
+    const clientRequestId = options?.clientRequestId?.trim() || crypto.randomUUID();
     const startedAt = Date.now();
-    const persistedConversationWorkdir =
-      pickConversationSummary(historyItemsRef.current, activeConversationId)?.cwd?.trim() || "";
+    const persistedConversationWorkdir = sidebarStore.peek(activeConversationId)?.cwd?.trim() || "";
     const runtimeConversationWorkdir =
-      conversationRuntimeCacheRef.current.get(activeConversationId)?.workdir?.trim() || "";
+      conversationWorkdirsRef.current.get(activeConversationId)?.trim() || "";
     const effectiveWorkdir = isAgentMode
       ? options?.workdir?.trim() ||
         persistedConversationWorkdir ||
@@ -3584,150 +1709,36 @@ export default function GatewayApp() {
         activeWorkspaceProjectPath ||
         settings.system.workdir.trim()
       : "";
-    const optimisticDraftTitle = buildOptimisticConversationTitle(message);
-    draftConversationPinnedRef.current = false;
-    pendingDraftConversationMigrationRef.current = startedAsDraftConversation
-      ? {
-          draftConversationId: activeConversationId,
-          startedAt,
-        }
-      : null;
+    if (effectiveWorkdir) {
+      conversationWorkdirsRef.current.set(activeConversationId, effectiveWorkdir);
+    }
     protectedConversationRef.current = activeConversationId;
-    blockedHistoryHydrationConversationIdsRef.current.add(activeConversationId);
-    if (
-      resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) ===
-      activeConversationId
-    ) {
+    setChatError(null);
+    if (isDisplayedConversation(activeConversationId)) {
       stickTranscriptToBottom();
     }
-    const optimisticUserEntryId =
-      options?.optimisticUserEntryId?.trim() || `user-${crypto.randomUUID()}`;
-    const shouldAppendOptimisticUserEntry = options?.skipOptimisticUserEntry !== true;
-    updateConversationRuntimeEntry(activeConversationId, (current) => ({
-      ...current,
-      error: null,
-      toolStatus: null,
-      toolStatusIsCompaction: false,
-      isSending: true,
-      workdir: effectiveWorkdir || undefined,
-      messages: shouldAppendOptimisticUserEntry
-        ? [
-            ...current.messages,
-            {
-              id: optimisticUserEntryId,
-              kind: "user",
-              text: message,
-              attachments: uploadedFiles,
-            },
-          ]
-        : current.messages,
-    }));
     if (startedAsDraftConversation) {
-      optimisticTitleConversationIdsRef.current.add(activeConversationId);
-      updateHistoryItems((current) =>
-        upsertConversationSummary(
-          current,
-          {
-            id: activeConversationId,
-            title: optimisticDraftTitle,
-            created_at: startedAt,
-            updated_at: startedAt,
-            message_count: 1,
-            provider_id: settings.selectedModel?.customProviderId ?? "gateway",
-            model: settings.selectedModel?.model ?? "gateway",
-            cwd: effectiveWorkdir || undefined,
-          },
-          { preserveExistingTitle: true },
-        ),
-      );
+      draftClientRequestsRef.current.set(clientRequestId, activeConversationId);
+      // Optimistic pending sidebar row: survives authoritative reconciles
+      // until a server upsert (post-bind) confirms the conversation.
+      sidebarStore.upsertLocal({
+        id: activeConversationId,
+        title: buildOptimisticConversationTitle(message),
+        providerId: settings.selectedModel?.customProviderId ?? "",
+        model: settings.selectedModel?.model ?? "",
+        cwd: effectiveWorkdir || undefined,
+        messageCount: 1,
+        createdAt: startedAt,
+        updatedAt: startedAt,
+        isPending: true,
+      });
     }
 
-    let terminalEventSeen = false;
-    let runActive = false;
-    let runtimeStarted = false;
-    let activeGatewayRunId = "";
-    const preserveRemoteRunCleanupOptions = () => ({
-      remoteRunId: activeGatewayRunId,
-      preserveRemoteRunOnMismatch: true,
-    });
-    let runtimeStartingStatusTimer: number | null = null;
-    const clearRuntimeStartingStatusTimer = () => {
-      if (runtimeStartingStatusTimer === null) {
-        return;
-      }
-      window.clearTimeout(runtimeStartingStatusTimer);
-      runtimeStartingStatusTimer = null;
-    };
-    const clearRuntimeStartingStatus = () => {
-      updateConversationRuntimeEntry(activeConversationId, (current) => {
-        if (current.toolStatus !== CHAT_RUNTIME_STARTING_STATUS) {
-          return current;
-        }
-        return {
-          ...current,
-          toolStatus: null,
-          toolStatusIsCompaction: false,
-        };
-      });
-    };
-    const shouldShowRuntimeStartingStatus = () =>
-      !isChatRuntimeReadyStatus(statusRef.current);
-    const scheduleRuntimeStartingStatusTimer = () => {
-      clearRuntimeStartingStatusTimer();
-      if (!shouldShowRuntimeStartingStatus()) {
-        return;
-      }
-      runtimeStartingStatusTimer = window.setTimeout(() => {
-        runtimeStartingStatusTimer = null;
-        if (
-          runtimeStarted ||
-          terminalEventSeen ||
-          controller.signal.aborted ||
-          !shouldShowRuntimeStartingStatus()
-        ) {
-          return;
-        }
-        updateConversationRuntimeEntry(activeConversationId, (current) => {
-          if (!current.isSending || current.toolStatus) {
-            return current;
-          }
-          return {
-            ...current,
-            toolStatus: CHAT_RUNTIME_STARTING_STATUS,
-            toolStatusIsCompaction: false,
-          };
-        });
-      }, CHAT_RUNTIME_STARTING_STATUS_DELAY_MS);
-    };
-    const markRunActive = () => {
-      if (runActive) {
-        return;
-      }
-      runActive = true;
-      setConversationRunningState(activeConversationId, true);
-    };
-    const markRuntimeStarted = () => {
-      if (runtimeStarted) {
-        return;
-      }
-      runtimeStarted = true;
-      clearRuntimeStartingStatusTimer();
-      markRunActive();
-      clearRuntimeStartingStatus();
-    };
-    const markRunPreparing = () => {
-      markRunActive();
-      updateConversationRuntimeEntry(activeConversationId, (current) => {
-        if (!current.isSending || current.toolStatus) {
-          return current;
-        }
-        return {
-          ...current,
-          toolStatus: CHAT_RUNTIME_PREPARING_STATUS,
-          toolStatusIsCompaction: false,
-        };
-      });
-    };
+    // Keep-warm preflight: the command request itself is the reliable wake-up
+    // signal for a suspended desktop WebView; the status refresh stays in the
+    // background so a stale heartbeat cannot block it.
+    void prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS).catch(() => undefined);
+
     const runtimeControls = normalizeChatRuntimeControlsForProvider(
       options?.runtimeControls ?? settings.chatRuntimeControls,
       {
@@ -3735,231 +1746,52 @@ export default function GatewayApp() {
         requestFormat: currentChatProvider?.requestFormat,
       },
     );
-    try {
-      chatStartInFlightRef.current = true;
-      scheduleRuntimeStartingStatusTimer();
-      // The command request is itself the reliable wake-up signal for a suspended
-      // desktop WebView. Keep the status refresh in the background so a stale
-      // runtime heartbeat cannot block the request that would wake it.
-      void prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS)
-        .then((nextStatus) => {
-          statusRef.current = nextStatus;
-          if (isChatRuntimeReadyStatus(nextStatus)) {
-            clearRuntimeStartingStatusTimer();
-            clearRuntimeStartingStatus();
-          }
-        })
-        .catch(() => undefined);
-      const gatewaySelectedModel = buildGatewaySelectedModel(settings.selectedModel, activeProviders);
-      const gatewaySystemSettings = buildGatewaySystemSettings(settings, effectiveWorkdir);
-      const targetConversationId = isLocalDraftConversationId(activeConversationId)
-        ? undefined
-        : activeConversationId;
-      const chatStream = api.commandChat({
-        type: options?.editMessageRef ? "chat.edit_resend" : "chat.submit",
-        message,
-        conversationId: targetConversationId,
-        selectedModel: gatewaySelectedModel,
-        systemSettings: gatewaySystemSettings,
-        signal: controller.signal,
-        uploadedFiles,
-        clientRequestId,
-        runtimeControls,
-        baseMessageRef: options?.editMessageRef,
-        queuePolicy: options?.queuePolicy ?? "auto",
-      });
-      for await (const event of chatStream) {
-        const eventRunId = readGatewayChatEventRunId(event);
-        if (eventRunId) {
-          activeGatewayRunId = eventRunId;
-        }
-        if (event.conversation_id && event.conversation_id !== "") {
-          const nextConversationId = event.conversation_id.trim();
-          if (nextConversationId !== activeConversationId) {
-            const previousConversationId = activeConversationId;
-            if (
-              pendingDraftConversationMigrationRef.current?.draftConversationId ===
-              previousConversationId
-            ) {
-              pendingDraftConversationMigrationRef.current = null;
-            }
-            migrateConversationRuntime(previousConversationId, nextConversationId);
-            migrateConversationSummary(previousConversationId, nextConversationId);
-            activeConversationId = nextConversationId;
-            lockedConversationIds.add(activeConversationId);
-            if (runActive) {
-              setConversationRunningState(previousConversationId, false);
-              setConversationRunningState(activeConversationId, true);
-            }
-          }
-          const summary = pickConversationSummary(historyItemsRef.current, activeConversationId);
-          if (!summary && startedAsDraftConversation) {
-            optimisticTitleConversationIdsRef.current.add(activeConversationId);
-            updateHistoryItems((current) => {
-              const existing = pickConversationSummary(current, activeConversationId);
-              if (existing) {
-                return current;
-              }
-              return upsertConversationSummary(
-                current,
-                {
-                  id: activeConversationId,
-                  title: optimisticDraftTitle,
-                  created_at: startedAt,
-                  updated_at: startedAt,
-                  message_count: 1,
-                  cwd: effectiveWorkdir || undefined,
-                },
-                { preserveExistingTitle: true },
-              );
-            });
-          }
-        }
-        if (isChatControlEvent(event)) {
-          if (event.type === "queued_in_gui" || event.state === "desktop_queued") {
-            terminalEventSeen = true;
-            clearRuntimeStartingStatusTimer();
-            clearConversationStreamingState(
-              activeConversationId,
-              preserveRemoteRunCleanupOptions(),
-            );
-            updateConversationRuntimeEntry(activeConversationId, (current) => ({
-              ...current,
-              messages: current.messages.filter((entry) => entry.id !== optimisticUserEntryId),
-              error: null,
-              toolStatus: null,
-              toolStatusIsCompaction: false,
-              isSending: false,
-            }));
-            const queueConversationId = event.conversation_id?.trim() || activeConversationId;
-            void api
-              .chatQueueGet(queueConversationId)
-              .then((response) => applyChatQueueSnapshot(response.snapshot))
-              .catch(() => undefined);
-            return;
-          }
-          if (event.type === "user_message") {
-            markRunPreparing();
-            getConversationLiveStreamStore(activeConversationId)?.appendEvent(event, {
-              flush: true,
-            });
-            markLiveConversationStreamActive(activeConversationId);
-            continue;
-          }
-          if (isTerminalChatControlEvent(event)) {
-            terminalEventSeen = true;
-            clearRuntimeStartingStatusTimer();
-            clearConversationStreamingState(
-              activeConversationId,
-              preserveRemoteRunCleanupOptions(),
-            );
-            if (event.type === "failed" || event.state === "failed") {
-              getConversationLiveStreamStore(activeConversationId)?.appendEvent(event, {
-                flush: true,
-              });
-            }
-            markCompletedLiveStream(activeConversationId);
-            commitTerminalConversationLiveStream(activeConversationId);
-            refreshHistoryAfterCompletedLiveStream(activeConversationId, api);
-          } else if (isRuntimeStartedChatControlEvent(event)) {
-            markRuntimeStarted();
-            updateConversationRuntimeEntry(activeConversationId, (current) => ({
-              ...current,
-              toolStatus: VIBING_STATUS,
-              toolStatusIsCompaction: false,
-            }));
-          } else if (isPreparingChatControlEvent(event)) {
-            markRunPreparing();
-          }
-          continue;
-        }
-        markRuntimeStarted();
-        if (isChatStreamNotAvailableEvent(event)) {
-          terminalEventSeen = true;
-          recoverUnavailableActiveConversationStream(activeConversationId, api);
-          return;
-        }
-        if (event.type === "tool_status") {
-          const normalizedStatus = normalizeOptionalStatus(event.status);
-          const isCompaction = normalizedStatus !== null && event.isCompaction === true;
-          getConversationLiveStreamStore(activeConversationId)?.setToolStatus(
-            normalizedStatus,
-            isCompaction,
-          );
-          setLiveConversationStreamStatus(activeConversationId, normalizedStatus, isCompaction);
-          updateConversationRuntimeEntry(activeConversationId, (current) => ({
-            ...current,
-            toolStatus: normalizedStatus,
-            toolStatusIsCompaction: isCompaction,
-          }));
-        } else {
-          const terminalEvent = isTerminalChatEvent(event);
-          getConversationLiveStreamStore(activeConversationId)?.appendEvent(event, {
-            flush: terminalEvent,
-          });
-          handleTunnelManagerChatEvent(event);
-          if (terminalEvent) {
-            terminalEventSeen = true;
-            clearRuntimeStartingStatusTimer();
-            clearConversationStreamingState(
-              activeConversationId,
-              preserveRemoteRunCleanupOptions(),
-            );
-            markCompletedLiveStream(activeConversationId);
-            commitTerminalConversationLiveStream(activeConversationId);
-            refreshHistoryAfterCompletedLiveStream(activeConversationId, api);
-          } else {
-            markLiveConversationStreamActive(activeConversationId);
-          }
-        }
-        const liveTitle = readChatEventTitle(event);
-        if (liveTitle && isChatEventTitleFinal(event)) {
-          applyLiveConversationTitle(
-            event.conversation_id?.trim() || activeConversationId,
-            liveTitle,
-            { isFinal: true },
-          );
-        }
-      }
-    } catch (error) {
-      if (!isAbortError(error)) {
-        const message = asErrorMessage(error, "chat request failed");
-        if (isChatStreamNotAvailableMessage(message)) {
-          terminalEventSeen = true;
-          recoverUnavailableActiveConversationStream(activeConversationId, api);
-        } else {
-          updateConversationRuntimeEntry(activeConversationId, (current) => ({
-            ...current,
-            error: message,
-          }));
-        }
-      }
-    } finally {
-      clearRuntimeStartingStatusTimer();
-      chatStartInFlightRef.current = false;
-      clearConversationStreamingState(activeConversationId, preserveRemoteRunCleanupOptions());
-      if (remoteRunningConversationIdsRef.current.has(activeConversationId)) {
-        subscribeVisibleConversationEventStream(activeConversationId, api);
-      }
-      if (status?.online && !terminalEventSeen) {
-        await reloadHistory(api, {
-          preferredConversationId: activeConversationId,
-          skipSelectionSync: true,
-          silent: true,
+    const commandInput: GatewayChatCommandInput = {
+      type: options?.editMessageRef ? "chat.edit_resend" : "chat.submit",
+      message,
+      conversationId: startedAsDraftConversation ? undefined : activeConversationId,
+      selectedModel: buildGatewaySelectedModel(settings.selectedModel, activeProviders),
+      systemSettings: buildGatewaySystemSettings(settings, effectiveWorkdir),
+      uploadedFiles,
+      clientRequestId,
+      runtimeControls,
+      baseMessageRef: options?.editMessageRef,
+      queuePolicy: options?.queuePolicy ?? "auto",
+    };
+
+    const outcome = await chatCommandPipeline.submit({
+      conversationId: activeConversationId,
+      clientRequestId,
+      message,
+      attachments: uploadedFiles,
+      isEditResend: Boolean(options?.editMessageRef),
+      optimistic: options?.optimisticEcho !== false,
+      submit: () => api.chatCommand(commandInput),
+    });
+
+    if (outcome.kind === "accepted") {
+      const acceptedConversationId = outcome.accepted.conversationId.trim();
+      if (
+        startedAsDraftConversation &&
+        acceptedConversationId &&
+        acceptedConversationId !== activeConversationId &&
+        !isLocalDraftConversationId(acceptedConversationId)
+      ) {
+        // The accept response already carries the real conversation id; run
+        // the same binding path a `command_update bound` would take.
+        chatCommandPipeline.handleCommandUpdate({
+          runId: outcome.accepted.runId,
+          clientRequestId,
+          conversationId: acceptedConversationId,
+          phase: "bound",
+          errorCode: null,
+          message: null,
         });
       }
-      if (!options?.editMessageRef) {
-        blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
-      }
-      if (
-        pendingDraftConversationMigrationRef.current?.draftConversationId === activeConversationId
-      ) {
-        pendingDraftConversationMigrationRef.current = null;
-      }
-      for (const conversationIdValue of lockedConversationIds) {
-        chatStartLocksRef.current.delete(conversationIdValue);
-      }
+    } else if (outcome.kind === "failed") {
+      draftClientRequestsRef.current.delete(clientRequestId);
     }
+    return outcome;
   }
 
   // Edit-resend is memoized across settings sync; always call the latest sender
@@ -3967,57 +1799,23 @@ export default function GatewayApp() {
   sendChatRef.current = sendChat;
 
   async function cancelChat(targetConversationId?: string) {
-    const activeConversationId = targetConversationId?.trim() || conversationIdRef.current.trim();
-    if (!activeConversationId) {
+    const activeConversationId = targetConversationId?.trim() || getDisplayedConversationId();
+    if (!api || !activeConversationId || isLocalDraftConversationId(activeConversationId)) {
       return;
     }
-    const controller = getConversationAbortController(activeConversationId);
-    const cancelRunId =
-      conversationEventStreamRunIdsRef.current.get(activeConversationId) ??
-      remoteRunningConversationRuntimeRef.current.get(activeConversationId)?.runId ??
-      "";
-    const isVisibleConversation =
-      resolveVisibleConversationId(selectedHistoryIdRef.current, conversationIdRef.current) ===
-      activeConversationId;
-    const shouldKeepBottom = isVisibleConversation && isTranscriptAtBottom();
-    const cancelRequest =
-      !controller &&
-      api &&
-      activeConversationId !== "" &&
-      !isLocalDraftConversationId(activeConversationId)
-        ? api.cancelChat(activeConversationId, cancelRunId).catch((error) => {
-            if (!isAbortError(error)) {
-              updateConversationRuntimeEntry(activeConversationId, (current) => ({
-                ...current,
-                error: asErrorMessage(error, "cancel chat request failed"),
-              }));
-            }
-          })
-        : null;
-    controller?.abort();
-    stopConversationEventStreamSubscription(activeConversationId);
-    if (isVisibleConversation) {
-      preserveTranscriptScrollPosition(
-        () => {
-          flushSync(() => {
-            commitConversationLiveStreamToRuntime(activeConversationId, {
-              clearLiveStream: false,
-            });
-            clearConversationStreamingState(activeConversationId);
-          });
-        },
-        { stickToBottom: shouldKeepBottom },
-      );
-      if (shouldKeepBottom) {
-        stickTranscriptToBottom();
-      } else {
-        refreshTranscriptScrollState();
+    // No local terminal marking: the stream's run_finished settles the UI
+    // (cancelling state shows until the agent confirms or the gateway
+    // watchdog forces the terminal event).
+    const runId =
+      transcriptStoreRegistry.peek(activeConversationId)?.getSnapshot().activeRun?.runId ??
+      activityStore.get(activeConversationId)?.runId ??
+      undefined;
+    try {
+      await api.cancelChat(activeConversationId, runId);
+    } catch (error) {
+      if (!isAbortError(error)) {
+        setChatError(asErrorMessage(error, "cancel chat request failed"));
       }
-    } else {
-      clearConversationStreamingState(activeConversationId);
-    }
-    if (cancelRequest) {
-      await cancelRequest;
     }
   }
 
@@ -4073,49 +1871,74 @@ export default function GatewayApp() {
       return false;
     }
 
-    const cachedRuntime = conversationRuntimeCacheRef.current.get(conversationIdValue);
     const workdirForTurn = (
-      cachedRuntime?.workdir ??
+      conversationWorkdirsRef.current.get(conversationIdValue) ??
       displayedConversationWorkdirRef.current ??
       activeWorkspaceProjectPath ??
       settings.system.workdir
     ).trim();
     try {
-      const materialized = await materializeComposerDraftForSend(draft, uploadedFiles, workdirForTurn);
+      const materialized = await materializeComposerDraftForSend(
+        draft,
+        uploadedFiles,
+        workdirForTurn,
+      );
       if (!materialized.text && materialized.uploadedFiles.length === 0) {
         return false;
       }
       clearCurrentComposerDraftForQueuedTurn(conversationIdValue);
       clearedComposer = true;
-      const gatewaySelectedModel = buildGatewaySelectedModel(settings.selectedModel, activeProviders);
-      const gatewaySystemSettings = buildGatewaySystemSettings(settings, workdirForTurn);
-      const stream = api.commandChat({
-        type: "chat.submit",
-        message: materialized.text,
-        conversationId: isLocalDraftConversationId(conversationIdValue)
-          ? undefined
-          : conversationIdValue,
-        selectedModel: gatewaySelectedModel,
-        systemSettings: gatewaySystemSettings,
+      if (chatCommandPipeline.hasPending(conversationIdValue)) {
+        // A command is already in flight for this conversation: park this one
+        // straight into the GUI queue. The pipeline slot (pre-first-token
+        // spinner + watchdog) belongs to the first command; the queue panel
+        // updates via command_update/run_queued and chat_queue events.
+        await api.chatCommand({
+          type: "chat.submit",
+          message: materialized.text,
+          conversationId: isLocalDraftConversationId(conversationIdValue)
+            ? undefined
+            : conversationIdValue,
+          selectedModel: buildGatewaySelectedModel(settings.selectedModel, activeProviders),
+          systemSettings: buildGatewaySystemSettings(settings, workdirForTurn),
+          uploadedFiles: materialized.uploadedFiles,
+          clientRequestId: crypto.randomUUID(),
+          runtimeControls: chatRuntimeControlsForCurrentProvider,
+          queuePolicy,
+        });
+        refreshChatQueueSnapshot(conversationIdValue);
+        return true;
+      }
+      // Same pipeline path as a normal send, minus the optimistic transcript
+      // echo — the prompt is queue-destined and must not flash a bubble.
+      // `command_update queued_in_gui` (or the stream's run_queued event)
+      // refreshes the queue snapshot; a direct start settles through
+      // run_started (whose deferred seeds then render the user message).
+      const outcome = await sendChat(materialized.text, {
+        conversationId: conversationIdValue,
         uploadedFiles: materialized.uploadedFiles,
         runtimeControls: chatRuntimeControlsForCurrentProvider,
+        workdir: workdirForTurn,
         queuePolicy,
+        optimisticEcho: false,
       });
-      for await (const event of stream) {
-        if (event.type === "queued_in_gui" || ("state" in event && event.state === "desktop_queued")) {
-          const queueConversationId = event.conversation_id?.trim() || conversationIdValue;
-          void api
-            .chatQueueGet(queueConversationId)
-            .then((response) => applyChatQueueSnapshot(response.snapshot))
-            .catch(() => undefined);
-          return true;
+      if (!outcome) {
+        // Benign no-op (client not ready): restore the composer without
+        // surfacing an error.
+        if (getDisplayedConversationId() === conversationIdValue) {
+          if (!composerRef.current?.hasContent()) {
+            composerRef.current?.setDraft(draft);
+          }
+          if (
+            (pendingUploadsByConversationRef.current.get(conversationIdValue) ?? []).length === 0
+          ) {
+            setPendingUploadsForConversation(conversationIdValue, uploadedFiles);
+          }
         }
-        if (event.type === "failed" || event.type === "error") {
-          throw new Error("message" in event && typeof event.message === "string" ? event.message : "queue request failed");
-        }
-        if (event.type === "started" || ("state" in event && event.state === "running")) {
-          return true;
-        }
+        return false;
+      }
+      if (outcome.kind === "failed") {
+        throw new Error(outcome.message);
       }
       return true;
     } catch (error) {
@@ -4127,10 +1950,7 @@ export default function GatewayApp() {
           setPendingUploadsForConversation(conversationIdValue, uploadedFiles);
         }
       }
-      updateConversationRuntimeEntry(conversationIdValue, (current) => ({
-        ...current,
-        error: asErrorMessage(error, "queued chat request failed"),
-      }));
+      reportChatQueueActionError(conversationIdValue, error, "queued chat request failed");
       return false;
     }
   }
@@ -4153,10 +1973,11 @@ export default function GatewayApp() {
         uploadedFilesJson: JSON.stringify(uploadedFiles),
       });
       if (!response.accepted) {
-        updateConversationRuntimeEntry(conversationIdValue, (current) => ({
-          ...current,
-          error: response.message || "queued edit failed",
-        }));
+        reportChatQueueActionError(
+          conversationIdValue,
+          response.message || "queued edit failed",
+          "queued edit failed",
+        );
         return false;
       }
       queuedChatEditSessionRef.current = null;
@@ -4166,25 +1987,17 @@ export default function GatewayApp() {
       applyChatQueueSnapshot(response.snapshot);
       return true;
     } catch (error) {
-      updateConversationRuntimeEntry(conversationIdValue, (current) => ({
-        ...current,
-        error: asErrorMessage(error, "queued edit failed"),
-      }));
+      reportChatQueueActionError(conversationIdValue, error, "queued edit failed");
       return false;
     }
   }
 
-  function reportChatQueueActionError(
-    conversationId: string,
-    error: unknown,
-    fallback: string,
-  ) {
+  function reportChatQueueActionError(conversationId: string, error: unknown, fallback: string) {
     const key = conversationId.trim();
     if (!key) return;
-    updateConversationRuntimeEntry(key, (current) => ({
-      ...current,
-      error: asErrorMessage(error, fallback),
-    }));
+    if (isDisplayedConversation(key)) {
+      setChatError(asErrorMessage(error, fallback));
+    }
   }
 
   function runQueuedTurnNow(id: string) {
@@ -4241,17 +2054,16 @@ export default function GatewayApp() {
       try {
         if (!response.accepted || !response.item) {
           if (!response.accepted) {
-            updateConversationRuntimeEntry(conversationIdValue, (current) => ({
-              ...current,
-              error: response.message || "queued edit failed",
-            }));
+            reportChatQueueActionError(
+              conversationIdValue,
+              response.message || "queued edit failed",
+              "queued edit failed",
+            );
           }
           return;
         }
         const draft = JSON.parse(response.item.draftJson) as MentionComposerDraft;
-        const uploadedFiles = JSON.parse(
-          response.item.uploadedFilesJson,
-        ) as PendingUploadedFile[];
+        const uploadedFiles = JSON.parse(response.item.uploadedFilesJson) as PendingUploadedFile[];
         queuedChatEditSessionRef.current = {
           itemId: response.item.id,
           revision: response.snapshot?.revision ?? chatQueueRevisionRef.current,
@@ -4288,38 +2100,26 @@ export default function GatewayApp() {
   function startNewConversation(options?: { workdir?: string }) {
     const currentConversationId = conversationIdRef.current.trim();
     if (currentConversationId) {
-      cacheVisibleConversationRuntime(currentConversationId);
-      optimisticTitleConversationIdsRef.current.delete(currentConversationId);
-      stopConversationEventStreamSubscription(currentConversationId);
+      transcriptStoreRegistry.peek(currentConversationId)?.foldSettledTurns();
       clearCachedComposerDraft(currentConversationId);
     }
     invalidateHistoryLoad();
     markVisibleConversationRevision();
-    setHistorySwitchOverlay(null);
-    setHistoryDetailLoading(false);
+    openController.cancel();
     const nextConversationId = createLocalDraftConversationId();
-    draftConversationPinnedRef.current = true;
     protectedConversationRef.current = PROTECTED_DRAFT_CONVERSATION;
-    chatStartLocksRef.current.clear();
     submitInFlightRef.current = false;
-    const pendingDraftConversationId =
-      pendingDraftConversationMigrationRef.current?.draftConversationId.trim() ?? "";
-    const pendingDraftStillActive =
-      pendingDraftConversationId !== "" &&
-      (localRunningConversationIdsRef.current.has(pendingDraftConversationId) ||
-        getConversationAbortController(pendingDraftConversationId) !== null ||
-        blockedHistoryHydrationConversationIdsRef.current.has(pendingDraftConversationId));
-    if (!pendingDraftStillActive) {
-      pendingDraftConversationMigrationRef.current = null;
-    }
     composerRef.current?.clear();
-    const nextRuntime = createConversationRuntimeEntry({
-      workdir: options?.workdir?.trim() || undefined,
-    });
-    conversationRuntimeCacheRef.current.set(nextConversationId, nextRuntime);
-    syncVisibleConversationRuntime(nextConversationId, nextRuntime);
+    const nextWorkdir = options?.workdir?.trim() || "";
+    if (nextWorkdir) {
+      conversationWorkdirsRef.current.set(nextConversationId, nextWorkdir);
+    }
+    conversationIdRef.current = nextConversationId;
+    selectedHistoryIdRef.current = nextConversationId;
+    setConversationId(nextConversationId);
+    setSelectedHistoryId(nextConversationId);
+    setChatError(null);
     setSelectedHistory(null);
-    setSelectedHistoryEntries([]);
     setPendingUploadsForConversation(nextConversationId, []);
   }
 
@@ -4379,7 +2179,7 @@ export default function GatewayApp() {
       void (async () => {
         const currentApi = api;
         if (!currentApi) {
-          setHistoryError("Gateway 未连接，暂时不能删除项目会话。");
+          setSidebarActionError("Gateway 未连接，暂时不能删除项目会话。");
           return;
         }
 
@@ -4388,21 +2188,12 @@ export default function GatewayApp() {
         const runningMessage = "项目中仍有后台任务运行，暂时不能删除该项目。";
         const projectHasRunningConversation = () => {
           if (!pathKey) return false;
-          const runningIds = new Set<string>();
-          for (const id of localRunningConversationIdsRef.current) {
-            const conversationId = id.trim();
-            if (conversationId) runningIds.add(conversationId);
-          }
-          for (const id of remoteRunningConversationIdsRef.current) {
-            const conversationId = id.trim();
-            if (conversationId) runningIds.add(conversationId);
-          }
-
-          for (const conversationId of runningIds) {
+          for (const [conversationId, activity] of activityStore.getSnapshot().activities) {
             const runtimeWorkdir =
-              conversationRuntimeCacheRef.current.get(conversationId)?.workdir?.trim() || "";
-            const persistedWorkdir =
-              historyItemsRef.current.find((item) => item.id === conversationId)?.cwd?.trim() || "";
+              activity.workdir?.trim() ||
+              conversationWorkdirsRef.current.get(conversationId)?.trim() ||
+              "";
+            const persistedWorkdir = sidebarStore.peek(conversationId)?.cwd?.trim() || "";
             if (workspaceProjectPathKey(runtimeWorkdir || persistedWorkdir) === pathKey) {
               return true;
             }
@@ -4411,12 +2202,11 @@ export default function GatewayApp() {
         };
 
         if (projectHasRunningConversation()) {
-          setHistoryError(runningMessage);
+          setSidebarActionError(runningMessage);
           return;
         }
 
-        setHistoryError(null);
-        setHistoryMutating(true);
+        setSidebarActionError(null);
         try {
           const conversationIds: string[] = [];
           const seenConversationIds = new Set<string>();
@@ -4444,13 +2234,11 @@ export default function GatewayApp() {
             }
           }
 
-          const runningConversationIdsInProject = conversationIds.filter(
-            (id) =>
-              localRunningConversationIdsRef.current.has(id) ||
-              remoteRunningConversationIdsRef.current.has(id),
+          const runningConversationIdsInProject = conversationIds.filter((id) =>
+            isConversationBusy(id),
           );
           if (runningConversationIdsInProject.length > 0 || projectHasRunningConversation()) {
-            setHistoryError(runningMessage);
+            setSidebarActionError(runningMessage);
             return;
           }
 
@@ -4513,11 +2301,9 @@ export default function GatewayApp() {
             conversationIdRef.current,
           );
           const visibleRuntimeWorkdir =
-            conversationRuntimeCacheRef.current.get(visibleConversationId)?.workdir?.trim() || "";
+            conversationWorkdirsRef.current.get(visibleConversationId)?.trim() || "";
           const visiblePersistedWorkdir =
-            historyItemsRef.current
-              .find((item) => item.id === visibleConversationId)
-              ?.cwd?.trim() || "";
+            sidebarStore.peek(visibleConversationId)?.cwd?.trim() || "";
           const visibleWorkdir =
             visiblePersistedWorkdir ||
             visibleRuntimeWorkdir ||
@@ -4529,9 +2315,6 @@ export default function GatewayApp() {
 
           const deletedConversationIds = new Set(conversationIds);
           if (deletedConversationIds.size > 0) {
-            updateHistoryItems((current) =>
-              current.filter((item) => !deletedConversationIds.has(item.id)),
-            );
             const nextSharedItems = sharedHistoryItemsRef.current.filter(
               (item) => !deletedConversationIds.has(item.id),
             );
@@ -4539,12 +2322,10 @@ export default function GatewayApp() {
             setSharedHistoryItems(nextSharedItems);
 
             for (const conversationId of deletedConversationIds) {
-              optimisticTitleConversationIdsRef.current.delete(conversationId);
-              unlockHistoryTitlePosition(conversationId);
-              conversationRuntimeCacheRef.current.delete(conversationId);
-              conversationAbortControllersRef.current.delete(conversationId);
-              blockedHistoryHydrationConversationIdsRef.current.delete(conversationId);
-              clearConversationLiveStream(conversationId);
+              // Immediate local echo; the gateway delete events confirm.
+              sidebarStore.removeLocal(conversationId);
+              transcriptStoreRegistry.remove(conversationId);
+              conversationWorkdirsRef.current.delete(conversationId);
               clearCachedComposerDraft(conversationId);
               pendingUploadsByConversationRef.current.delete(conversationId);
             }
@@ -4572,36 +2353,38 @@ export default function GatewayApp() {
             });
           }
           removeWorkspaceProjectFromSettings(project);
-          if (shouldResetVisibleConversation) {
+          // The conversation-removal watcher may already have migrated the
+          // selection; only reset when the same conversation is still shown.
+          if (
+            shouldResetVisibleConversation &&
+            getDisplayedConversationId() === visibleConversationId.trim()
+          ) {
             startNewConversation({
               workdir: getDefaultWorkspaceProjectPath(settings.system) || undefined,
             });
           }
-          void refreshHistoryWorkdirs(currentApi);
+          void sidebarStore.refreshWorkdirs("delete");
         } catch (error) {
-          setHistoryError(asErrorMessage(error, "删除项目失败"));
-        } finally {
-          setHistoryMutating(false);
+          setSidebarActionError(asErrorMessage(error, "删除项目失败"));
         }
       })();
     },
     [
       activeWorkspaceProjectPath,
+      activityStore,
       api,
       clearCachedComposerDraft,
-      clearConversationLiveStream,
       isAgentMode,
-      refreshHistoryWorkdirs,
+      isConversationBusy,
       removeWorkspaceProjectFromSettings,
       requestConfirmDialog,
       settings.remote.enableWebSshTerminal,
       settings.remote.enableWebTerminal,
       settings.locale,
       settings.system,
+      sidebarStore,
       startNewConversation,
       terminalClient,
-      unlockHistoryTitlePosition,
-      updateHistoryItems,
     ],
   );
 
@@ -4632,43 +2415,105 @@ export default function GatewayApp() {
     if (!targetConversationId) {
       return;
     }
-    setHistorySwitchOverlay({
-      conversationId: targetConversationId,
-      startedAt: Date.now(),
-    });
 
     const currentConversationId = conversationIdRef.current.trim();
     if (currentConversationId && currentConversationId !== targetConversationId) {
-      cacheVisibleConversationRuntime(currentConversationId);
+      cacheVisibleComposerDraft(currentConversationId);
     }
 
     pendingDisplayedConversationAutoBottomRef.current = targetConversationId;
 
-    const cachedRuntime = conversationRuntimeCacheRef.current.get(targetConversationId);
-    if (cachedRuntime) {
-      protectedConversationRef.current = targetConversationId;
-      syncVisibleConversationRuntime(targetConversationId, cachedRuntime);
-    }
-    if (
-      cachedRuntime &&
-      (cachedRuntime.isSending || localRunningConversationIdsRef.current.has(targetConversationId))
-    ) {
+    if (isLocalDraftConversationId(targetConversationId)) {
+      // Local drafts have no server history to load; the transcript store is
+      // already the source (optimistic entries and error entries included).
+      openController.cancel();
       invalidateHistoryLoad();
       markVisibleConversationRevision();
-      setHistoryDetailLoading(false);
+      if (currentConversationId && currentConversationId !== targetConversationId) {
+        transcriptStoreRegistry.peek(currentConversationId)?.foldSettledTurns();
+      }
+      protectedConversationRef.current = targetConversationId;
+      conversationIdRef.current = targetConversationId;
+      selectedHistoryIdRef.current = targetConversationId;
+      setConversationId(targetConversationId);
+      setSelectedHistoryId(targetConversationId);
+      setChatError(null);
       setSelectedHistory(null);
-      setSelectedHistoryEntries([]);
       return;
     }
 
-    const isRemoteRunning = remoteRunningConversationIdsRef.current.has(targetConversationId);
-    void selectHistory(targetConversationId, api, {
-      syncChat: true,
-      resetLiveStream: isRemoteRunning,
-      clearLiveStream: !isRemoteRunning,
-      scrollToBottom: true,
-    });
+    // Two-phase open: initial tail paint now, quiet full hydration at idle;
+    // the overlay appears only after ~150ms of still-loading.
+    openController.open(targetConversationId);
   }
+
+  // Conversations that left the authoritative sidebar index (remote deletes,
+  // confirmed local deletes, reconcile drops): clean per-conversation caches
+  // and migrate the selection when the displayed conversation vanished.
+  // Local drafts are skipped — a failed draft keeps its transcript (error
+  // entry) visible; user-initiated draft removal goes through
+  // handleSidebarLocalDraftDeleted instead.
+  const handleSidebarConversationsRemoved = useCallback(
+    (ids: readonly string[]) => {
+      const displayedId = getDisplayedConversationId();
+      let displayedRemoved = false;
+      const removedIds = new Set<string>();
+      for (const id of ids) {
+        if (isLocalDraftConversationId(id)) {
+          continue;
+        }
+        removedIds.add(id);
+        transcriptStoreRegistry.remove(id);
+        conversationWorkdirsRef.current.delete(id);
+        composerDraftCacheRef.current.delete(id);
+        pendingUploadsByConversationRef.current.delete(id);
+        if (id === displayedId) {
+          displayedRemoved = true;
+        }
+      }
+      if (removedIds.size === 0) {
+        return;
+      }
+      const nextSharedItems = sharedHistoryItemsRef.current.filter(
+        (item) => !removedIds.has(item.id),
+      );
+      if (nextSharedItems.length !== sharedHistoryItemsRef.current.length) {
+        sharedHistoryItemsRef.current = nextSharedItems;
+        setSharedHistoryItems(nextSharedItems);
+      }
+      if (displayedRemoved) {
+        startNewConversation({
+          workdir: isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
+        });
+      }
+    },
+    [
+      activeWorkspaceProjectPath,
+      isAgentMode,
+      pendingUploadsByConversationRef,
+      transcriptStoreRegistry,
+    ],
+  );
+
+  const handleSidebarLocalDraftDeleted = useCallback(
+    (id: string) => {
+      transcriptStoreRegistry.remove(id);
+      conversationWorkdirsRef.current.delete(id);
+      composerDraftCacheRef.current.delete(id);
+      pendingUploadsByConversationRef.current.delete(id);
+      if (conversationIdRef.current === id || selectedHistoryIdRef.current === id) {
+        startNewConversation({
+          workdir: isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
+        });
+      }
+    },
+    [
+      activeWorkspaceProjectPath,
+      isAgentMode,
+      pendingUploadsByConversationRef,
+      transcriptStoreRegistry,
+    ],
+  );
 
   function handleSidebarOpenSkillsHub() {
     setRightDockOpen(false);
@@ -4796,7 +2641,7 @@ export default function GatewayApp() {
   }
 
   const setSharedHistoryItemsState = useCallback((items: ChatHistorySummary[]) => {
-    const nextItems = sortHistoryItems(items.map((item) => ({ ...item, isShared: true })));
+    const nextItems = sortSidebarConversations(items.map((item) => ({ ...item, isShared: true })));
     sharedHistoryItemsRef.current = nextItems;
     setSharedHistoryItems(nextItems);
   }, []);
@@ -4821,7 +2666,7 @@ export default function GatewayApp() {
           );
           totalCount = Math.max(0, response.total_count);
           for (const conversation of response.conversations) {
-            const item = toChatHistorySummary(conversation, settings.selectedModel);
+            const item = normalizeGatewayConversationSummary(conversation);
             byId.set(item.id, { ...item, isShared: true });
           }
           if (response.conversations.length === 0 || byId.size >= totalCount) {
@@ -4831,14 +2676,14 @@ export default function GatewayApp() {
 
         const nextItems = Array.from(byId.values());
         setSharedHistoryItemsState(nextItems);
-        return sortHistoryItems(nextItems);
+        return sortSidebarConversations(nextItems);
       })();
 
       sharedHistoryListRequestRef.current = request;
       try {
         return await request;
       } catch (error) {
-        setHistoryError(asErrorMessage(error, "读取已分享历史列表失败"));
+        setSidebarActionError(asErrorMessage(error, "读取已分享历史列表失败"));
         return sharedHistoryItemsRef.current;
       } finally {
         if (sharedHistoryListRequestRef.current === request) {
@@ -4846,7 +2691,7 @@ export default function GatewayApp() {
         }
       }
     },
-    [api, settings.selectedModel, setSharedHistoryItemsState],
+    [api, setSharedHistoryItemsState],
   );
 
   useEffect(() => {
@@ -4862,21 +2707,17 @@ export default function GatewayApp() {
     isShared: boolean,
     source?: ChatHistorySummary | null,
   ) {
-    updateHistoryItems((current) =>
-      current.map((conversation) =>
-        conversation.id === id ? { ...conversation, is_shared: isShared } : conversation,
-      ),
-    );
+    const existingRow = sidebarStore.peek(id);
+    if (existingRow && existingRow.isShared !== isShared) {
+      sidebarStore.upsertLocal({ ...existingRow, isShared });
+    }
     if (!isShared) {
       setSharedHistoryItemsState(sharedHistoryItemsRef.current.filter((item) => item.id !== id));
       return;
     }
 
-    const sourceSummary = historyItemsRef.current.find((item) => item.id === id);
     const conversation =
-      source ??
-      (sourceSummary ? toChatHistorySummary(sourceSummary, settings.selectedModel) : null) ??
-      sharedHistoryItemsRef.current.find((item) => item.id === id);
+      source ?? existingRow ?? sharedHistoryItemsRef.current.find((item) => item.id === id);
     if (!conversation) {
       return;
     }
@@ -4991,9 +2832,9 @@ export default function GatewayApp() {
       const activeConversationId = conversationIdRef.current.trim();
       if (
         !api ||
-        chatBusyRef.current ||
         !activeConversationId ||
-        isLocalDraftConversationId(activeConversationId)
+        isLocalDraftConversationId(activeConversationId) ||
+        isConversationBusy(activeConversationId)
       ) {
         return;
       }
@@ -5001,149 +2842,26 @@ export default function GatewayApp() {
       if (!normalized && uploadedFiles.length === 0) {
         return;
       }
-      const optimisticEditUserEntryId = `edit-user-${crypto.randomUUID()}`;
-      const optimisticEditUserEntry: ChatEntry = {
-        id: optimisticEditUserEntryId,
-        kind: "user",
-        text: normalized,
-        attachments: uploadedFiles,
-      };
-      const messageRefMatches = (candidate: HistoryMessageRef | undefined) =>
-        Boolean(candidate) &&
-        candidate?.segmentIndex === messageRef.segmentIndex &&
-        candidate?.messageIndex === messageRef.messageIndex &&
-        candidate?.segmentId === messageRef.segmentId &&
-        candidate?.messageId === messageRef.messageId &&
-        candidate?.role === messageRef.role &&
-        candidate?.contentHash === messageRef.contentHash;
-      const buildPreviewMessages = (messages: ChatEntry[]) => {
-        const targetIndex = messages.findIndex(
-          (entry) => entry.kind === "user" && messageRefMatches(entry.messageRef),
-        );
-        const prefix = targetIndex >= 0 ? messages.slice(0, targetIndex) : messages;
-        return [...prefix, optimisticEditUserEntry];
-      };
-      const randomPart =
-        typeof globalThis.crypto?.randomUUID === "function"
-          ? globalThis.crypto.randomUUID()
-          : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-      const clientRequestId = `webui-chat.edit_resend-${activeConversationId}-${randomPart}`;
-      const generation = editResendGenerationRef.current + 1;
-      editResendGenerationRef.current = generation;
-      activeEditResendTransactionsRef.current.set(activeConversationId, {
-        generation,
-        clientRequestId,
-      });
-      const isCurrentEditTransaction = () => {
-        const current = activeEditResendTransactionsRef.current.get(activeConversationId);
-        return current?.generation === generation && current.clientRequestId === clientRequestId;
-      };
 
-      setHistoryError(null);
       setChatError(null);
       composerRef.current?.clear();
       setPendingUploadsForConversation(activeConversationId, []);
-      blockedHistoryHydrationConversationIdsRef.current.add(activeConversationId);
-      invalidateHistoryLoad();
-      markVisibleConversationRevision();
-      clearConversationLiveStream(activeConversationId);
-      updateConversationRuntimeEntry(activeConversationId, (current) => ({
-        ...current,
-        error: null,
-        toolStatus: null,
-        toolStatusIsCompaction: false,
-        messages: buildPreviewMessages(current.messages),
-      }));
 
-      const hydrateEditPrefix = async () => {
-        const detail = await api.getHistoryPrefix(activeConversationId, messageRef, {
-          maxMessages: HISTORY_DETAIL_INITIAL_MAX_MESSAGES,
-        });
-        if (!isCurrentEditTransaction()) {
-          return;
-        }
-        const entries = await parseHistoryMessagesJsonAsync(detail.messages_json);
-        if (!isCurrentEditTransaction()) {
-          return;
-        }
-
-        setSelectedHistory(detail);
-        setSelectedHistoryEntries(entries);
-        updateConversationRuntimeEntry(activeConversationId, (current) => {
-          if (
-            !current.isSending &&
-            !localRunningConversationIdsRef.current.has(activeConversationId)
-          ) {
-            return current;
-          }
-          return {
-            ...current,
-            messages: [...entries, optimisticEditUserEntry],
-          };
-        });
-
-        const truncatedConversation = detail.conversation;
-        if (truncatedConversation) {
-          updateHistoryItems((current) =>
-            upsertConversationSummary(current, truncatedConversation),
-          );
-        }
-      };
-
-      void hydrateEditPrefix().catch((error) => {
-        if (isCurrentEditTransaction()) {
-          console.warn("edit resend history prefix hydration failed", error);
-        }
-      });
-
+      // Same pipeline path as a normal send, carrying the base message ref.
+      // The stream's seeded `rebased` event truncates the committed
+      // transcript at the edited message; the seeded `user_message` adopts
+      // the optimistic echo by client_request_id.
       try {
-        const resendPromise =
-          sendChatRef.current?.(normalized, {
-            conversationId: activeConversationId,
-            uploadedFiles,
-            editMessageRef: messageRef,
-            clientRequestId,
-            optimisticUserEntryId: optimisticEditUserEntryId,
-            skipOptimisticUserEntry: true,
-          }) ?? Promise.resolve();
-        await resendPromise;
-        if (isCurrentEditTransaction()) {
-          await refreshVisibleConversationHistorySnapshot(activeConversationId, api, {
-            allowIdle: true,
-            allowDuringEditTransaction: true,
-          });
-        }
-      } catch (error) {
-        const message = asErrorMessage(error, "编辑后重发失败");
-        setChatError(message);
-        updateConversationRuntimeEntry(activeConversationId, (current) => ({
-          ...current,
-          error: message,
-          toolStatus: null,
-          toolStatusIsCompaction: false,
-          isSending: false,
-          messages: current.messages.filter((entry) => entry.id !== optimisticEditUserEntryId),
-        }));
-        void refreshVisibleConversationHistorySnapshot(activeConversationId, api, {
-          allowIdle: true,
-          allowDuringEditTransaction: true,
+        await sendChatRef.current?.(normalized, {
+          conversationId: activeConversationId,
+          uploadedFiles,
+          editMessageRef: messageRef,
         });
-      } finally {
-        if (isCurrentEditTransaction()) {
-          activeEditResendTransactionsRef.current.delete(activeConversationId);
-          blockedHistoryHydrationConversationIdsRef.current.delete(activeConversationId);
-        }
+      } catch (error) {
+        setChatError(asErrorMessage(error, "编辑后重发失败"));
       }
     },
-    [
-      api,
-      clearConversationLiveStream,
-      invalidateHistoryLoad,
-      markVisibleConversationRevision,
-      refreshVisibleConversationHistorySnapshot,
-      updateHistoryItems,
-      updateConversationRuntimeEntry,
-    ],
+    [api, isConversationBusy, setPendingUploadsForConversation],
   );
 
   const handleLoadUploadedImagePreview = useCallback(
@@ -5183,91 +2901,51 @@ export default function GatewayApp() {
   const handleLogout = useCallback(() => {
     invalidateHistoryLoad();
     markVisibleConversationRevision();
+    // Dropping the api swaps in a fresh (empty) sidebar store; the start/stop
+    // effect stops the old one.
+    openController.cancel();
     clearSession();
-    for (const controller of conversationAbortControllersRef.current.values()) {
-      controller.abort();
-    }
-    conversationAbortControllersRef.current.clear();
-    stopAllConversationEventStreamSubscriptions();
-    clearAllCompletedLiveStreamMarkers();
-    blockedHistoryHydrationConversationIdsRef.current.clear();
-    conversationRuntimeCacheRef.current.clear();
-    localRunningConversationIdsRef.current = new Set();
-    remoteRunningConversationIdsRef.current = new Set();
-    remoteRunningConversationRuntimeRef.current = new Map();
+    transcriptStoreRegistry.clear();
+    activityStore.clear();
+    draftClientRequestsRef.current.clear();
+    conversationWorkdirsRef.current.clear();
     composerDraftCacheRef.current.clear();
     composerRef.current?.clear();
     conversationIdRef.current = "";
     selectedHistoryIdRef.current = "";
-    chatMessagesRef.current = [];
-    chatBusyRef.current = false;
-    chatErrorRef.current = null;
-    chatToolStatusRef.current = null;
-    chatToolStatusIsCompactionRef.current = false;
     selectedHistoryRef.current = null;
-    historyItemsRef.current = [];
-    historyTotalRef.current = 0;
-    historyHasMoreRef.current = false;
-    nextHistoryPageRef.current = 1;
-    historyListPageLoadingRef.current = false;
     sharedHistoryItemsRef.current = [];
     sharedHistoryListRequestRef.current = null;
     clearPendingUploads();
-    draftConversationPinnedRef.current = false;
     protectedConversationRef.current = "";
-    chatStartLocksRef.current.clear();
     submitInFlightRef.current = false;
-    pendingDraftConversationMigrationRef.current = null;
     setUserMenuOpen(false);
     setSettingsOpen(false);
     setOverlay("closed");
-    setHistorySwitchOverlay(null);
     setStatus(null);
     setStatusError(null);
     setConversationId("");
-    setChatBusy(false);
-    setChatMessages([]);
     setChatError(null);
-    applyChatToolStatus(null);
-    optimisticTitleConversationIdsRef.current.clear();
-    clearHistoryTitlePositionLocks();
-    historyItemsRef.current = [];
-    setHistoryItems([]);
+    setSidebarActionError(null);
+    setFullHistoryLoading(false);
     setSharedHistoryItems([]);
-    setHistoryTotal(0);
-    setHistoryHasMore(false);
-    setHistoryError(null);
-    setHistoryListLoading(false);
-    setHistoryListLoadingMore(false);
-    setHistoryDetailLoading(false);
-    setHistoryMutating(false);
     queuedChatTurnsRef.current = [];
     chatQueueConversationIdRef.current = "";
     chatQueueRevisionRef.current = 0;
     queuedChatEditSessionRef.current = null;
     setQueuedChatTurns([]);
     setChatQueueRevision(0);
-    setLocalRunningConversationIds(new Set());
-    setRemoteRunningConversationIds(new Set());
-    setRemoteRunningConversationRuntime(new Map());
-    setProjectActivityUpdatedAtOverrides(new Map());
     resetProjectToolsRuntimeRef.current();
-    clearAllConversationLiveStreams();
     setSelectedHistoryId("");
     setSelectedHistory(null);
-    setSelectedHistoryEntries([]);
-    setRenamingId(null);
-    setRenameDraft("");
   }, [
-    applyChatToolStatus,
-    clearAllConversationLiveStreams,
-    clearAllCompletedLiveStreamMarkers,
-    clearHistoryTitlePositionLocks,
+    activityStore,
     clearPendingUploads,
     clearSession,
     invalidateHistoryLoad,
     markVisibleConversationRevision,
-    stopAllConversationEventStreamSubscriptions,
+    openController,
+    transcriptStoreRegistry,
   ]);
 
   const userMenuLabel = (status?.agent_id || "当前用户").trim() || "当前用户";
@@ -5375,81 +3053,18 @@ export default function GatewayApp() {
       .filter((skill): skill is (typeof availableSkills)[number] => Boolean(skill));
   }, [availableSkills, selectedSkillNames, skillsEnabled]);
 
-  const sidebarItems = useMemo<ChatHistorySummary[]>(
-    () => historyItems.map((item) => toChatHistorySummary(item, settings.selectedModel)),
-    [historyItems, settings.selectedModel],
-  );
   const canShareHistory = Boolean(
     api &&
       settings.remote.enabled &&
       settings.remote.gatewayUrl.trim() &&
       settings.remote.token.trim(),
   );
-  const sidebarRunningConversationIds = useMemo(() => {
-    const next = new Set(remoteRunningConversationIds);
-    for (const conversationIdValue of localRunningConversationIds) {
-      next.add(conversationIdValue);
-    }
-    return next;
-  }, [localRunningConversationIds, remoteRunningConversationIds]);
-  const runningProjectPathKeys = useMemo(() => {
-    const next = new Set<string>();
-    for (const conversationIdValue of sidebarRunningConversationIds) {
-      const conversationId = conversationIdValue.trim();
-      if (!conversationId) {
-        continue;
-      }
-
-      const runtimeWorkdir =
-        conversationRuntimeCacheRef.current.get(conversationId)?.workdir?.trim() || "";
-      const remoteWorkdir =
-        remoteRunningConversationRuntime.get(conversationId)?.workdir?.trim() || "";
-      const persistedWorkdir =
-        historyItems.find((item) => item.id === conversationId)?.cwd?.trim() || "";
-      const resolvedWorkdir = runtimeWorkdir || remoteWorkdir || persistedWorkdir;
-      if (resolvedWorkdir) {
-        next.add(workspaceProjectPathKey(resolvedWorkdir));
-      }
-    }
-    return next;
-  }, [historyItems, remoteRunningConversationRuntime, sidebarRunningConversationIds]);
-
-  const projectActivityUpdatedAts = useMemo(() => {
-    const updatedAts = buildWorkspaceProjectActivityUpdatedAts([
-      ...historyWorkdirs,
-      ...Array.from(localRunningConversationIds).map((conversationId) => {
-        const runtimeWorkdir =
-          conversationRuntimeCacheRef.current.get(conversationId)?.workdir?.trim() || "";
-        const persistedWorkdir =
-          historyItems.find((item) => item.id === conversationId)?.cwd?.trim() || "";
-        return {
-          cwd: runtimeWorkdir || persistedWorkdir,
-          updatedAt: Date.now(),
-        };
-      }),
-      ...Array.from(remoteRunningConversationRuntime.values()).map((item) => ({
-        cwd: item.workdir,
-        updatedAt: item.updatedAt,
-      })),
-    ]);
-    for (const [pathKey, updatedAt] of projectActivityUpdatedAtOverrides) {
-      if (updatedAt > (updatedAts.get(pathKey) ?? 0)) {
-        updatedAts.set(pathKey, updatedAt);
-      }
-    }
-    return updatedAts;
-  }, [
-    historyItems,
-    historyWorkdirs,
-    localRunningConversationIds,
-    projectActivityUpdatedAtOverrides,
-    remoteRunningConversationRuntime,
-  ]);
-  const displayedConversationId = resolveVisibleConversationId(selectedHistoryId, conversationId);
+  // Sidebar rows, running dots, and project activity all render inside
+  // <GatewaySidebarContainer/> from the sidebar store — no app-root memos.
   const currentConversationPersistedCwd =
-    historyItems.find((item) => item.id === displayedConversationId)?.cwd?.trim() || "";
+    sidebarConversationsById.get(displayedConversationId)?.cwd?.trim() || "";
   const currentConversationRuntimeWorkdir =
-    conversationRuntimeCacheRef.current.get(displayedConversationId)?.workdir?.trim() || "";
+    conversationWorkdirsRef.current.get(displayedConversationId)?.trim() || "";
   const displayedConversationWorkdir =
     currentConversationPersistedCwd ||
     currentConversationRuntimeWorkdir ||
@@ -5495,9 +3110,18 @@ export default function GatewayApp() {
   const terminalProjectPathKey = terminalProjectPath
     ? workspaceProjectPathKey(terminalProjectPath)
     : "";
-  const rightDockProjectState = getRightDockProjectState(
-    settings.customSettings,
-    terminalProjectPathKey,
+  // getRightDockProjectState / getRightDockFileTreeState / getSshProjectHostIds
+  // build fresh objects on every call, so memoize on the owning settings slice
+  // + path key: RightDockPanel is memo'd and these references are props.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on settings.customSettings.rightDock (the only slice these getters read) so unrelated settings changes keep the reference stable.
+  const rightDockProjectState = useMemo(
+    () => getRightDockProjectState(settings.customSettings, terminalProjectPathKey),
+    [settings.customSettings.rightDock, terminalProjectPathKey],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on settings.customSettings.rightDock (the only slice these getters read) so unrelated settings changes keep the reference stable.
+  const rightDockFileTreeState = useMemo(
+    () => getRightDockFileTreeState(settings.customSettings, terminalProjectPathKey),
+    [settings.customSettings.rightDock, terminalProjectPathKey],
   );
   const rightDockFileTreeOpen = isRightDockSingletonTabOpen(
     settings.customSettings,
@@ -5514,7 +3138,10 @@ export default function GatewayApp() {
     terminalProjectPathKey,
     "sshTunnel",
   );
-  const associatedSshHostIds = getSshProjectHostIds(settings.ssh, terminalProjectPathKey);
+  const associatedSshHostIds = useMemo(
+    () => getSshProjectHostIds(settings.ssh, terminalProjectPathKey),
+    [settings.ssh, terminalProjectPathKey],
+  );
   const projectToolsDisabledMessage = !settingsSyncReady
     ? "Syncing desktop settings..."
     : !isAgentMode
@@ -5542,6 +3169,7 @@ export default function GatewayApp() {
     workspaceSshTerminalOpen,
     workspaceSshTerminalOpenRequest,
     terminalSessions,
+    terminalSessionsLoaded,
     setTerminalSessions,
     terminalSessionsVersionRef,
     terminalStatusSessionIdRef,
@@ -5573,15 +3201,60 @@ export default function GatewayApp() {
   const gitDisabledMessage = !settings.remote.enableWebGit
     ? "WebUI Git is disabled in desktop Remote settings."
     : undefined;
-  const tunnelEnabled =
-    settingsSyncReady && settings.remote.enableWebTunnels === true && status?.online === true;
+  // Agent offline no longer disables the panel: state still renders (the
+  // Link badge shows offline) and mutations fail server-side with a clear
+  // message.
+  const tunnelEnabled = settingsSyncReady && settings.remote.enableWebTunnels === true;
   const tunnelDisabledMessage = !settingsSyncReady
     ? translate("chat.runtime.tunnelSettingsSyncing", settings.locale)
     : !settings.remote.enableWebTunnels
       ? translate("projectTools.tunnelWebDisabled", settings.locale)
-      : status?.online !== true
-        ? translate("projectTools.tunnelRemoteOffline", settings.locale)
-        : undefined;
+      : undefined;
+  const workspaceActivityClient = useMemo(
+    () => (api ? createGatewayWorkspaceActivityClient(api) : null),
+    [api],
+  );
+  // RightDockPanel is memo'd: every callback handed to it must be stable or
+  // the memo boundary is void (see the panel-side context useMemo).
+  const handleRightDockWidthChange = useCallback(
+    (nextWidth: number) => {
+      setSettings((prev) => updateRightDockWidth(prev, nextWidth));
+    },
+    [setSettings],
+  );
+  const handleRightDockProjectStateChange = useCallback(
+    (updater: (current: RightDockProjectState) => RightDockProjectState) => {
+      setSettings((prev) => updateRightDockProjectState(prev, terminalProjectPathKey, updater));
+    },
+    [setSettings, terminalProjectPathKey],
+  );
+  const handleRightDockFileTreeStateChange = useCallback(
+    (patch: RightDockFileTreeStatePatch) => {
+      setSettings((prev) => updateRightDockFileTreeState(prev, terminalProjectPathKey, patch));
+    },
+    [setSettings, terminalProjectPathKey],
+  );
+  const handleSshProjectHostIdsChange = useCallback(
+    (hostIds: string[]) => {
+      setSettings((prev) => updateSshProjectHostIds(prev, terminalProjectPathKey, hostIds));
+    },
+    [setSettings, terminalProjectPathKey],
+  );
+  const handleRightDockInsertFileMention = useCallback((path: string, kind: "file" | "dir") => {
+    composerRef.current?.insertFileMention(path, kind);
+    composerRef.current?.focus();
+  }, []);
+  const handleRightDockInsertCommitMention = useCallback((commit: GitCommitContextPayload) => {
+    composerRef.current?.insertCommitMention(commit);
+    composerRef.current?.focus();
+  }, []);
+  const handleRightDockInsertGitFileMention = useCallback((file: GitFileContextPayload) => {
+    composerRef.current?.insertGitFileMention(file);
+    composerRef.current?.focus();
+  }, []);
+  const handleRightDockClose = useCallback(() => {
+    setRightDockOpen(false);
+  }, []);
   useEffect(() => {
     if (activeView !== "chat") {
       return;
@@ -5611,8 +3284,8 @@ export default function GatewayApp() {
     if (!displayedId || isLocalDraftConversationId(displayedId)) {
       return null;
     }
-    return pickConversationSummary(historyItems, displayedId);
-  }, [displayedConversationId, historyItems]);
+    return sidebarConversationsById.get(displayedId) ?? null;
+  }, [displayedConversationId, sidebarConversationsById]);
   const activeProjectBrowserTitle = isAgentMode ? (activeWorkspaceProject?.name.trim() ?? "") : "";
   const displayedConversationTitle = useMemo(
     () =>
@@ -5640,100 +3313,56 @@ export default function GatewayApp() {
     }
     return displayedConversationTitle || DEFAULT_BROWSER_TITLE;
   }, [activeView, displayedConversationTitle, historyShareToken, token]);
-  const hasDetachedSelection = hasDetachedHistorySelection(selectedHistoryId, conversationId);
-  const visibleTranscriptEntries = hasDetachedSelection ? selectedHistoryEntries : chatMessages;
   const historyDetailLoadingTitle = useMemo(() => {
     const selectedId = selectedHistoryId.trim();
     if (!selectedId) {
       return "";
     }
-    const item = historyItems.find((candidate) => candidate.id === selectedId);
-    return item ? resolveConversationTitle(item, item.id) : "";
-  }, [historyItems, selectedHistoryId]);
-  const transcriptHistoryLoading =
-    historyDetailLoading && hasDetachedSelection && selectedHistoryEntries.length === 0;
+    const item = sidebarConversationsById.get(selectedId);
+    return item?.title ?? "";
+  }, [selectedHistoryId, sidebarConversationsById]);
+  const transcriptFoldedRows = displayedTranscript.foldedRows;
+  const transcriptLiveRows = displayedTranscript.liveRows;
+  // Row count gates everything visual (empty state, error banner, loading
+  // screen): entryCount can be non-zero while nothing renders (meta-only
+  // entries), and hiding an error behind an invisible entry would strand it.
+  const displayedTranscriptRowCount = transcriptFoldedRows.length + transcriptLiveRows.length;
+  const transcriptHistoryLoading = historyDetailLoading && displayedTranscriptRowCount === 0;
   const selectedHistoryHasMore =
     selectedHistory?.conversation_id === displayedConversationId &&
     selectedHistory.has_more === true;
-  const loadingOlderHistory =
-    historyDetailLoading &&
-    selectedHistory?.conversation_id === displayedConversationId &&
-    selectedHistoryEntries.length > 0;
+  const loadingOlderHistory = fullHistoryLoading && displayedTranscriptRowCount > 0;
   const handleLoadFullHistory = useCallback(() => {
     if (!api || !displayedConversationId) {
       return;
     }
-    void selectHistory(displayedConversationId, api, {
-      syncChat: !hasDetachedSelection,
-      fullHistory: true,
+    // Explicit full fetch through the id-preserving enrich path (same as the
+    // idle hydration); no-ops while a run is streaming.
+    setFullHistoryLoading(true);
+    void refreshDisplayedConversationHistorySnapshot(displayedConversationId, api, {
+      forceFull: true,
+    }).finally(() => {
+      setFullHistoryLoading(false);
     });
-  }, [api, displayedConversationId, hasDetachedSelection]);
-  const liveTranscriptStore =
-    displayedConversationId !== "" ? getConversationLiveStreamStore(displayedConversationId) : null;
-  const liveTranscriptMeta =
-    displayedConversationId !== ""
-      ? liveConversationStreamMeta[displayedConversationId]
-      : undefined;
-  const isLocallyStreamingDisplayedConversation =
-    chatBusy && conversationId.trim() !== "" && displayedConversationId === conversationId.trim();
-  const isObservingRemoteLiveConversation = Boolean(
-    !isLocallyStreamingDisplayedConversation &&
-      displayedConversationId !== "" &&
-      remoteRunningConversationIds.has(displayedConversationId),
-  );
-  const observedRemoteRunKey = isObservingRemoteLiveConversation
-    ? resolveRunningConversationRunKey(remoteRunningConversationRuntime.get(displayedConversationId))
-    : "";
-  useEffect(() => {
-    const nextDisplayedConversationId = displayedConversationId.trim();
-    for (const conversationIdValue of [
-      ...conversationEventStreamControllersRef.current.keys(),
-    ]) {
-      if (conversationIdValue !== nextDisplayedConversationId) {
-        stopConversationEventStreamSubscription(conversationIdValue);
-      }
-    }
-    for (const conversationIdValue of [...liveConversationStreamStoresRef.current.keys()]) {
-      if (
-        conversationIdValue !== nextDisplayedConversationId &&
-        !remoteRunningConversationIdsRef.current.has(conversationIdValue) &&
-        !localRunningConversationIdsRef.current.has(conversationIdValue)
-      ) {
-        clearConversationLiveStream(conversationIdValue);
-      }
-    }
-
-    if (api && isObservingRemoteLiveConversation && nextDisplayedConversationId !== "") {
-      subscribeVisibleConversationEventStream(nextDisplayedConversationId, api);
-    }
-  }, [
-    api,
-    subscribeVisibleConversationEventStream,
-    clearConversationLiveStream,
-    displayedConversationId,
-    isObservingRemoteLiveConversation,
-    observedRemoteRunKey,
-    stopConversationEventStreamSubscription,
-  ]);
+  }, [api, displayedConversationId, refreshDisplayedConversationHistorySnapshot]);
+  const transcriptHasLiveRows = transcriptLiveRows.length > 0;
   useEffect(() => {
     if (typeof document === "undefined") {
       return;
     }
     document.title = browserTitle;
   }, [browserTitle]);
-  const transcriptToolStatus = isObservingRemoteLiveConversation
-    ? (liveTranscriptMeta?.toolStatus ?? null)
-    : hasDetachedSelection
-      ? null
-      : chatToolStatus;
-  const transcriptToolStatusIsCompaction = isObservingRemoteLiveConversation
-    ? (liveTranscriptMeta?.toolStatusIsCompaction ?? false)
-    : hasDetachedSelection
-      ? false
-      : chatToolStatusIsCompaction;
-  const transcriptBusy = (!hasDetachedSelection && chatBusy) || isObservingRemoteLiveConversation;
-  const composerIsSending = chatBusy || isObservingRemoteLiveConversation;
-  const transcriptError = hasDetachedSelection || chatMessages.length === 0 ? null : chatError;
+  const transcriptBusy = displayedConversationBusy;
+  // Pipeline pending (pre-first-token) shows the preparing status until the
+  // stream's own tool_status takes over.
+  const displayedHasPendingCommand =
+    displayedConversationId !== "" && chatCommandPipeline.hasPending(displayedConversationId);
+  const transcriptToolStatus =
+    displayedTranscript.toolStatus ??
+    (displayedHasPendingCommand ? CHAT_RUNTIME_PREPARING_STATUS : null);
+  const transcriptToolStatusIsCompaction = displayedTranscript.toolStatusIsCompaction;
+  const composerIsSending = transcriptBusy;
+  const transcriptError = displayedTranscriptRowCount === 0 ? null : chatError;
   const composerCompactionBlocked = transcriptToolStatusIsCompaction;
   const composerInputDisabled =
     !status?.online || historyDetailLoading || composerCompactionBlocked;
@@ -5794,8 +3423,10 @@ export default function GatewayApp() {
     ) {
       return;
     }
+    // Switching away folds the settled turns so revisits start clean.
+    transcriptStoreRegistry.peek(previousDisplayedConversationId)?.foldSettledTurns();
     pendingDisplayedConversationAutoBottomRef.current = nextDisplayedConversationId;
-  }, [displayedConversationId]);
+  }, [displayedConversationId, transcriptStoreRegistry]);
 
   useLayoutEffect(() => {
     const targetConversationId = pendingDisplayedConversationAutoBottomRef.current?.trim() ?? "";
@@ -5803,7 +3434,7 @@ export default function GatewayApp() {
       !targetConversationId ||
       historyDetailLoading ||
       displayedConversationId.trim() !== targetConversationId ||
-      (visibleTranscriptEntries.length === 0 && liveTranscriptMeta?.hasStream !== true)
+      displayedTranscriptRowCount === 0
     ) {
       return;
     }
@@ -5813,79 +3444,25 @@ export default function GatewayApp() {
     pendingDisplayedConversationAutoBottomRef.current = null;
   }, [
     displayedConversationId,
+    displayedTranscriptRowCount,
     historyDetailLoading,
-    liveTranscriptMeta?.hasStream,
     refreshTranscriptScrollState,
-    stickTranscriptToBottom,
-    visibleTranscriptEntries.length,
-  ]);
-
-  useEffect(() => {
-    if (!historySwitchOverlay) {
-      return;
-    }
-
-    const targetConversationId = historySwitchOverlay.conversationId;
-    const currentDisplayedConversationId = displayedConversationId.trim();
-    const currentSelectedHistoryId = selectedHistoryId.trim();
-    const isTargetVisible = currentDisplayedConversationId === targetConversationId;
-    const isTargetSelected = isTargetVisible || currentSelectedHistoryId === targetConversationId;
-
-    if (historyDetailLoading && isTargetSelected) {
-      return;
-    }
-
-    let firstRafId: number | null = null;
-    let secondRafId: number | null = null;
-    const elapsed = Date.now() - historySwitchOverlay.startedAt;
-    const delayMs = Math.max(0, HISTORY_SWITCH_OVERLAY_MIN_MS - elapsed);
-    const timeoutId = window.setTimeout(() => {
-      firstRafId = requestAnimationFrame(() => {
-        if (isTargetVisible) {
-          stickTranscriptToBottom();
-        }
-        secondRafId = requestAnimationFrame(() => {
-          if (isTargetVisible) {
-            stickTranscriptToBottom();
-            refreshTranscriptScrollState();
-          }
-          setHistorySwitchOverlay((current) =>
-            current?.conversationId === targetConversationId ? null : current,
-          );
-        });
-      });
-    }, delayMs);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      if (firstRafId !== null) {
-        cancelAnimationFrame(firstRafId);
-      }
-      if (secondRafId !== null) {
-        cancelAnimationFrame(secondRafId);
-      }
-    };
-  }, [
-    displayedConversationId,
-    historyDetailLoading,
-    historySwitchOverlay,
-    refreshTranscriptScrollState,
-    selectedHistoryId,
     stickTranscriptToBottom,
   ]);
 
   useLayoutEffect(() => {
-    if (transcriptBusy || liveTranscriptMeta?.hasStream === true) {
+    if (transcriptBusy || transcriptHasLiveRows) {
       syncTranscriptAutoScroll();
     }
     refreshTranscriptScrollState();
   }, [
     chatError,
-    liveTranscriptMeta?.hasStream,
     refreshTranscriptScrollState,
     syncTranscriptAutoScroll,
     transcriptBusy,
-    visibleTranscriptEntries,
+    transcriptHasLiveRows,
+    transcriptFoldedRows,
+    transcriptLiveRows,
     transcriptToolStatus,
   ]);
 
@@ -5949,30 +3526,23 @@ export default function GatewayApp() {
         />
 
         <div className="gateway-editor-host">
-          <ChatHistorySidebar
-            items={sidebarItems}
+          <GatewaySidebarContainer
+            store={sidebarStore}
             currentConversationId={displayedConversationId}
-            isBusy={historyDetailLoading || historyMutating}
-            runningConversationIds={sidebarRunningConversationIds}
-            isLoading={historyListLoading && sidebarItems.length === 0}
-            totalItems={historyTotal}
-            hasMore={historyHasMore}
-            isLoadingMore={historyListLoadingMore}
-            errorMessage={historyError}
-            renamingId={renamingId}
-            renameDraft={renameDraft}
             isOpen={sidebarOpen}
             activeView={activeView}
             showProjects={isAgentMode}
             projects={workspaceProjects}
             activeProjectId={activeWorkspaceProject?.id}
             missingProjectPathKeys={missingWorkspaceProjectPathKeys}
-            runningProjectPathKeys={runningProjectPathKeys}
-            projectActivityUpdatedAts={projectActivityUpdatedAts}
             projectRenamingId={projectRenamingId}
             projectRenameDraft={projectRenameDraft}
             projectsCollapsed={settings.customSettings.chatSidebar.projectsCollapsed}
             recentCollapsed={settings.customSettings.chatSidebar.recentCollapsed}
+            canShareConversations={canShareHistory}
+            sharedConversationCount={sharedHistoryItems.length}
+            externalErrorMessage={sidebarActionError}
+            isLocalDraftConversationId={isLocalDraftConversationId}
             onProjectsCollapsedChange={handleSidebarProjectsCollapsedChange}
             onRecentCollapsedChange={handleSidebarRecentCollapsedChange}
             onCreateProject={handleOpenCreateWorkspaceProject}
@@ -5987,90 +3557,10 @@ export default function GatewayApp() {
             onRemoveProject={handleRemoveWorkspaceProject}
             onNewConversation={handleSidebarNewConversation}
             onSelectConversation={handleSidebarSelectConversation}
-            onStartRenaming={(item) => {
-              setRenamingId(item.id);
-              setRenameDraft(item.title);
-            }}
-            onRenameDraftChange={setRenameDraft}
-            onCommitRename={() => {
-              if (!renamingId) {
-                return;
-              }
-              const conversationIdValue = renamingId;
-              const title = renameDraft.trim();
-              setHistoryError(null);
-              void (async () => {
-                if (!title) {
-                  setRenamingId(null);
-                  setRenameDraft("");
-                  return;
-                }
-                setHistoryMutating(true);
-                try {
-                  const summary = await api.renameHistory(conversationIdValue, title);
-                  optimisticTitleConversationIdsRef.current.delete(conversationIdValue);
-                  unlockHistoryTitlePosition(conversationIdValue);
-                  updateHistoryItems((current) => upsertConversationSummary(current, summary));
-                } catch (error) {
-                  setHistoryError(asErrorMessage(error, "修改历史对话标题失败"));
-                } finally {
-                  setHistoryMutating(false);
-                  setRenamingId(null);
-                  setRenameDraft("");
-                }
-              })();
-            }}
-            onCancelRename={() => {
-              setRenamingId(null);
-              setRenameDraft("");
-            }}
-            onSetPinned={(id, isPinned) => {
-              setHistoryError(null);
-              void (async () => {
-                setHistoryMutating(true);
-                try {
-                  const summary = await api.pinHistory(id, isPinned);
-                  updateHistoryItems((current) => upsertConversationSummary(current, summary));
-                } catch (error) {
-                  setHistoryError(asErrorMessage(error, "更新历史对话置顶状态失败"));
-                } finally {
-                  setHistoryMutating(false);
-                }
-              })();
-            }}
-            canShareConversations={canShareHistory}
-            sharedConversationCount={sharedHistoryItems.length}
             onShareConversation={handleOpenShareModal}
             onOpenSharedConversations={handleOpenSharedHistoryManager}
-            onDeleteConversation={(id) => {
-              setHistoryError(null);
-              if (sidebarRunningConversationIds.has(id)) {
-                setHistoryError("后台任务仍在运行，暂时不能删除该对话。");
-                return;
-              }
-              void (async () => {
-                setHistoryMutating(true);
-                try {
-                  await api.deleteHistory(id);
-                  optimisticTitleConversationIdsRef.current.delete(id);
-                  unlockHistoryTitlePosition(id);
-                  updateHistoryItems((current) => current.filter((item) => item.id !== id));
-                  setSharedHistoryItemsState(
-                    sharedHistoryItemsRef.current.filter((item) => item.id !== id),
-                  );
-                  if (conversationIdRef.current === id || selectedHistoryIdRef.current === id) {
-                    startNewConversation({
-                      workdir: isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
-                    });
-                  }
-                } catch (error) {
-                  setHistoryError(asErrorMessage(error, "删除历史对话失败"));
-                } finally {
-                  setHistoryMutating(false);
-                }
-              })();
-            }}
-            onLoadMore={loadMoreHistory}
+            onLocalDraftDeleted={handleSidebarLocalDraftDeleted}
+            onConversationsRemoved={handleSidebarConversationsRemoved}
             onCloseSidebar={() => setSidebarOpen(false)}
             onOpenSkillsHub={handleSidebarOpenSkillsHub}
             onOpenMcpHub={handleSidebarOpenMcpHub}
@@ -6155,7 +3645,7 @@ export default function GatewayApp() {
                   onToggleTheme={() =>
                     setSettings((prev) => ({
                       ...prev,
-                      theme: prev.theme === "dark" ? "light" : "dark",
+                      theme: getNextTheme(prev.theme),
                     }))
                   }
                   onOpenSidebar={() => setSidebarOpen(true)}
@@ -6212,7 +3702,7 @@ export default function GatewayApp() {
                 {settingsSyncError ? (
                   <div className="gateway-banner-error">{settingsSyncError}</div>
                 ) : null}
-                {chatError && chatMessages.length === 0 && !hasDetachedSelection ? (
+                {chatError && displayedTranscriptRowCount === 0 ? (
                   <div className="gateway-banner-error">{chatError}</div>
                 ) : null}
 
@@ -6221,9 +3711,9 @@ export default function GatewayApp() {
                     <ScrollArea ref={transcriptScrollAreaRef} className="gateway-transcript-scroll">
                       <GatewayTranscript
                         conversationId={displayedConversationId}
-                        entries={visibleTranscriptEntries}
-                        liveStore={liveTranscriptStore}
-                        hasLiveStream={liveTranscriptMeta?.hasStream === true}
+                        foldedRows={transcriptFoldedRows}
+                        liveRows={transcriptLiveRows}
+                        activeTurnKey={displayedTranscript.activeTurnKey}
                         error={transcriptError}
                         toolStatus={transcriptToolStatus}
                         toolStatusIsCompaction={transcriptToolStatusIsCompaction}
@@ -6243,10 +3733,10 @@ export default function GatewayApp() {
                         workspaceRoot={displayedConversationWorkdir}
                         gitClient={gitClient}
                         onLoadUploadedImagePreview={handleLoadUploadedImagePreview}
-                        onResendFromEdit={hasDetachedSelection ? undefined : handleResendFromEdit}
+                        onResendFromEdit={handleResendFromEdit}
                       />
                     </ScrollArea>
-                    {historySwitchOverlay ? (
+                    {conversationOpenState.showOverlay ? (
                       <HistorySwitchLoadingOverlay locale={settings.locale} />
                     ) : null}
                   </div>
@@ -6275,13 +3765,7 @@ export default function GatewayApp() {
                     gitClient={gitClient}
                     gitWriteEnabled={settings.remote.enableWebGit}
                     gitDisabledMessage={gitDisabledMessage}
-                    onGitChanged={(gitWorkdir) =>
-                      window.dispatchEvent(
-                        new CustomEvent("liveagent:git-changed", {
-                          detail: { workdir: gitWorkdir },
-                        }),
-                      )
-                    }
+                    workspaceActivityClient={workspaceActivityClient}
                     onSend={() => {
                       if (
                         submitInFlightRef.current ||
@@ -6303,8 +3787,7 @@ export default function GatewayApp() {
                         return;
                       }
                       if (
-                        chatBusyRef.current ||
-                        isObservingRemoteLiveConversation ||
+                        displayedConversationBusyRef.current ||
                         queuedChatTurnsForDisplayedConversation.length > 0
                       ) {
                         submitInFlightRef.current = true;
@@ -6357,25 +3840,6 @@ export default function GatewayApp() {
                             return;
                           }
                           const uploadConversationId = getDisplayedConversationId();
-                          const pendingDraftConversationId =
-                            pendingDraftConversationMigrationRef.current?.draftConversationId.trim() ??
-                            "";
-                          if (
-                            pendingDraftConversationId &&
-                            pendingDraftConversationId !== uploadConversationId
-                          ) {
-                            const message =
-                              "上一条新会话仍在创建，请等待它出现在历史记录后再发送新会话。";
-                            if (uploadConversationId) {
-                              updateConversationRuntimeEntry(uploadConversationId, (current) => ({
-                                ...current,
-                                error: message,
-                              }));
-                            } else {
-                              setChatError(message);
-                            }
-                            return;
-                          }
                           composerRef.current?.clear();
                           setPendingUploadsForConversation(uploadConversationId, []);
                           void sendChat(text, {
@@ -6392,9 +3856,7 @@ export default function GatewayApp() {
                       })();
                     }}
                     onStop={() => {
-                      void cancelChat(
-                        isObservingRemoteLiveConversation ? displayedConversationId : undefined,
-                      );
+                      void cancelChat(displayedConversationId);
                     }}
                     onPrepareChatRuntime={() => {
                       if (!api || historyShareToken) {
@@ -6436,7 +3898,7 @@ export default function GatewayApp() {
           </main>
           <WorkspaceOverlayHost
             locale={settings.locale}
-            theme={settings.theme}
+            theme={effectiveTheme}
             workspaceEditorMounted={workspaceEditorMounted}
             workspaceEditorOpenRequest={workspaceEditorOpenRequest}
             workspaceEditorCloseRequestId={workspaceEditorCloseRequestId}
@@ -6469,15 +3931,13 @@ export default function GatewayApp() {
             projectPathKey={terminalProjectPathKey}
             cwd={terminalProjectPath}
             sessions={terminalSessions}
+            sessionsLoaded={terminalSessionsLoaded}
             width={settings.customSettings.rightDock.width}
-            theme={settings.theme}
+            theme={effectiveTheme}
             disabledMessage={projectToolsDisabledMessage}
             terminalDisabledMessage={terminalDisabledMessage}
             projectState={rightDockProjectState}
-            fileTreeState={getRightDockFileTreeState(
-              settings.customSettings,
-              terminalProjectPathKey,
-            )}
+            fileTreeState={rightDockFileTreeState}
             sshHosts={settings.ssh.hosts}
             associatedSshHostIds={associatedSshHostIds}
             client={terminalClient}
@@ -6487,37 +3947,19 @@ export default function GatewayApp() {
             tunnelClient={isAgentMode ? api : null}
             tunnelEnabled={tunnelEnabled}
             tunnelDisabledMessage={tunnelDisabledMessage}
-            tunnelRefreshToken={tunnelRefreshToken}
-            onWidthChange={(nextWidth) =>
-              setSettings((prev) => updateRightDockWidth(prev, nextWidth))
-            }
-            onProjectStateChange={(updater) =>
-              setSettings((prev) => updateRightDockProjectState(prev, terminalProjectPathKey, updater))
-            }
-            onFileTreeStateChange={(patch) =>
-              setSettings((prev) =>
-                updateRightDockFileTreeState(prev, terminalProjectPathKey, patch),
-              )
-            }
-            onSshProjectHostIdsChange={(hostIds) =>
-              setSettings((prev) => updateSshProjectHostIds(prev, terminalProjectPathKey, hostIds))
-            }
+            tunnelPublicBaseUrl={window.location.origin}
+            workspaceActivityClient={workspaceActivityClient}
+            onWidthChange={handleRightDockWidthChange}
+            onProjectStateChange={handleRightDockProjectStateChange}
+            onFileTreeStateChange={handleRightDockFileTreeStateChange}
+            onSshProjectHostIdsChange={handleSshProjectHostIdsChange}
             onOpenSshSession={handleOpenSshTerminal}
             onSessionsChange={handleProjectTerminalSessionsChange}
-            onInsertFileMention={(path, kind) => {
-              composerRef.current?.insertFileMention(path, kind);
-              composerRef.current?.focus();
-            }}
+            onInsertFileMention={handleRightDockInsertFileMention}
             onOpenFile={handleOpenWorkspaceFile}
-            onInsertCommitMention={(commit) => {
-              composerRef.current?.insertCommitMention(commit);
-              composerRef.current?.focus();
-            }}
-            onInsertGitFileMention={(file) => {
-              composerRef.current?.insertGitFileMention(file);
-              composerRef.current?.focus();
-            }}
-            onClose={() => setRightDockOpen(false)}
+            onInsertCommitMention={handleRightDockInsertCommitMention}
+            onInsertGitFileMention={handleRightDockInsertGitFileMention}
+            onClose={handleRightDockClose}
           />
         ) : null}
 

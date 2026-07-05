@@ -1,13 +1,13 @@
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import type {
   AssistantMessage,
-  AssistantMessageEvent,
   Context,
   Message,
   ToolCall,
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { buildStreamRequestDebugPayload, type StreamDebugLogger } from "../../debug/agentDebug";
+import { buildMemoryToolsSuffixSection } from "../../memory/prompts/injection";
 import {
   createHostedSearchEventAggregator,
   createHostedSearchProbeId,
@@ -44,9 +44,9 @@ import type {
   ProviderModelConfig,
   ReasoningLevel,
 } from "../../settings";
+import { createSubagentScheduler, type SubagentScheduler } from "../../subagents/scheduler";
 import { withPowerActivity } from "../../system/powerActivity";
 import { sanitizeContextForModelRequest } from "../context/requestContextSanitizer";
-import { buildMemoryToolsSuffixSection } from "../memory/memoryPolicy";
 import {
   appendHostedSearchBlocksToAssistant,
   type HostedSearchBlock,
@@ -58,9 +58,9 @@ import {
   createDeferredProviderNativeWebSearchStatus,
   resolveProviderNativeWebSearchStatus,
 } from "../search/providerNativeSearchStatus";
-import { createSubagentScheduler, type SubagentScheduler } from "../subagent/subagentScheduler";
 import { comparableToolCall } from "./flattenedToolCallText";
 import { recoverAssistantSeedToolCalls } from "./seedToolCalls";
+import { wrapStreamWithToolCallArgumentGuard } from "./toolCallArgumentGuard";
 
 function createLinkedAbortSignal(signals: Array<AbortSignal | undefined>): {
   signal?: AbortSignal;
@@ -172,20 +172,18 @@ export function buildToolsSuffix(
     ].join("\n"),
   );
 
-  if (hasFileTool || has("Bash")) {
-    const subject =
-      hasFileTool && has("Bash") ? "File tools and Bash" : hasFileTool ? "File tools" : "Bash";
+  if (hasFileTool || hasAny("Bash", "ManagedProcess", "SSHManager", "McpManager", "Agent")) {
     sections.push(
       [
         "## Workspace & Paths",
         `- Workspace root (sandbox): \`${workdir}\``,
-        `- ${subject} ${subject === "Bash" ? "accepts" : "accept"} the path you see: workspace-relative, absolute, ~/..., file://, pathRef values, or skill://<enabled-skill>/... paths.`,
-        "- To target the workspace root for optional `path` / `cwd` values, omit the argument.",
-        "- Use `/` as the separator everywhere, including Glob and Grep patterns. Windows `\\` is auto-normalized.",
-        "- For enabled Skill files, prefer skill://<baseDir>/... or a pathRef returned by SkillsManager/List/Glob/Grep/Read.",
-      ]
-        .filter((line): line is string => Boolean(line))
-        .join("\n"),
+        "- Preferred form: workspace-relative paths exactly as tools return them, e.g. `src/App.tsx`. To target the root itself, omit the optional `path` / `cwd` argument.",
+        "- Files inside an enabled Skill: use `skill://<skill>/...` exactly as returned by SkillsManager or file tools.",
+        "- Absolute paths, `~/...`, and `file://` URLs are also accepted and auto-normalized; never construct one when a returned path is available.",
+        "- Write, Edit, and Delete operate only inside the workspace or enabled Skills. Bash `cwd` may point outside the workspace when the task requires it.",
+        "- Use `/` as the separator everywhere, including Glob and Grep patterns; Windows `\\` is auto-normalized.",
+        '- On a path error, follow its guidance: reuse a "Did you mean" candidate verbatim, or locate the file with Glob/Grep first, then retry with the returned path.',
+      ].join("\n"),
     );
   }
 
@@ -198,8 +196,8 @@ export function buildToolsSuffix(
     }
     if (canWrite) {
       lines.push(
-        "- Existing files: Read the full file before Write or Edit; stale writes are rejected, so re-Read if needed.",
-        "- New files: call Write with a file path that includes the filename and the full content; parent directories are created automatically.",
+        "- Existing files: Write and Edit check the file's current on-disk state automatically; a separate Read is only needed for very large files (>5000 lines). Stale writes are rejected — re-Read and retry if the file changed underneath you.",
+        "- New files: call Write with a file path that includes the filename and the full content; parent directories are created automatically. There is no separate create-directory step — to create a directory, Write a file inside it.",
       );
     }
     if (has("Read")) {
@@ -216,7 +214,7 @@ export function buildToolsSuffix(
     }
     if (has("Write")) {
       lines.push(
-        "- Write fully creates or overwrites one text file. Do not set `mode`. The path must include the intended filename, not just a directory.",
+        "- Write fully creates or overwrites one text file. The path must include the intended filename, not just a directory.",
       );
     }
     if (has("Edit")) {
@@ -225,7 +223,9 @@ export function buildToolsSuffix(
       );
     }
     if (has("Delete")) {
-      lines.push("- For workspace or Skill deletion, use Delete with the exact path or pathRef.");
+      lines.push(
+        "- For workspace or Skill deletion, use Delete with the exact path returned by List/Glob/Grep/Read.",
+      );
     }
     if (hasAny("Grep", "Glob", "List")) {
       lines.push(
@@ -234,7 +234,7 @@ export function buildToolsSuffix(
     }
     if (has("SkillsManager") && hasReadFamily) {
       lines.push(
-        "- For files inside a Skill, call file tools with a path like `skill://<baseDir>/references/guide.md` or a pathRef returned by a tool.",
+        "- For files inside a Skill, call file tools with a path like `skill://<baseDir>/references/guide.md`.",
       );
     }
     if (has("Bash")) {
@@ -273,7 +273,7 @@ export function buildToolsSuffix(
         "- Do not embed images with Markdown syntax like ![alt](path), HTML <img>, file:// URLs, or local relative image paths in your final text.",
         has("SkillsManager")
           ? [
-              "- Local image: pass `path` exactly as seen, including workspace-relative, absolute, pathRef, or skill:// paths. Remote image: pass `url` / `urls` or `source` / `sources` directly — do not download unless the user asked to save it locally.",
+              "- Local image: pass `path` exactly as seen, including workspace-relative, absolute, or skill:// paths. Remote image: pass `url` / `urls` or `source` / `sources` directly — do not download unless the user asked to save it locally.",
               "- Do not use Bash, open, xdg-open, Markdown, or HTML to display Skill images.",
             ].join("\n")
           : "- Local image: pass `path` exactly as seen. Remote image: pass `url` / `urls` or `source` / `sources` directly — do not download unless the user asked to save it locally.",
@@ -323,11 +323,10 @@ export function buildToolsSuffix(
       [
         "## Agent Delegation",
         "- Use Agent for bounded, independent jobs that benefit from a fresh context: implementation, research, review, discussion, or verification. Do not delegate trivial work you can finish yourself.",
-        "- To run multiple independent jobs in parallel, issue ONE Agent call whose `agent_spec` lists every job. Use sequential Agent calls only when a later job needs an earlier job's output.",
-        "- For parallel delegation, use one Agent tool call with agent_spec so the agents run in parallel; do not make separate sequential Agent calls unless later agents depend on earlier results.",
-        '- For multi-agent discussion or role replies, set `task_intent="communication"` so subagents respond via their final reports rather than workspace files.',
-        "- Enable `worktree` / auto-apply only when the subagent is expected to produce file changes or the user explicitly asked for file output.",
-        "- To continue with an existing delegated agent or a previously formed team, call Agent again with the agent id(s) returned by the earlier Agent call — do not impersonate those agents from this transcript.",
+        "- To run multiple independent jobs in parallel, issue ONE Agent call whose `agents` array lists every job. Use sequential Agent calls only when a later job needs an earlier job's output.",
+        "- Default to mode=readonly for research, review, and discussion agents. Use mode=worktree (with apply_policy) only when the subagent is expected to produce file changes or the user explicitly asked for file output.",
+        "- To continue with an existing delegated agent or a previously formed team, call Agent again with the same stable id(s) and only the new prompt — do not impersonate those agents from this transcript and do not restate their identity fields.",
+        "- If an Agent call is rejected, no subagents were started; fix every listed issue and retry with one corrected call.",
       ].join("\n"),
     );
   }
@@ -336,7 +335,7 @@ export function buildToolsSuffix(
     sections.push(
       [
         "## Subagent Message Bus",
-        "- Use SendMessage to send concise Markdown messages to the parent agent, all agents, or a stable delegated-agent id.",
+        "- Use SendMessage to send concise Markdown messages to the parent agent, all agents (to=*), or a stable delegated-agent id from the roster. Unknown recipients are rejected.",
         "- Messages sent to parent are private to the parent; send to=* when peer agents need to read a report or summary.",
         "- Message delivery is deferred to the next model turn boundary; do not use workspace files as a mailbox.",
       ].join("\n"),
@@ -647,10 +646,6 @@ export async function runAssistantWithTools(params: {
     signal?: AbortSignal,
     context?: ToolExecutionEventContext,
   ) => Promise<Message>;
-  preflightToolCall?: (
-    toolCall: ToolCall,
-    signal?: AbortSignal,
-  ) => Promise<{ toolCall?: ToolCall; toolResult: ToolResultMessage } | null>;
   onTurnStart?: (round: number) => void;
   onTextDelta: (delta: string, round: number) => void;
   onThinkingDelta?: (delta: string, round: number) => void;
@@ -723,7 +718,11 @@ export async function runAssistantWithTools(params: {
 
     const toolResultErrorFlags = new Map<string, boolean>();
     const toolCallsById = new Map<string, ToolCall>();
-    const streamPreflightToolResults = new Map<string, ToolResultMessage>();
+    const incompleteToolCallArguments = new Map<string, string>();
+    const refusedTruncatedToolCallIds = new Set<string>();
+    const buildTruncatedToolCallText = (toolName: string, reason: string) =>
+      `${toolName} was not executed: its arguments were truncated in transit (${reason}). ` +
+      `This is a transport error, not a mistake in your call — re-issue the complete ${toolName} call with full arguments.`;
     const parallelBatchKeyByToolCallId = new Map<string, string>();
     const parallelToolBatches = new Map<string, ParallelToolBatch>();
     const llmTools = params.tools ?? [];
@@ -1093,16 +1092,6 @@ export async function runAssistantWithTools(params: {
         });
         toolCallsById.set(toolCall.id, toolCall);
 
-        const preflightToolResult = streamPreflightToolResults.get(toolCall.id);
-        if (preflightToolResult) {
-          streamPreflightToolResults.delete(toolCall.id);
-          toolResultErrorFlags.set(toolCall.id, Boolean(preflightToolResult.isError));
-          return {
-            content: preflightToolResult.content,
-            details: preflightToolResult.details ?? {},
-          };
-        }
-
         if (tool.name === "Bash" || tool.name === "Agent") {
           const batchKey = parallelBatchKeyByToolCallId.get(toolCallId);
           if (batchKey) {
@@ -1150,118 +1139,6 @@ export async function runAssistantWithTools(params: {
     agentTools = [...visibleAgentTools, ...hiddenProviderNativeWebSearchAgentTools];
 
     let streamRound = 0;
-    function getToolCallFromStreamEvent(event: AssistantMessageEvent) {
-      if (
-        event.type !== "toolcall_start" &&
-        event.type !== "toolcall_delta" &&
-        event.type !== "toolcall_end"
-      ) {
-        return null;
-      }
-
-      const toolCall =
-        event.type === "toolcall_end" ? event.toolCall : event.partial.content[event.contentIndex];
-      return toolCall?.type === "toolCall"
-        ? {
-            contentIndex: event.contentIndex,
-            toolCall,
-            partial: event.partial,
-          }
-        : null;
-    }
-
-    function buildPreflightToolUseAssistant(
-      partial: AssistantMessage,
-      contentIndex: number,
-      toolCall: ToolCall,
-    ): AssistantMessage {
-      const content = partial.content.slice();
-      content[contentIndex] = toolCall;
-      return {
-        ...partial,
-        content,
-        stopReason: "toolUse",
-        errorMessage: undefined,
-      };
-    }
-
-    function wrapStreamWithToolPreflight(
-      source: ReturnType<typeof streamSimpleByApi>,
-      signal: AbortSignal | undefined,
-      abortEarly: () => void,
-      cleanup: () => void,
-    ): ReturnType<typeof streamSimpleByApi> {
-      let preflightFinalMessage: AssistantMessage | null = null;
-
-      return {
-        async *[Symbol.asyncIterator]() {
-          const iterator = source[Symbol.asyncIterator]();
-          try {
-            while (true) {
-              const next = await iterator.next();
-              if (next.done) return;
-
-              const event = next.value;
-              const candidate = getToolCallFromStreamEvent(event);
-              const effectiveToolCall = candidate
-                ? normalizeToolCallNameForExecution(candidate.toolCall)
-                : null;
-              if (!candidate || !effectiveToolCall || !params.preflightToolCall) {
-                yield event;
-                continue;
-              }
-
-              const preflight = await params.preflightToolCall(effectiveToolCall, signal);
-
-              if (!preflight) {
-                yield event;
-                continue;
-              }
-
-              const completedToolCall = normalizeToolCallNameForExecution(
-                preflight.toolCall ?? effectiveToolCall,
-              );
-              toolCallsById.set(completedToolCall.id, completedToolCall);
-              streamPreflightToolResults.set(completedToolCall.id, {
-                ...preflight.toolResult,
-                toolCallId: completedToolCall.id,
-                toolName: completedToolCall.name,
-              });
-              preflightFinalMessage = buildPreflightToolUseAssistant(
-                candidate.partial,
-                candidate.contentIndex,
-                completedToolCall,
-              );
-
-              abortEarly();
-              await iterator.return?.();
-
-              yield event;
-              if (event.type !== "toolcall_end") {
-                yield {
-                  type: "toolcall_end",
-                  contentIndex: candidate.contentIndex,
-                  toolCall: completedToolCall,
-                  partial: preflightFinalMessage,
-                };
-              }
-              yield {
-                type: "done",
-                reason: "toolUse",
-                message: preflightFinalMessage,
-              };
-              return;
-            }
-          } finally {
-            cleanup();
-          }
-        },
-        result() {
-          return preflightFinalMessage ? Promise.resolve(preflightFinalMessage) : source.result();
-        },
-      } as unknown as ReturnType<typeof streamSimpleByApi>;
-    }
-
     const streamFn = (streamModel: typeof model, streamContext: Context, options?: any) => {
       const round = ++streamRound;
       const streamTools =
@@ -1285,11 +1162,6 @@ export async function runAssistantWithTools(params: {
       const hostedSearchProbeId = shouldProbeHostedSearch
         ? createHostedSearchProbeId(params.providerId)
         : undefined;
-      const earlyPreflightAbortController = new AbortController();
-      const streamAbortSignal = createLinkedAbortSignal([
-        options?.signal,
-        earlyPreflightAbortController.signal,
-      ]);
       let streamOptions: StreamOptionsEx = {
         ...(options ?? {}),
         apiKey: options?.apiKey ?? params.runtime.apiKey,
@@ -1300,7 +1172,7 @@ export async function runAssistantWithTools(params: {
           },
           hostedSearchProbeId,
         ),
-        signal: streamAbortSignal.signal,
+        signal: options?.signal,
         sessionId: options?.sessionId ?? params.sessionId,
         cacheRetention:
           options?.cacheRetention ??
@@ -1362,12 +1234,36 @@ export async function runAssistantWithTools(params: {
       );
 
       const sourceStream = streamSimpleByApi(streamModel, effectiveContext, streamOptions);
-      return wrapStreamWithToolPreflight(
-        sourceStream,
-        options?.signal,
-        () => earlyPreflightAbortController.abort(),
-        streamAbortSignal.cleanup,
-      );
+      return wrapStreamWithToolCallArgumentGuard(sourceStream, (toolCall, reason) => {
+        incompleteToolCallArguments.set(toolCall.id, reason);
+      });
+    };
+
+    // A truncated call whose repaired arguments also fail schema validation
+    // never reaches beforeToolCall (pi-agent-core validates first), so the
+    // model would see a schema error blaming its own call. Rewrite such tool
+    // results into the truthful transport-error teaching before the next turn.
+    const reconcileTruncatedToolResults = () => {
+      if (incompleteToolCallArguments.size === 0) return;
+      const messages = getAgentMessages(agent);
+      let changed = false;
+      const next = messages.map((message) => {
+        if (message.role !== "toolResult" || !message.isError) return message;
+        const reason = incompleteToolCallArguments.get(message.toolCallId);
+        if (!reason) return message;
+        incompleteToolCallArguments.delete(message.toolCallId);
+        refusedTruncatedToolCallIds.add(message.toolCallId);
+        changed = true;
+        return {
+          ...message,
+          content: [
+            { type: "text" as const, text: buildTruncatedToolCallText(message.toolName, reason) },
+          ],
+        };
+      });
+      if (changed && agent) {
+        agent.state.messages = next;
+      }
     };
 
     agent = new Agent({
@@ -1389,6 +1285,15 @@ export async function runAssistantWithTools(params: {
         const effectiveAssistantMessage =
           normalizeAssistantToolCallNamesForExecution(assistantMessage);
         toolCallsById.set(effectiveToolCall.id, effectiveToolCall);
+        const truncationReason = incompleteToolCallArguments.get(effectiveToolCall.id);
+        if (truncationReason) {
+          refusedTruncatedToolCallIds.add(effectiveToolCall.id);
+          incompleteToolCallArguments.delete(effectiveToolCall.id);
+          return {
+            block: true,
+            reason: buildTruncatedToolCallText(effectiveToolCall.name, truncationReason),
+          };
+        }
         if (effectiveToolCall.name !== "Agent") {
           return undefined;
         }
@@ -1398,7 +1303,16 @@ export async function runAssistantWithTools(params: {
           effectiveToolCall.name,
         );
         if (!rawGroup || rawGroup.length <= 1) return undefined;
-        const group = rawGroup.map(normalizeToolCallNameForExecution);
+        // A member with truncated arguments must not ride into execution on a
+        // sibling's batch — it is refused individually by the guard above.
+        const group = rawGroup
+          .map(normalizeToolCallNameForExecution)
+          .filter(
+            (call) =>
+              !incompleteToolCallArguments.has(call.id) &&
+              !refusedTruncatedToolCallIds.has(call.id),
+          );
+        if (group.length <= 1) return undefined;
 
         const batchKey = buildParallelToolBatchKey(group);
         if (!parallelToolBatches.has(batchKey)) {
@@ -1420,6 +1334,7 @@ export async function runAssistantWithTools(params: {
         if (override) {
           applyTurnContextOverride(override);
         }
+        reconcileTruncatedToolResults();
         return getAgentMessages(agent).slice();
       },
     });

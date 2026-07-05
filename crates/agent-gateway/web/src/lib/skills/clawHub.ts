@@ -35,7 +35,7 @@ const CLAWHUB_API_BASE = "https://clawhub.ai";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : {};
 }
 
@@ -53,9 +53,7 @@ function asNullableNumber(value: unknown): number | null {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
-    ? value
-        .map((item) => asString(item))
-        .filter((item): item is string => Boolean(item))
+    ? value.map((item) => asString(item)).filter((item): item is string => Boolean(item))
     : [];
 }
 
@@ -79,9 +77,7 @@ function normalizeSkillCard(raw: unknown): ClawHubSkillCard | null {
     displayName: asString(item.displayName) ?? slug,
     summary: asString(item.summary) ?? "",
     latestVersion:
-      asString(latestVersion.version) ??
-      asString(tags.latest) ??
-      asString(item.version),
+      asString(latestVersion.version) ?? asString(tags.latest) ?? asString(item.version),
     downloads: asNumber(stats.downloads),
     stars: asNumber(stats.stars),
     installsCurrent: asNumber(stats.installsCurrent),
@@ -118,9 +114,7 @@ function normalizeSkillDetail(raw: unknown): ClawHubSkillDetail | null {
     supportedOs: asStringArray(metadata.os),
     supportedSystems: asStringArray(metadata.systems),
     moderationStatus:
-      asString(moderation.status) ??
-      asString(moderation.result) ??
-      asString(moderation.state),
+      asString(moderation.status) ?? asString(moderation.result) ?? asString(moderation.state),
   };
 }
 

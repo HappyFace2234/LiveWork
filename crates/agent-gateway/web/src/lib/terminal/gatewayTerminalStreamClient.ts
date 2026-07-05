@@ -91,7 +91,9 @@ function terminalRuntimeOrigin() {
 
 function nextStreamId() {
   const random = globalThis.crypto?.randomUUID?.();
-  return random ? `terminal-${random}` : `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return random
+    ? `terminal-${random}`
+    : `terminal-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function errorMessage(error: unknown) {
@@ -107,7 +109,10 @@ function isRetryableAttachError(message: string) {
   );
 }
 
-function encodeFrame(header: TerminalFrameHeader, data: Uint8Array<ArrayBufferLike> = new Uint8Array()) {
+function encodeFrame(
+  header: TerminalFrameHeader,
+  data: Uint8Array<ArrayBufferLike> = new Uint8Array(),
+) {
   const kind = header.kind?.trim() ?? "";
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   if (headerBytes.byteLength > 0xffff) {
@@ -165,9 +170,7 @@ function normalizeSession(input: unknown): TerminalSession {
           authType: String(ssh.auth_type ?? ssh.authType ?? ""),
           status: String(ssh.status ?? "connected"),
           reconnectAttempt: Number(ssh.reconnect_attempt ?? ssh.reconnectAttempt ?? 0),
-          reconnectMaxAttempts: Number(
-            ssh.reconnect_max_attempts ?? ssh.reconnectMaxAttempts ?? 3,
-          ),
+          reconnectMaxAttempts: Number(ssh.reconnect_max_attempts ?? ssh.reconnectMaxAttempts ?? 3),
           sftpEnabled: Boolean(ssh.sftp_enabled ?? ssh.sftpEnabled ?? false),
         }
       : null,
@@ -176,7 +179,8 @@ function normalizeSession(input: unknown): TerminalSession {
     rows: Number(raw.rows ?? 24),
     createdAt: Number(raw.created_at ?? raw.createdAt ?? 0),
     updatedAt: Number(raw.updated_at ?? raw.updatedAt ?? 0),
-    finishedAt: raw.finished_at === null ? null : Number(raw.finished_at ?? raw.finishedAt ?? 0) || null,
+    finishedAt:
+      raw.finished_at === null ? null : Number(raw.finished_at ?? raw.finishedAt ?? 0) || null,
     exitCode: raw.exit_code === null ? null : Number(raw.exit_code ?? raw.exitCode ?? 0) || null,
     running: raw.running === true,
   };
@@ -343,12 +347,16 @@ class GatewayTerminalStreamHandle implements TerminalStreamHandle {
     this.inputQueue = [];
     this.inputBytes = 0;
     this.emitInputState();
-    void this.owner.send({
-      kind: "input",
-      streamId: this.streamId,
-      sessionId: this.snapshot.session.id,
-      projectPathKey: this.snapshot.session.projectPathKey,
-    }, bytes)
+    void this.owner
+      .send(
+        {
+          kind: "input",
+          streamId: this.streamId,
+          sessionId: this.snapshot.session.id,
+          projectPathKey: this.snapshot.session.projectPathKey,
+        },
+        bytes,
+      )
       .then(() => this.clearInputPaused())
       .catch(() => {
         this.markTransportDown();
@@ -371,18 +379,20 @@ class GatewayTerminalStreamHandle implements TerminalStreamHandle {
     const latest = this.latestResize;
     this.latestResize = null;
     if (!latest) return;
-    void this.owner.send({
-      kind: "resize",
-      streamId: this.streamId,
-      sessionId: this.snapshot.session.id,
-      projectPathKey: this.snapshot.session.projectPathKey,
-      cols: latest.cols,
-      rows: latest.rows,
-    }).catch(() => {
-      this.markTransportDown();
-      this.latestResize = latest;
-      this.owner.scheduleReconnect();
-    });
+    void this.owner
+      .send({
+        kind: "resize",
+        streamId: this.streamId,
+        sessionId: this.snapshot.session.id,
+        projectPathKey: this.snapshot.session.projectPathKey,
+        cols: latest.cols,
+        rows: latest.rows,
+      })
+      .catch(() => {
+        this.markTransportDown();
+        this.latestResize = latest;
+        this.owner.scheduleReconnect();
+      });
   }
 
   private prependInput(bytes: Uint8Array) {
@@ -426,7 +436,11 @@ class GatewayTerminalStreamHandle implements TerminalStreamHandle {
   }
 
   private clearInputPaused() {
-    if (this.inputPausedReason === null || !this.transportReady || this.inputBytes > INPUT_LOW_WATER_BYTES) {
+    if (
+      this.inputPausedReason === null ||
+      !this.transportReady ||
+      this.inputBytes > INPUT_LOW_WATER_BYTES
+    ) {
       return;
     }
     this.inputPausedReason = null;
@@ -484,12 +498,14 @@ export class BrowserGatewayTerminalStreamClient implements TerminalStreamClient 
     const sessionStillAttached = this.handlesBySession.has(session.id);
     if (this.socket?.readyState === WebSocket.OPEN) {
       try {
-        this.socket.send(encodeFrame({
-          kind: "detach",
-          streamId,
-          sessionId: sessionStillAttached ? undefined : session.id,
-          projectPathKey: sessionStillAttached ? undefined : session.projectPathKey,
-        }));
+        this.socket.send(
+          encodeFrame({
+            kind: "detach",
+            streamId,
+            sessionId: sessionStillAttached ? undefined : session.id,
+            projectPathKey: sessionStillAttached ? undefined : session.projectPathKey,
+          }),
+        );
       } catch {
         // The socket may move to CLOSING between the readyState check and send.
       }
@@ -635,7 +651,10 @@ export class BrowserGatewayTerminalStreamClient implements TerminalStreamClient 
       return;
     }
     if (kind === "error") {
-      this.rejectAttach(frame.header.streamId ?? "", frame.header.error || "Terminal stream failed");
+      this.rejectAttach(
+        frame.header.streamId ?? "",
+        frame.header.error || "Terminal stream failed",
+      );
     }
   }
 
@@ -732,7 +751,9 @@ export class BrowserGatewayTerminalStreamClient implements TerminalStreamClient 
       pending.handle.markTransportDown();
       this.retryPendingAttach(pending);
     }
-    for (const handle of this.activeHandles().filter((handle) => !this.pending.has(handle.streamId))) {
+    for (const handle of this.activeHandles().filter(
+      (handle) => !this.pending.has(handle.streamId),
+    )) {
       handle.markTransportDown();
     }
     this.scheduleReconnect();

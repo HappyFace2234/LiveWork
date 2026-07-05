@@ -14,6 +14,11 @@ import type {
   ConversationHookLifecycle,
   GatewayBridgeEventController,
 } from "../../../lib/chat/conversation/run";
+import { memoryExtraction } from "../../../lib/chat/memory/extractionController";
+import type {
+  MemoryExtractionModelConfig,
+  MemoryExtractionStatusText,
+} from "../../../lib/chat/memory/extractionEngine";
 import type { HostedSearchBlock } from "../../../lib/chat/messages/hostedSearch";
 import {
   appendTextDeltaToRound,
@@ -30,11 +35,6 @@ import {
 import type { StreamDebugLogger } from "../../../lib/debug/agentDebug";
 import { assistantMessageToText, streamAssistantMessage } from "../../../lib/providers/llm";
 import type { ProviderId } from "../../../lib/settings";
-import {
-  recordSilentMemoryTurnBoundary,
-  type SilentMemoryExtractionModelConfig,
-} from "../memory/silentMemoryExtraction";
-import { runSilentMemoryExtractionWithFallback } from "../memory/silentMemoryExtractionFallback";
 import {
   buildPartialAssistantMessage,
   type ConversationRuntimeEntry,
@@ -136,8 +136,9 @@ export type RunTextConversationTurnParams = {
     updater: (prev: ConversationRuntimeEntry) => ConversationRuntimeEntry,
   ) => ConversationRuntimeEntry;
   persistConversationWithHistorySync: (params: PersistConversationParams) => Promise<boolean>;
-  memoryExtractionModel?: SilentMemoryExtractionModelConfig;
-  onMemoryExtractionModelFailure?: (model: SilentMemoryExtractionModelConfig) => void;
+  memoryExtractionModel?: MemoryExtractionModelConfig;
+  onMemoryExtractionModelFailure?: (model: MemoryExtractionModelConfig) => void;
+  memoryExtractionStatusText?: MemoryExtractionStatusText;
 };
 
 export async function runTextConversationTurn(params: RunTextConversationTurnParams) {
@@ -178,11 +179,12 @@ export async function runTextConversationTurn(params: RunTextConversationTurnPar
     persistConversationWithHistorySync,
     memoryExtractionModel,
     onMemoryExtractionModelFailure,
+    memoryExtractionStatusText,
   } = params;
 
-  // Reset per-conversation slug tracker so the silent extraction round's
-  // <already-written-this-turn> block only reflects writes from this turn.
-  recordSilentMemoryTurnBoundary(conversationId);
+  // Reset per-turn dedup state so <already-written-this-turn> reflects only
+  // this turn. In-flight extraction from the previous turn keeps running.
+  memoryExtraction.noteTurnBoundary(conversationId);
 
   let finalAssistant: AssistantMessage | null = null;
   let contextWithSkills = buildPreparedContext(getNextConversationState());
@@ -321,7 +323,6 @@ export async function runTextConversationTurn(params: RunTextConversationTurnPar
           onTextDelta: (delta) => {
             nativeWebSearchStatusController.noteVisibleActivity();
             gatewayBridgeEvents.queueToken(delta, { round: textRound });
-            hookLifecycle.messageUpdated();
             if (textModeUsesLiveRounds) {
               batchLiveRoundsUpdate(
                 (prev) =>
@@ -377,7 +378,6 @@ export async function runTextConversationTurn(params: RunTextConversationTurnPar
             } else {
               nativeWebSearchStatusController.pause();
             }
-            hookLifecycle.messageUpdated();
             updateHostedSearch(hostedSearch, textRound, streamedAssistantText);
           },
           signal: getRequestController().signal,
@@ -493,21 +493,23 @@ export async function runTextConversationTurn(params: RunTextConversationTurnPar
   });
   gatewayBridgeEvents.close();
   if (shouldRunMemoryExtraction) {
-    const currentMemoryExtractionModel: SilentMemoryExtractionModelConfig = {
+    const currentMemoryExtractionModel: MemoryExtractionModelConfig = {
       providerId,
       model,
       runtime,
       selectedModel,
     };
-    void runSilentMemoryExtractionWithFallback({
+    // Fire-and-forget; the controller owns lifecycle/abort, detached from the
+    // chat request signal.
+    void memoryExtraction.requestExtraction({
       primary: memoryExtractionModel ?? currentMemoryExtractionModel,
       fallback: memoryExtractionModel ? currentMemoryExtractionModel : undefined,
       onPrimaryFailure: memoryExtractionModel ? onMemoryExtractionModelFailure : undefined,
       sessionId,
       conversationId,
       workdir: conversationCwd,
-      buildContext: (tools) => buildPreparedContext(finalState, tools),
-      signal: getRequestController().signal,
+      messages: buildPreparedContext(finalState).messages,
+      statusText: memoryExtractionStatusText,
       debugLogger: conversationDebugLogger,
     });
   }

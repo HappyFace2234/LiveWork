@@ -1,11 +1,11 @@
+// The MemoryManager agent tool: one tool with an `action` discriminator over
+// the Rust MemoryStore. Evidence (confidence/source_quote/...) is passed as
+// STRUCTURED fields straight to the store — Rust renders the canonical
+// frontmatter and enforces the confidence contract; no serialization happens
+// here.
+
 import type { Tool, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import {
-  MEMORY_MANAGER_ACTION_DESCRIPTION_RO,
-  MEMORY_MANAGER_ACTION_DESCRIPTION_RW,
-  MEMORY_MANAGER_FIELD_DESCRIPTIONS,
-  MEMORY_MANAGER_TOOL_DESCRIPTION,
-} from "../chat/memory/memoryPolicy";
 import {
   formatMemoryError,
   type MemoryHistoryTimeMode,
@@ -13,10 +13,7 @@ import {
   type MemoryMeta,
   type MemoryMutationResponse,
   type MemoryReadResponse,
-  type MemoryScope,
   type MemorySearchResponse,
-  type MemorySearchType,
-  type MemoryType,
   memoryAccept,
   memoryDelete,
   memoryList,
@@ -25,6 +22,18 @@ import {
   memoryUpdate,
   memoryWrite,
 } from "../memory/api";
+import {
+  MEMORY_MANAGER_ACTION_DESCRIPTION_RO,
+  MEMORY_MANAGER_ACTION_DESCRIPTION_RW,
+  MEMORY_MANAGER_FIELD_DESCRIPTIONS,
+  MEMORY_MANAGER_TOOL_DESCRIPTION,
+} from "../memory/prompts/managerTool";
+import type {
+  MemoryEvidenceFields,
+  MemoryScopeFilter,
+  MemorySearchType,
+  MemoryType,
+} from "../memory/schema";
 import { type BuiltinToolBundle, createBuiltinMetadataMap } from "./builtinTypes";
 
 type MemoryToolMode = "rw" | "ro";
@@ -221,7 +230,7 @@ function asString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function optionalScope(value: unknown): MemoryScope | undefined {
+function optionalScope(value: unknown): MemoryScopeFilter | undefined {
   const scope = asString(value);
   return scope === "global" || scope === "project" || scope === "auto" ? scope : undefined;
 }
@@ -250,32 +259,32 @@ function requireQuery(args: Record<string, unknown>) {
   return query;
 }
 
-function requireWriteType(value: unknown): MemoryType {
-  const type = optionalMemoryType(value);
-  if (!type || type === "daily") {
-    throw new Error(
-      "MemoryManager write/update type must be user, feedback, project, or reference.",
-    );
-  }
-  return type;
-}
-
 function requireWriteScope(value: unknown): "global" | "project" {
-  const scope = optionalScope(value);
-  if (scope !== "global" && scope !== "project") {
-    throw new Error("MemoryManager write/delete requires scope=global or scope=project.");
+  const scope = asString(value);
+  if (scope === "global" || scope === "project") return scope;
+  throw new Error('MemoryManager write/delete/accept require scope "global" or "project".');
+}
+
+function requireWriteType(value: unknown): MemoryType {
+  const type = asString(value);
+  if (type === "user" || type === "feedback" || type === "project" || type === "reference") {
+    return type;
   }
-  return scope;
+  if (type === "daily") {
+    throw new Error("MemoryManager cannot write type=daily; daily journals are append-managed.");
+  }
+  throw new Error("MemoryManager write requires type user, feedback, project, or reference.");
 }
 
-function optionalInt(value: unknown) {
-  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+function optionalInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : undefined;
 }
 
-function optionalStringList(value: unknown) {
+function optionalStringList(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
-      .map((item) => asString(item))
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
       .filter(Boolean)
       .slice(0, 8);
   }
@@ -288,88 +297,30 @@ function optionalStringList(value: unknown) {
     .slice(0, 8);
 }
 
-function frontmatterString(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r?\n/g, " ").slice(0, 240);
-}
-
-function frontmatterArray(values: string[]) {
-  return `[${values.map((value) => `"${frontmatterString(value)}"`).join(", ")}]`;
-}
-
-function normalizeConfidence(raw: string): "high" | "medium" | "low" {
-  if (raw === "high" || raw === "medium" || raw === "low") return raw;
-  return "low";
-}
-
-export function applyConfidenceContract(
-  rawConfidence: string,
-  sourceQuote: string,
-): { confidence: "high" | "medium" | "low"; autoDowngraded: boolean } {
-  let confidence = normalizeConfidence(rawConfidence);
-  const quoteLen = sourceQuote.trim().length;
-  let autoDowngraded = false;
-  if (confidence === "high" && quoteLen < 5) {
-    confidence = "medium";
-    autoDowngraded = true;
-  }
-  if (confidence === "medium" && quoteLen === 0) {
-    confidence = "low";
-    autoDowngraded = true;
-  }
-  return { confidence, autoDowngraded };
-}
-
-function evidenceBody(args: Record<string, unknown>, body: string, dailyAppend: boolean) {
-  if (dailyAppend) return body;
-  const trimmed = body.trimStart();
-  if (trimmed.startsWith("---")) return body;
-
-  const rawConfidence = asString(args.confidence);
-  const sourceQuote = asString(args.source_quote);
-  const reasoning = asString(args.reasoning);
-  const aliases = optionalStringList(args.aliases);
-  const supersedes = asString(args.supersedes);
-  const conflictsWith = optionalStringList(args.conflicts_with);
-  const overrideReject = asString(args.override_reject);
-  const hasEvidence =
-    rawConfidence ||
-    sourceQuote ||
-    reasoning ||
-    aliases.length > 0 ||
-    supersedes ||
-    conflictsWith.length > 0 ||
-    overrideReject;
-  if (!hasEvidence) return body;
-
-  const { confidence, autoDowngraded } = applyConfidenceContract(rawConfidence, sourceQuote);
-
-  const lines = [
-    "---",
-    `confidence: ${confidence}`,
-    autoDowngraded ? "auto_downgraded: true" : null,
-    `source_quote: "${frontmatterString(sourceQuote).slice(0, 80)}"`,
-    `reasoning: "${frontmatterString(reasoning)}"`,
-    `aliases: ${frontmatterArray(aliases)}`,
-    `conflicts_with: ${frontmatterArray(conflictsWith)}`,
-    `supersedes: "${frontmatterString(supersedes)}"`,
-    `override_reject: "${frontmatterString(overrideReject)}"`,
-    "---",
-    "",
-    body,
-  ].filter((line): line is string => line !== null);
-  return lines.join("\n");
-}
-
-function hasEvidenceArgs(args: Record<string, unknown>): boolean {
-  return Boolean(
-    asString(args.confidence) ||
-      asString(args.source_quote) ||
-      asString(args.reasoning) ||
-      optionalStringList(args.aliases).length > 0 ||
-      asString(args.supersedes) ||
-      optionalStringList(args.conflicts_with).length > 0 ||
-      asString(args.override_reject),
-  );
+/** Collect structured evidence fields from tool args; undefined when the
+ *  model supplied none. Rust owns rendering and the confidence contract. */
+function evidenceFromArgs(args: Record<string, unknown>): MemoryEvidenceFields | undefined {
+  const evidence: MemoryEvidenceFields = {
+    confidence: asString(args.confidence) || undefined,
+    sourceQuote: asString(args.source_quote) || undefined,
+    reasoning: asString(args.reasoning) || undefined,
+    aliases: optionalStringList(args.aliases),
+    conflictsWith: optionalStringList(args.conflicts_with),
+    supersedes: asString(args.supersedes) || undefined,
+    overrideReject: asString(args.override_reject) || undefined,
+  };
+  const hasAny =
+    evidence.confidence ||
+    evidence.sourceQuote ||
+    evidence.reasoning ||
+    (evidence.aliases?.length ?? 0) > 0 ||
+    (evidence.conflictsWith?.length ?? 0) > 0 ||
+    evidence.supersedes ||
+    evidence.overrideReject;
+  if (!hasAny) return undefined;
+  if (evidence.aliases?.length === 0) evidence.aliases = undefined;
+  if (evidence.conflictsWith?.length === 0) evidence.conflictsWith = undefined;
+  return evidence;
 }
 
 function buildListResultText(result: MemoryListResponse) {
@@ -447,6 +398,9 @@ function buildMutationText(result: MemoryMutationResponse) {
         : "Changed";
   return [
     `${action} memory ${result.scope}/${result.slug}. indexUpdated=${result.indexUpdated}`,
+    result.autoDowngraded
+      ? `note: confidence auto-downgraded to ${result.appliedConfidence ?? "lower"} per the source_quote contract`
+      : "",
     result.warning ? `warning: ${result.warning}` : "",
   ]
     .filter(Boolean)
@@ -578,17 +532,17 @@ export function createMemoryTools(params: {
         };
       }
       if (action === "write") {
-        const body = evidenceBody(args, asString(args.body), false);
         const result = await memoryWrite({
           slug: requireSlug(args),
           scope: requireWriteScope(args.scope),
           workdir: params.workdir,
           memoryType: requireWriteType(args.type),
           description: asString(args.description),
-          body,
+          body: asString(args.body),
           actor,
           conversationId: params.conversationId,
           model: params.model,
+          evidence: evidenceFromArgs(args),
         });
         return {
           role: "toolResult",
@@ -609,10 +563,9 @@ export function createMemoryTools(params: {
               ? "merge"
               : "replace";
         const rawBody = typeof args.body === "string" ? args.body : undefined;
-        const evidenceOnlyBody =
-          rawBody === undefined && mode !== "append" && hasEvidenceArgs(args)
-            ? evidenceBody(args, "", false)
-            : undefined;
+        // Daily appends never carry evidence; ordinary updates pass it through
+        // structurally (body may be omitted for evidence-only updates).
+        const evidence = mode === "append" ? undefined : evidenceFromArgs(args);
         const result = await memoryUpdate({
           slug: requireSlug(args),
           scope: optionalScope(args.scope),
@@ -622,14 +575,12 @@ export function createMemoryTools(params: {
               ? undefined
               : (optionalMemoryType(args.type) as MemoryType | undefined),
           description: asString(args.description) || undefined,
-          body:
-            typeof rawBody === "string"
-              ? evidenceBody(args, rawBody, mode === "append")
-              : evidenceOnlyBody,
+          body: rawBody,
           mode,
           actor,
           conversationId: params.conversationId,
           model: params.model,
+          evidence,
         });
         return {
           role: "toolResult",

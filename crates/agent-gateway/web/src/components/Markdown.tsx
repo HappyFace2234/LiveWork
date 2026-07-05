@@ -1,28 +1,33 @@
-import { memo, useLayoutEffect, useRef, type ComponentProps } from "react";
-import { createPortal } from "react-dom";
 import { cjk } from "@streamdown/cjk";
 import { code } from "@streamdown/code";
 import { math } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Copy, ExternalLink, X } from "./icons";
+import { type ComponentProps, memo, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+import remarkBreaks from "remark-breaks";
 import {
-  Streamdown,
-  defaultRemarkPlugins,
   type Components,
+  defaultRemarkPlugins,
   type ExtraProps,
   type LinkSafetyModalProps,
+  Streamdown,
   type StreamdownTranslations,
 } from "streamdown";
-import remarkBreaks from "remark-breaks";
-
-import { Button } from "./ui/button";
 import { cn } from "../lib/shared/utils";
+import { Copy, ExternalLink, X } from "./icons";
+import { Button } from "./ui/button";
 
 type MarkdownProps = {
   content: string;
   className?: string;
   isAnimating?: boolean;
+  // Fixed per-entry render mode: entries born in the live region render in
+  // Streamdown streaming mode forever; history-born entries render static.
+  // The mode of a given entry never flips, so the streaming→static
+  // re-render (and its late shiki re-highlight reflow) cannot happen. When
+  // omitted, falls back to deriving the mode from `isAnimating`.
+  renderMode?: "streaming" | "static";
   // Independently control caret visibility. Defaults to `isAnimating`.
   // Set to `false` when the source content is no longer receiving tokens but
   // we still want to keep Streamdown in streaming mode (to avoid the heavy
@@ -69,10 +74,7 @@ function MarkdownReadOnlyLink(props: MarkdownAnchorFallbackProps) {
         ? href.trim()
         : undefined;
   return (
-    <span
-      className="text-primary underline decoration-primary/35 underline-offset-4"
-      title={label}
-    >
+    <span className="text-primary underline decoration-primary/35 underline-offset-4" title={label}>
       {children}
     </span>
   );
@@ -195,12 +197,7 @@ const streamdownTranslations = {
   viewFullscreen: "全屏查看",
 } satisfies Partial<StreamdownTranslations>;
 
-function ExternalLinkModal({
-  isOpen,
-  onClose,
-  onConfirm,
-  url,
-}: LinkSafetyModalProps) {
+function ExternalLinkModal({ isOpen, onClose, onConfirm, url }: LinkSafetyModalProps) {
   if (!isOpen) {
     return null;
   }
@@ -293,10 +290,11 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
     content,
     className,
     isAnimating = false,
+    renderMode,
     showCaret = isAnimating,
     readOnly = false,
   } = props;
-  const useStreamingMode = isAnimating;
+  const useStreamingMode = renderMode ? renderMode === "streaming" : isAnimating;
   const isActivelyStreaming = showCaret;
   const codeCopyRootRef = useEnabledCodeCopyButtons(!readOnly && isActivelyStreaming);
   // Keep Streamdown's caret pseudo-element mounted while in streaming mode;
@@ -330,7 +328,7 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
           enabled: !readOnly,
           renderModal: (modalProps) => <ExternalLinkModal {...modalProps} />,
         }}
-        {...(useStreamingMode ? {} : { shikiTheme: ["github-light", "github-dark"] as const })}
+        shikiTheme={["github-light", "github-dark"] as const}
         controls={{
           code: { copy: !readOnly, download: false },
           mermaid: { copy: !readOnly, download: false, fullscreen: !readOnly, panZoom: !readOnly },

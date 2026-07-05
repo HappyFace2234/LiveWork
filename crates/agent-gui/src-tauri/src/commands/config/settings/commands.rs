@@ -9,8 +9,6 @@ pub async fn settings_load_all() -> Result<SettingsLoadResponse, String> {
             mcp: load_mcp(&conn)?,
             agents: load_agents(&conn)?,
             ssh: load_ssh(&conn)?,
-            hooks: load_hooks(&conn)?,
-            cron: load_cron(&conn)?,
             remote: load_remote(&conn)?,
             memory: load_memory(&conn)?,
             default_workdir,
@@ -33,7 +31,7 @@ pub async fn settings_save_providers(payload: Value) -> Result<(), String> {
 #[tauri::command]
 pub async fn settings_save_system(
     payload: Value,
-    cron_manager: tauri::State<'_, Arc<CronManager>>,
+    automation_scheduler: tauri::State<'_, Arc<AutomationScheduler>>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut conn = open_db()?;
@@ -41,7 +39,9 @@ pub async fn settings_save_system(
     })
     .await
     .map_err(|e| format!("settings_save_system join 失败：{e}"))??;
-    cron_manager.request_reload();
+    // Bash cron tasks execute in the system workdir; reschedule so the new
+    // workdir takes effect without an app restart.
+    automation_scheduler.request_reload();
     Ok(())
 }
 
@@ -125,27 +125,3 @@ pub async fn settings_reset_ssh_known_host(
     .map_err(|e| format!("settings_reset_ssh_known_host join 失败：{e}"))?
 }
 
-#[tauri::command]
-pub async fn settings_save_hooks(payload: Value) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open_db()?;
-        save_hooks(&mut conn, payload)
-    })
-    .await
-    .map_err(|e| format!("settings_save_hooks join 失败：{e}"))?
-}
-
-#[tauri::command]
-pub async fn settings_save_cron(
-    payload: Value,
-    cron_manager: tauri::State<'_, Arc<CronManager>>,
-) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut conn = open_db()?;
-        save_cron(&mut conn, payload)
-    })
-    .await
-    .map_err(|e| format!("settings_save_cron join 失败：{e}"))??;
-    cron_manager.request_reload();
-    Ok(())
-}

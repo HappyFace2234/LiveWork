@@ -7,6 +7,22 @@ import ts from "typescript";
 
 const DEFAULT_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 
+// Real json-parse/validation implementations from pi-ai (imported by file URL
+// to bypass the package exports map) so argument-integrity and schema-check
+// code paths behave exactly like runtime.
+const piAiJsonParse = await import(
+  new URL(
+    "../../node_modules/@earendil-works/pi-ai/dist/utils/json-parse.js",
+    import.meta.url,
+  ).href
+);
+const piAiValidation = await import(
+  new URL(
+    "../../node_modules/@earendil-works/pi-ai/dist/utils/validation.js",
+    import.meta.url,
+  ).href
+);
+
 function createDefaultMocks() {
   const typeboxMock = {
     Type: {
@@ -63,9 +79,10 @@ function createDefaultMocks() {
       streamSimple() {
         throw new Error("streamSimple mock was not expected to be called");
       },
-      validateToolArguments(_tool, toolCall) {
-        return toolCall?.arguments ?? {};
-      },
+      validateToolArguments: piAiValidation.validateToolArguments,
+      parseJsonWithRepair: piAiJsonParse.parseJsonWithRepair,
+      parseStreamingJson: piAiJsonParse.parseStreamingJson,
+      repairJson: piAiJsonParse.repairJson,
       EventStream: class EventStream {
         constructor() {
           throw new Error("EventStream mock was not expected to be constructed");

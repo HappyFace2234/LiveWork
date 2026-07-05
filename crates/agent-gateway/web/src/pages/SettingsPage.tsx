@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   BookOpen,
@@ -15,17 +15,14 @@ import { useLocale } from "../i18n";
 import { AgentsSection } from "./settings/AgentsSection";
 import { CronSection } from "./settings/CronSection";
 import { HooksSection } from "./settings/HooksSection";
-import { MemoryPanel } from "./settings/MemoryPanel";
+import { MemoryPanel } from "./settings/memory/MemoryPanel";
 import { ProvidersSection } from "./settings/ProvidersSection";
 import { RemoteSection } from "./settings/RemoteSection";
 import { SshSection } from "./settings/SshSection";
 import { SystemSettingsForm } from "./settings/SystemSettingsForm";
 import type { SectionId, SettingsPageProps } from "./settings/types";
 
-function getSaveIndicator(
-  state: SettingsPageProps["saveState"],
-  t: (key: string) => string,
-) {
+function getSaveIndicator(state: SettingsPageProps["saveState"], t: (key: string) => string) {
   switch (state.status) {
     case "saving":
       return {
@@ -78,9 +75,7 @@ function NavItem({ icon, label, active, onClick }: NavItemProps) {
         >
           {icon}
         </div>
-        <div className="settings-nav-label min-w-0 truncate text-sm leading-none">
-          {label}
-        </div>
+        <div className="settings-nav-label min-w-0 truncate text-sm leading-none">{label}</div>
       </div>
     </button>
   );
@@ -102,9 +97,7 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     labelKey: "settings.groupIntelligence",
-    items: [
-      { id: "memory", icon: <Brain className="h-4 w-4" /> },
-    ],
+    items: [{ id: "memory", icon: <Brain className="h-4 w-4" /> }],
   },
   {
     labelKey: "settings.groupAutomation",
@@ -156,10 +149,7 @@ export function SettingsPage(props: SettingsPageProps) {
       })).filter((group) => group.items.length > 0),
     [hiddenSectionSet, sectionLabels, t],
   );
-  const allNavItems = useMemo(
-    () => navGroups.flatMap((g) => g.items),
-    [navGroups],
-  );
+  const allNavItems = useMemo(() => navGroups.flatMap((g) => g.items), [navGroups]);
 
   useEffect(() => {
     setSection(initialSection);
@@ -207,6 +197,17 @@ export function SettingsPage(props: SettingsPageProps) {
   return (
     <div className="settings-page-shell flex h-full bg-background">
       <aside className="settings-sidebar flex w-60 shrink-0 flex-col border-r border-border/60 bg-muted/20">
+        <div className="settings-back-bar">
+          <button
+            type="button"
+            onClick={onBack}
+            className="settings-back-button flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
+          >
+            <ArrowLeft className="h-3.5 w-3.5 shrink-0" />
+            <span>{t("settings.backToChat")}</span>
+          </button>
+        </div>
+
         <div className="settings-sidebar-header border-b border-border/60 px-3 pb-3 pt-3">
           <button
             type="button"
@@ -248,7 +249,6 @@ export function SettingsPage(props: SettingsPageProps) {
             </div>
           ))}
         </nav>
-
       </aside>
 
       <main className="settings-main flex min-w-0 flex-1 flex-col">

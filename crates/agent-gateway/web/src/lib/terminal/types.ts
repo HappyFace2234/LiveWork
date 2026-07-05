@@ -132,10 +132,7 @@ export type TerminalStreamHandle = {
 };
 
 export type TerminalStreamClient = {
-  attach(
-    session: TerminalSession,
-    options?: { maxBytes?: number },
-  ): Promise<TerminalStreamHandle>;
+  attach(session: TerminalSession, options?: { maxBytes?: number }): Promise<TerminalStreamHandle>;
 };
 
 export type TerminalClient = {

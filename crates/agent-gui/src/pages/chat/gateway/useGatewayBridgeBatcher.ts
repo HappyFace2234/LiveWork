@@ -25,13 +25,6 @@ type PendingGatewayBridgeEventBatch = BatchableGatewayBridgeEvent & {
   microtaskQueued: boolean;
 };
 
-type DeferredToolCallDeltaSend = {
-  requestId: string;
-  batchKey: string;
-  event: Record<string, unknown>;
-  options?: GatewayBridgeSendOptions;
-};
-
 type GatewayBridgeSendOptions = {
   workerId?: string;
 };
@@ -136,9 +129,6 @@ export function useGatewayBridgeBatcher() {
   const pendingGatewayBridgeEventBatchesRef = useRef(
     new Map<string, PendingGatewayBridgeEventBatch>(),
   );
-  const inFlightToolCallDeltaBatchesRef = useRef(new Set<string>());
-  const deferredToolCallDeltaSendsRef = useRef(new Map<string, DeferredToolCallDeltaSend>());
-
   const sendGatewayBridgeEventForRequest = useCallback(
     (requestId: string, event: Record<string, unknown>, options?: GatewayBridgeSendOptions) => {
       const workerId = options?.workerId?.trim() || undefined;
@@ -160,50 +150,6 @@ export function useGatewayBridgeBatcher() {
     },
     [],
   );
-
-  const sendToolCallDeltaForRequest = useCallback(
-    (
-      batchKey: string,
-      requestId: string,
-      event: Record<string, unknown>,
-      options?: GatewayBridgeSendOptions,
-    ) => {
-      if (inFlightToolCallDeltaBatchesRef.current.has(batchKey)) {
-        deferredToolCallDeltaSendsRef.current.set(batchKey, {
-          requestId,
-          batchKey,
-          event,
-          options,
-        });
-        return;
-      }
-
-      inFlightToolCallDeltaBatchesRef.current.add(batchKey);
-      sendGatewayBridgeEventForRequest(requestId, event, options).finally(() => {
-        inFlightToolCallDeltaBatchesRef.current.delete(batchKey);
-        const deferred = deferredToolCallDeltaSendsRef.current.get(batchKey);
-        if (!deferred) {
-          return;
-        }
-        deferredToolCallDeltaSendsRef.current.delete(batchKey);
-        sendToolCallDeltaForRequest(
-          deferred.batchKey,
-          deferred.requestId,
-          deferred.event,
-          deferred.options,
-        );
-      });
-    },
-    [sendGatewayBridgeEventForRequest],
-  );
-
-  const discardDeferredToolCallDeltasForRequest = useCallback((requestId: string) => {
-    for (const [batchKey, deferred] of deferredToolCallDeltaSendsRef.current.entries()) {
-      if (deferred.requestId === requestId) {
-        deferredToolCallDeltaSendsRef.current.delete(batchKey);
-      }
-    }
-  }, []);
 
   const flushGatewayBridgeEventBatchForRequest = useCallback(
     (batchKey: string) => {
@@ -241,16 +187,11 @@ export function useGatewayBridgeBatcher() {
               ...(pending.round !== null ? { round: pending.round } : {}),
             };
 
-      const options = {
+      sendGatewayBridgeEventForRequest(pending.requestId, event, {
         workerId: pending.workerId,
-      };
-      if (pending.type === "tool_call_delta") {
-        sendToolCallDeltaForRequest(batchKey, pending.requestId, event, options);
-      } else {
-        sendGatewayBridgeEventForRequest(pending.requestId, event, options);
-      }
+      });
     },
-    [sendGatewayBridgeEventForRequest, sendToolCallDeltaForRequest],
+    [sendGatewayBridgeEventForRequest],
   );
 
   const flushGatewayBridgeEventBatchesForRequest = useCallback(
@@ -330,7 +271,6 @@ export function useGatewayBridgeBatcher() {
       const batchable = toBatchableGatewayBridgeEvent(event);
       if (!batchable) {
         flushGatewayBridgeEventBatchesForRequest(requestId);
-        discardDeferredToolCallDeltasForRequest(requestId);
         return sendGatewayBridgeEventForRequest(requestId, event, options);
       }
 
@@ -368,7 +308,6 @@ export function useGatewayBridgeBatcher() {
       scheduleGatewayBridgeEventBatchFlush(batchKey);
     },
     [
-      discardDeferredToolCallDeltasForRequest,
       flushGatewayBridgeEventBatchesForRequest,
       flushGatewayBridgeEventBatchForRequest,
       scheduleGatewayBridgeEventBatchFlush,
@@ -395,8 +334,6 @@ export function useGatewayBridgeBatcher() {
         pending.microtaskQueued = false;
       }
       pendingGatewayBridgeEventBatchesRef.current.clear();
-      deferredToolCallDeltaSendsRef.current.clear();
-      inFlightToolCallDeltaBatchesRef.current.clear();
     },
     [],
   );

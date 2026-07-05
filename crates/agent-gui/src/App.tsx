@@ -2,15 +2,19 @@ import type { Context } from "@earendil-works/pi-ai";
 import { listen } from "@tauri-apps/api/event";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CronPromptRunner } from "./components/cron/CronPromptRunner";
-import { MemoryOrganizerRunner } from "./components/memory/MemoryOrganizerRunner";
+import { MemoryOrganizerHost } from "./components/memory/useMemoryOrganizer";
 import { WindowsTitleBar } from "./components/WindowsTitleBar";
 import { LocaleContext, t as translate } from "./i18n";
 import { type AppUpdateController, useAppUpdateController } from "./lib/appUpdates";
+import { initAutomation } from "./lib/automation";
 import {
   type AppSettings,
   getDefaultSettings,
+  getNextTheme,
   normalizeSettings,
+  resolveEffectiveTheme,
   resolveWorkspaceProjects,
+  subscribeToSystemThemePreference,
 } from "./lib/settings";
 import {
   loadPersistedSettingsWithDefaults,
@@ -132,16 +136,31 @@ export default function App() {
   const saveSequenceRef = useRef(0);
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const defaultWorkdirRef = useRef("");
+  // Mirrors `settings` so setSettings/queueSettingsSave can read the latest value
+  // synchronously without passing a (side-effecting) function into setSettingsState —
+  // React 18 StrictMode double-invokes functional state updaters in development,
+  // which would otherwise run those side effects (and any non-idempotent work like
+  // crypto.randomUUID() inside caller updaters) twice per call.
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [systemThemeVersion, setSystemThemeVersion] = useState(0);
+  const effectiveTheme = useMemo(
+    () => resolveEffectiveTheme(settings.theme),
+    [settings.theme, systemThemeVersion],
+  );
+
+  useEffect(() => {
+    if (settings.theme !== "system") return;
+    return subscribeToSystemThemePreference(() => {
+      setSystemThemeVersion((version) => version + 1);
+    });
+  }, [settings.theme]);
 
   // 同步主题 class 到 <html> 根节点
   useEffect(() => {
     const root = document.documentElement;
-    if (settings.theme === "dark") {
-      root.classList.add("dark");
-    } else {
-      root.classList.remove("dark");
-    }
-  }, [settings.theme]);
+    root.classList.toggle("dark", effectiveTheme === "dark");
+  }, [effectiveTheme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,6 +171,7 @@ export default function App() {
         if (!cancelled) {
           defaultWorkdirRef.current = defaultWorkdir;
           const loadedWithDefaults = applyRuntimeSystemDefaults(loaded, defaultWorkdir);
+          settingsRef.current = loadedWithDefaults;
           setSettingsState(loadedWithDefaults);
           setSettingsSaveState({ status: "saved" });
           void publishGatewaySettingsSync(loadedWithDefaults).catch((error) => {
@@ -160,7 +180,9 @@ export default function App() {
         }
       } catch (error) {
         if (!cancelled) {
-          setSettingsState(getDefaultSettings());
+          const fallback = getDefaultSettings();
+          settingsRef.current = fallback;
+          setSettingsState(fallback);
           setSettingsSaveState({
             status: "error",
             message: asErrorMessage(error, "加载设置失败，已回退到默认配置。"),
@@ -195,12 +217,12 @@ export default function App() {
               })
             : next;
           if (persistResult.ssh && saveSequenceRef.current === saveSequence) {
-            setSettingsState((current) =>
-              normalizeSettings({
-                ...current,
-                ssh: persistResult.ssh,
-              }),
-            );
+            const merged = normalizeSettings({
+              ...settingsRef.current,
+              ssh: persistResult.ssh,
+            });
+            settingsRef.current = merged;
+            setSettingsState(merged);
           }
           if (persistResult.conflict) {
             throw new Error(persistResult.conflict);
@@ -228,21 +250,21 @@ export default function App() {
 
   const setSettings = useCallback(
     (updater: (prev: AppSettings) => AppSettings) => {
-      setSettingsState((prev) => {
-        const updated = updater(prev);
-        if (updated === prev) return prev;
-        const next = applyRuntimeSystemDefaults(
-          normalizeSettings(updated),
-          defaultWorkdirRef.current,
-        );
-        queueSettingsSave(
-          prev,
-          next,
-          "保存设置失败。",
-          hasSettingsSyncChanged(prev, next) || hasSensitiveSettingsUpdates(next),
-        );
-        return next;
-      });
+      const prev = settingsRef.current;
+      const updated = updater(prev);
+      if (updated === prev) return;
+      const next = applyRuntimeSystemDefaults(
+        normalizeSettings(updated),
+        defaultWorkdirRef.current,
+      );
+      settingsRef.current = next;
+      setSettingsState(next);
+      queueSettingsSave(
+        prev,
+        next,
+        "保存设置失败。",
+        hasSettingsSyncChanged(prev, next) || hasSensitiveSettingsUpdates(next),
+      );
     },
     [queueSettingsSave],
   );
@@ -252,6 +274,7 @@ export default function App() {
     const { settings: loaded, defaultWorkdir } = await loadPersistedSettingsWithDefaults();
     defaultWorkdirRef.current = defaultWorkdir;
     const loadedWithDefaults = applyRuntimeSystemDefaults(loaded, defaultWorkdir);
+    settingsRef.current = loadedWithDefaults;
     setSettingsState(loadedWithDefaults);
     setSettingsSaveState({ status: "saved" });
   }, []);
@@ -259,7 +282,7 @@ export default function App() {
   const toggleTheme = useCallback(() => {
     setSettings((prev) => ({
       ...prev,
-      theme: prev.theme === "dark" ? "light" : "dark",
+      theme: getNextTheme(prev.theme),
     }));
   }, [setSettings]);
 
@@ -315,6 +338,13 @@ export default function App() {
   });
 
   useEffect(() => {
+    if (!settingsReady) return;
+    void initAutomation().catch((error) => {
+      console.warn("Failed to initialize automation store", error);
+    });
+  }, [settingsReady]);
+
+  useEffect(() => {
     if (!settingsReady) {
       return;
     }
@@ -327,18 +357,18 @@ export default function App() {
           return;
         }
 
-        setSettingsState((prev) => {
-          const next = applyRuntimeSystemDefaults(
-            applyGatewaySettingsSyncPayload(prev, event.payload),
-            defaultWorkdirRef.current,
-          );
-          const publicChanged = hasSettingsSyncChanged(prev, next);
-          if (!publicChanged && !hasSensitiveSettingsUpdatesPayload(event.payload)) {
-            return prev;
-          }
-          queueSettingsSave(prev, next, "同步 WebUI 设置失败。", publicChanged);
-          return next;
-        });
+        const prev = settingsRef.current;
+        const next = applyRuntimeSystemDefaults(
+          applyGatewaySettingsSyncPayload(prev, event.payload),
+          defaultWorkdirRef.current,
+        );
+        const publicChanged = hasSettingsSyncChanged(prev, next);
+        if (!publicChanged && !hasSensitiveSettingsUpdatesPayload(event.payload)) {
+          return;
+        }
+        settingsRef.current = next;
+        setSettingsState(next);
+        queueSettingsSave(prev, next, "同步 WebUI 设置失败。", publicChanged);
       },
     );
 
@@ -367,7 +397,7 @@ export default function App() {
     <LocaleContext.Provider value={localeContextValue}>
       <AppChrome appUpdate={appUpdate}>
         <CronPromptRunner settings={settings} />
-        <MemoryOrganizerRunner settings={settings} setSettings={setSettings} />
+        <MemoryOrganizerHost settings={settings} setSettings={setSettings} />
         <ChatPage
           settings={settings}
           setSettings={setSettings}

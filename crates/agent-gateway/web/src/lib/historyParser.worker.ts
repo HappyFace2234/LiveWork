@@ -1,4 +1,4 @@
-import { parseHistoryMessagesJson, type ChatEntry } from "./chatUi";
+import { type ChatEntry, parseHistoryMessagesJson } from "./chatUi";
 
 type HistoryParseWorkerRequest = {
   type: "parse-history";

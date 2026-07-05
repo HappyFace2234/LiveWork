@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  AlertTriangle,
   BrushCleaning,
   CheckCircle2,
   ChevronDown,
@@ -15,12 +15,19 @@ import {
 } from "../../components/icons";
 
 import { useLocale } from "../../i18n";
-import type { CronExecutionLog, CronTask, CronTaskType } from "../../lib/settings";
+import {
+  type CronRunRecord,
+  type CronTask,
+  type CronTaskType,
+  clearCronRuns,
+  listCronRuns,
+  useAutomation,
+} from "../../lib/automation";
+import { useModalMotion } from "../../lib/shared/modalMotion";
 import { ConfirmActionPopover } from "./shared";
-import { stringifyTaskBody, stringifyTaskHeaders } from "./taskConfigUtils";
 
 type CronTaskViewModalProps = {
-  task: CronTask;
+  taskId: string;
   onClose: () => void;
 };
 
@@ -64,6 +71,16 @@ function formatDuration(ms: number): string {
 
 function formatTimestamp(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
+}
+
+function stringifyHeaders(headers?: Record<string, string>) {
+  if (!headers || Object.keys(headers).length === 0) return "";
+  return JSON.stringify(headers, null, 2);
+}
+
+function stringifyBody(body?: unknown) {
+  if (body === undefined) return "";
+  return JSON.stringify(body, null, 2);
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -163,6 +180,13 @@ function LeftPanel({
               )}
             </div>
           </div>
+
+          {task.lastError ? (
+            <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-red-500/20 bg-red-500/[0.04] px-2.5 py-2 text-[11px] leading-relaxed text-red-700 dark:text-red-300">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span className="min-w-0 break-all">{task.lastError}</span>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -195,8 +219,8 @@ function LeftPanel({
             (task.requests ?? []).length > 0 ? (
               <div className="space-y-2.5">
                 {(task.requests ?? []).map((req, i) => {
-                  const headersText = stringifyTaskHeaders(req.headers);
-                  const bodyText = stringifyTaskBody(req.body);
+                  const headersText = stringifyHeaders(req.headers);
+                  const bodyText = stringifyBody(req.body);
                   const hasHeaders = headersText.trim().length > 0;
                   const hasBody = bodyText.trim().length > 0;
                   return (
@@ -307,7 +331,8 @@ function RightPanel({
   onClose: () => void;
 }) {
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
-  const [logs, setLogs] = useState<CronExecutionLog[]>([]);
+  const [logs, setLogs] = useState<CronRunRecord[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isClearing, setIsClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
 
@@ -316,17 +341,16 @@ function RightPanel({
 
     async function loadLogs() {
       try {
-        const nextLogs = await invoke<CronExecutionLog[]>("cron_list_logs", {
-          task_id: task.id,
-          limit: 100,
-        } as any);
+        const nextLogs = await listCronRuns(task.id, 100);
         if (!cancelled) {
-          setClearError(null);
+          setLoadError(null);
           setLogs(Array.isArray(nextLogs) ? nextLogs : []);
         }
-      } catch {
+      } catch (error) {
+        // Keep the last successfully loaded list; a failed fetch must not
+        // masquerade as "no logs".
         if (!cancelled) {
-          setLogs([]);
+          setLoadError(error instanceof Error ? error.message : String(error));
         }
       }
     }
@@ -353,9 +377,7 @@ function RightPanel({
     try {
       setIsClearing(true);
       setClearError(null);
-      await invoke("cron_clear_logs", {
-        task_id: task.id,
-      } as any);
+      await clearCronRuns(task.id);
       setExpandedLogId(null);
       setLogs([]);
     } catch {
@@ -368,7 +390,7 @@ function RightPanel({
   return (
     <>
       {/* ── Fixed header ── */}
-      <div className="flex shrink-0 items-center gap-2 border-b border-border/30 px-5 py-3.5">
+      <div className="settings-cron-logs-header flex shrink-0 items-center gap-2 border-b border-border/30 px-5 py-3.5">
         <ScrollText className="h-4 w-4 text-muted-foreground/50" />
         <span className="text-sm font-semibold text-foreground">{t("settings.cronViewLogs")}</span>
         <div className="ml-auto flex items-center gap-2">
@@ -430,6 +452,14 @@ function RightPanel({
 
       {/* ── Scrollable log list ── */}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {loadError ? (
+          <div className="mb-3 flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="min-w-0 break-all">
+              {t("settings.cronViewLogsLoadFailed")}: {loadError}
+            </span>
+          </div>
+        ) : null}
         {clearError ? (
           <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/[0.03] px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
             {clearError}
@@ -439,6 +469,7 @@ function RightPanel({
           <div className="space-y-2">
             {logs.map((log) => {
               const isExpanded = expandedLogId === log.id;
+              const isExpired = log.state === "expired";
 
               return (
                 <div
@@ -453,7 +484,7 @@ function RightPanel({
                   <button
                     type="button"
                     onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
-                    className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+                    className="settings-log-row flex w-full items-center gap-2 px-3 py-2.5 text-left"
                   >
                     {/* Status icon */}
                     {log.success ? (
@@ -475,7 +506,9 @@ function RightPanel({
                     >
                       {log.success
                         ? t("settings.cronViewLogSuccess")
-                        : t("settings.cronViewLogFailed")}
+                        : isExpired
+                          ? t("settings.cronViewLogExpired")
+                          : t("settings.cronViewLogFailed")}
                     </span>
                     {/* Duration — right-aligned fixed width */}
                     <span className="ml-auto w-[48px] shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/50">
@@ -556,24 +589,42 @@ function RightPanel({
 
 /* ─────────────────────── Modal shell ─────────────────────── */
 
-export function CronTaskViewModal({ task, onClose }: CronTaskViewModalProps) {
+export function CronTaskViewModal({ taskId, onClose }: CronTaskViewModalProps) {
   const { t } = useLocale();
+  const { modalState, requestClose } = useModalMotion(onClose);
+  // Live subscription: enable/disable toggles, executor decrements and
+  // scheduler errors show up while the modal is open.
+  const { cron } = useAutomation();
+  const task = cron.tasks.find((item) => item.id === taskId);
+
+  useEffect(() => {
+    if (!task) {
+      requestClose();
+    }
+  }, [task, requestClose]);
+
+  if (!task) {
+    return null;
+  }
   const cfg = TYPE_CONFIG[task.type];
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+    <div
+      className="settings-modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
+      data-state={modalState}
+    >
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={requestClose} />
 
       {/* Use explicit h-[80vh] so children can compute flex/overflow correctly */}
-      <div className="relative z-10 flex h-[80vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl">
+      <div className="settings-modal-panel settings-cron-view-panel relative z-10 flex h-[80vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl">
         {/* ── Left: task detail ── */}
-        <div className="flex w-[380px] shrink-0 flex-col border-r border-border/40 bg-background">
+        <div className="settings-cron-view-left flex w-[380px] shrink-0 flex-col border-r border-border/40 bg-background">
           <LeftPanel task={task} t={t} cfg={cfg} />
         </div>
 
         {/* ── Right: logs ── */}
-        <div className="flex min-w-0 flex-1 flex-col bg-muted/5">
-          <RightPanel task={task} t={t} onClose={onClose} />
+        <div className="settings-cron-view-right flex min-w-0 flex-1 flex-col bg-muted/5">
+          <RightPanel task={task} t={t} onClose={requestClose} />
         </div>
       </div>
     </div>,

@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import { DEFAULT_LOCALE, t as translate, type Locale } from "./config";
+import { DEFAULT_LOCALE, type Locale, t as translate } from "./config";
 
 type LocaleContextValue = {
   locale: Locale;

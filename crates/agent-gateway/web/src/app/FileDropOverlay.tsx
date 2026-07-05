@@ -50,9 +50,7 @@ export function FileDropOverlay({
           <div className="text-[15px] font-semibold leading-tight tracking-tight text-foreground">
             {title}
           </div>
-          <div className="max-w-[280px] text-xs leading-5 text-muted-foreground">
-            {description}
-          </div>
+          <div className="max-w-[280px] text-xs leading-5 text-muted-foreground">{description}</div>
         </div>
 
         <div className="h-px w-12 bg-foreground/10 dark:bg-white/10" aria-hidden="true" />

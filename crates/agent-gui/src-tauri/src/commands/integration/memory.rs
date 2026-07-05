@@ -11,9 +11,9 @@ use crate::{
         MemoryOrganizeRun, MemoryOrganizeRunClearHistoryResponse, MemoryOrganizeRunCreateArgs,
         MemoryOrganizeRunCreateResponse, MemoryOrganizeRunListArgs, MemoryOrganizeRunListResponse,
         MemoryOrganizeRunReadArgs, MemoryOrganizeRunUpdateArgs, MemoryOverviewResponse,
-        MemoryPathsInfo, MemoryReadArgs, MemoryReadResponse, MemoryRecentRejectionsArgs,
-        MemoryRecentRejectionsResponse, MemorySearchArgs, MemorySearchResponse, MemoryStore,
-        MemoryUpdateArgs, MemoryWriteArgs,
+        MemoryPathsInfo, MemoryQuotaSummaryArgs, MemoryQuotaSummaryResponse, MemoryReadArgs,
+        MemoryReadResponse, MemoryRecentRejectionsArgs, MemoryRecentRejectionsResponse,
+        MemorySearchArgs, MemorySearchResponse, MemoryStore, MemoryUpdateArgs, MemoryWriteArgs,
     },
 };
 
@@ -249,6 +249,18 @@ pub async fn memory_today_daily(
     tauri::async_runtime::spawn_blocking(move || store.today_daily(rollover_hour))
         .await
         .map_err(|e| format!("memory_today_daily join 失败：{e}"))?
+}
+
+#[tauri::command]
+pub async fn memory_quota_summary(
+    state: State<'_, Arc<MemoryStore>>,
+    args: Option<MemoryQuotaSummaryArgs>,
+) -> Result<MemoryQuotaSummaryResponse, String> {
+    let store = Arc::clone(&state);
+    let resolved = args.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || store.quota_summary(resolved))
+        .await
+        .map_err(|e| format!("memory_quota_summary join 失败：{e}"))?
 }
 
 #[tauri::command]

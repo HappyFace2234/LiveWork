@@ -1,7 +1,4 @@
-import {
-  CUSTOM_SYSTEM_TOOL_OPTIONS,
-  type CustomSystemToolId,
-} from "./customSystemTools";
+import { CUSTOM_SYSTEM_TOOL_OPTIONS, type CustomSystemToolId } from "./customSystemTools";
 
 export type SystemToolRuntimeScope = "chat" | "cron_auto_prompt";
 export type BuiltinSelectableSystemToolId = never;

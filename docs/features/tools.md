@@ -2,7 +2,7 @@
 
 ## 工具注册入口
 
-`src/lib/tools/builtinRegistry.ts` 是本地工具系统的组合入口。`buildBuiltinToolRegistry()` 接收 workdir、provider、skills、MCP settings、runtime scope、selected system tools、delegate runtime 等参数，返回：
+`src/lib/tools/builtinRegistry.ts` 是本地工具系统的组合入口。`buildBuiltinToolRegistry()` 接收 workdir、provider、skills、MCP settings、runtime scope、selected system tools、subagent runtime（`SubagentRuntimeConfig`）等参数，返回：
 
 | 字段 | 说明 |
 |---|---|
@@ -23,7 +23,7 @@
 | Dynamic MCP tools | `mcpTools.ts` | 将已启用 MCP server 的 tool 暴露为 `mcp_<server>_<tool>`。 |
 | Custom system tools | `customSystemTools.ts` | HTTP test 等系统工具，由 Settings 中 selectedSystemTools 控制。 |
 | MemoryManager | `memoryTools.ts` | list/read/search/write/update/delete/accept，支持 global/project/daily 语义。 |
-| Delegate/Subagent | `delegateTools.ts`、`delegate/*` | 创建委托 Agent、worktree、子代理消息与结果管理。 |
+| Subagent | `src/lib/subagents/*`（适配层 `agentTool.ts`、`sendMessageTool.ts`） | `Agent`/`SendMessage` 内置工具：委托持久化子代理、隔离 worktree、Message Bus。 |
 
 ## 执行边界
 
@@ -62,14 +62,29 @@
 | daily append | daily 类型通过 append 模式维护日记型记忆，不计入 ordinary quota。 |
 | silent extraction | 隐式记忆提取阶段不直接让模型调用 mutation，而是解析 plan 后由 LiveAgent 应用。 |
 
-## Delegate/Subagent
+## Subagent（Agent / SendMessage）
+
+子代理域整体位于 `src/lib/subagents/`，按严格分层组织：
+
+| 层 | 文件 | 职责 |
+|---|---|---|
+| L1 纯领域 | `types.ts`、`protocol.ts`、`errors.ts`、`validate.ts`、`policy.ts`、`prompts.ts`、`bus.ts`、`roster.ts`、`utils.ts` | 类型与常量、UI wire protocol、结构化错误、批量校验、readonly/worktree 工具选择与 apply/cleanup 决策、system prompt 构造、Message Bus 渲染、roster/template 汇总。无 IPC、无副作用。 |
+| L2 ipc | `ipc/store.ts`、`ipc/worktree.ts` | 持久化与 worktree 的 Tauri invoke 端口（`subagent_*` 命令），null→absent 归一，同一 run 的写入串行化；测试可注入替身。 |
+| L3 runtime | `scheduler.ts`、`store.ts`、`run.ts` | `SubagentScheduler` 信号量并发调度；`SubagentConversationStore` 是会话级唯一真源（roster、latest run、hydrated 私有上下文 LRU、Message Bus）；`run.ts` 是单次 run 状态机（worktree 创建 → tool loop → apply/cleanup → 持久化）。 |
+| L4 工具适配 | `agentTool.ts`、`sendMessageTool.ts`、`cards.ts`、`index.ts` | 生成 `Agent`/`SendMessage` 的 tool schema 与 executor、per-agent 卡片 tool call/result、对外导出面。 |
+
+`Agent` 工具语义：
 
 | 能力 | 说明 |
 |---|---|
-| delegate tools | 模型可把子任务交给子代理，带独立身份、运行记录和结果。 |
-| worktree tools | 可创建隔离 worktree，应用或清理子代理变更。 |
-| message tools | 父子代理之间可通过工具传递 Markdown 上下文和消息。 |
-| history | subagent identity/run/message 持久化在 Tauri 命令族中。 |
+| 结构化参数 | `agents` 数组（每项 `id/prompt/name/role/identity/template/mode/apply_policy/allowed_output_paths/resume/retain_worktree`）+ 顶层 `concurrency`，单次最多 8 个 agent 并行。 |
+| 稳定 id 与复用 | 同一会话内复用 id 即恢复该子代理的私有上下文；`name/role/identity/template` 只在 id 首次创建时生效，对既有 id 传入不同值会被拒绝。`resume=false` 为同一 id 开启全新私有上下文。 |
+| mode | `readonly`（新 agent 默认，只读工具）用于调研/评审；`worktree` 在隔离 git worktree 内提供文件+shell 工具。resume 的 agent 默认沿用上次 mode。 |
+| apply_policy | `none`（默认，不回灌）/`auto`（自动 apply patch）/`explicit`（仅当所有变更文件命中 `allowed_output_paths` 才 apply；路径必须解析进 workspace）。`retain_worktree=true` 保留可安全清理的 worktree 供复查。 |
+| 原子校验 | 校验失败时不启动任何 agent，返回结构化错误并附上当前 roster 与已启用模板列表；`AgentPromptTemplate.enabled` 生效，`template` 只能引用已启用模板（按 id 或 name 解析）。 |
+| SendMessage | `to=parent`（父私有）/`to=*`（共享广播）/`to=<agent id>`（直达），收件人按 roster 校验，未知收件人直接拒绝；channel 为 direct/shared/decision/question，消息在下一轮 turn 边界投递。 |
+| 持久化 | run 在每个 turn 边界通过 `subagent_run_save` 增量落盘，中断的 run 可从最后完成的 round 恢复；run status 含 `cancelled`。identity/run/message/worktree 各有 Tauri 命令族（见 architecture/gui.md）。 |
+| UI 协议 | details kind 为 `subagent_batch`/`subagent_card`/`subagent_message`；per-agent 卡片以 `subagent_card: true` 标记的合成 tool call 渲染，被拒绝的 Agent 调用也会可见渲染；`lib/subagents/protocol.ts` 在 GUI/WebUI 间逐字节镜像（scripts/mirror-manifest.json）。 |
 
 ## 工具改造检查表
 

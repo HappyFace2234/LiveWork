@@ -54,42 +54,44 @@ mod tests {
                 id,
                 parent_conversation_id,
                 parent_tool_call_id,
-                parent_tool_name,
+                agent_id,
                 agent_index,
                 agent_total,
-                logical_agent_id,
-                description,
+                prompt,
                 mode,
                 status,
                 provider_id,
                 model,
-                context_meta_json,
+                context_schema_version,
                 active_segment_index,
                 total_segment_count,
                 total_message_count,
+                round_count,
+                tool_call_count,
+                compaction_count,
                 started_at,
-                created_at,
                 updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
             ",
             params![
                 run_id,
                 "conv-1",
                 parent_tool_call_id,
-                "Agent",
+                format!("agent-{agent_index}"),
                 agent_index,
                 2,
-                format!("agent-{agent_index}"),
                 format!("Agent {agent_index}"),
                 "worktree",
                 "completed",
                 "codex",
                 "gpt-5",
-                "{}",
+                1,
                 0,
                 1,
                 1,
-                1_700_000_000_100_i64,
+                0,
+                0,
+                0,
                 1_700_000_000_100_i64,
                 1_700_000_000_200_i64,
             ],
@@ -694,23 +696,11 @@ mod tests {
         .expect("insert subagent segment");
         conn.execute(
             "
-            INSERT INTO subagentRunEvent (
-                run_id,
-                event_type,
-                is_error,
-                created_at
-            ) VALUES (?1, ?2, ?3, ?4)
-            ",
-            params!["run-delete", "turn_start", 0, 1_700_000_000_200_i64],
-        )
-        .expect("insert subagent event");
-        conn.execute(
-            "
-            INSERT INTO subagentMessageBusEntry (
+            INSERT INTO subagentMessage (
                 parent_conversation_id,
                 seq,
-                sender_agent_id,
-                recipient_agent_id,
+                sender_id,
+                recipient_id,
                 channel,
                 body_markdown,
                 source_run_id,
@@ -733,11 +723,11 @@ mod tests {
         .expect("insert run-scoped message");
         conn.execute(
             "
-            INSERT INTO subagentMessageBusEntry (
+            INSERT INTO subagentMessage (
                 parent_conversation_id,
                 seq,
-                sender_agent_id,
-                recipient_agent_id,
+                sender_id,
+                recipient_id,
                 channel,
                 body_markdown,
                 created_at
@@ -758,17 +748,15 @@ mod tests {
             "
             INSERT INTO subagentIdentity (
                 parent_conversation_id,
-                logical_agent_id,
-                display_name,
+                agent_id,
+                name,
                 role,
                 identity_prompt,
-                default_mode,
-                default_task_intent,
-                default_apply_policy,
-                created_parent_tool_call_id,
+                last_mode,
+                created_tool_call_id,
                 created_at,
                 updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             ",
             params![
                 "conv-1",
@@ -777,8 +765,6 @@ mod tests {
                 "Reviewer",
                 "Stable identity",
                 "readonly",
-                "review",
-                "none",
                 "call-delete",
                 1_700_000_000_000_i64,
                 1_700_000_000_100_i64,
@@ -788,14 +774,15 @@ mod tests {
 
         let result = delete_chat_history_sync(&mut conn, "conv-1").expect("delete conversation");
 
-        assert_eq!(result.deleted_run_count, 1);
+        assert_eq!(result.removed_run_ids, vec!["run-delete".to_string()]);
+        assert_eq!(result.removed_message_count, 2);
+        assert_eq!(result.removed_identity_count, 1);
         for table_name in [
             "chatHistory",
             "chatHistorySegment",
             "subagentRun",
             "subagentRunSegment",
-            "subagentRunEvent",
-            "subagentMessageBusEntry",
+            "subagentMessage",
             "subagentIdentity",
         ] {
             let count: i64 = conn
@@ -1336,11 +1323,10 @@ mod tests {
             .expect("query schema before prune");
         assert_eq!(before.as_deref(), Some("subagentRun"));
 
-        let result =
-            subagent_history::prune_subagent_runs_for_parent_tool_calls(&conn, "conv-1", &[])
-                .expect("prune uses initialized subagent schema");
+        let result = subagent_store::prune_subagent_runs_sync(&conn, "conv-1", &[])
+            .expect("prune uses initialized subagent schema");
 
-        assert_eq!(result.deleted_run_count, 0);
+        assert!(result.removed_run_ids.is_empty());
         let after: Option<String> = conn
             .query_row(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'subagentRun'",

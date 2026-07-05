@@ -255,6 +255,58 @@ test("gateway bridge checkpoint emits compaction summary payload", () => {
   ]);
 });
 
+test("gateway bridge user message carries the edit-resend truncation base", () => {
+  const { controller, sent } = createController();
+
+  controller.queueUserMessage("edited prompt", [], {
+    baseMessageRef: {
+      segmentIndex: 0,
+      messageIndex: 2,
+      segmentId: "segment-1",
+      messageId: "message-2",
+      role: "user",
+      contentHash: "hash-2",
+    },
+  });
+
+  assert.deepEqual(sent, [
+    {
+      requestId: "request-1",
+      event: {
+        type: "user_message",
+        message: "edited prompt",
+        uploaded_files: [],
+        conversation_id: "conversation-1",
+        base_message_ref: {
+          segment_index: 0,
+          message_index: 2,
+          segment_id: "segment-1",
+          message_id: "message-2",
+          role: "user",
+          content_hash: "hash-2",
+        },
+        reason: "edit_resend",
+      },
+    },
+  ]);
+});
+
+test("gateway bridge user message omits the truncation base for plain sends", () => {
+  const { controller, sent } = createController();
+
+  controller.queueUserMessage("plain prompt");
+
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].event, {
+    type: "user_message",
+    message: "plain prompt",
+    uploaded_files: [],
+    conversation_id: "conversation-1",
+  });
+  assert.equal("base_message_ref" in sent[0].event, false);
+  assert.equal("reason" in sent[0].event, false);
+});
+
 test("gateway bridge error can resolve the latest conversation id", () => {
   const { controller, sent } = createController({
     conversationId: "conversation-initial",

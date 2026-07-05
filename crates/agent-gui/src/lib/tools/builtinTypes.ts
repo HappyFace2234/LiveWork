@@ -1,6 +1,11 @@
 import type { Tool, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 
-import type { SubagentScheduler } from "../chat/subagent/subagentScheduler";
+import type {
+  SubagentBatchDetails,
+  SubagentCardDetails,
+  SubagentMessageDetails,
+} from "../subagents/protocol";
+import type { SubagentScheduler } from "../subagents/scheduler";
 
 export type BuiltinToolGroupId =
   | "fs"
@@ -8,7 +13,7 @@ export type BuiltinToolGroupId =
   | "skill"
   | "system"
   | "mcp"
-  | "delegate"
+  | "subagent"
   | "memory";
 
 export type BuiltinToolDisplayCategory =
@@ -41,21 +46,10 @@ export type BuiltinToolExecutor = (
   context?: BuiltinToolExecutionContext,
 ) => Promise<ToolResultMessage>;
 
-export type BuiltinToolPreflightResult = {
-  toolCall?: ToolCall;
-  toolResult: ToolResultMessage;
-};
-
-export type BuiltinToolPreflight = (
-  toolCall: ToolCall,
-  signal?: AbortSignal,
-) => Promise<BuiltinToolPreflightResult | null>;
-
 export type BuiltinToolBundle<TExtra extends object = object> = TExtra & {
   groupId: BuiltinToolGroupId;
   tools: Tool[];
   executeToolCall: BuiltinToolExecutor;
-  preflightToolCall?: BuiltinToolPreflight;
   metadataByName: Map<string, BuiltinToolMetadata>;
 };
 
@@ -73,14 +67,14 @@ export function createBuiltinMetadataMap(
 }
 
 export type FsEntryKind = "file" | "dir";
-export type PathScope = "workspace" | "skill" | "external" | "temp" | "artifact";
+export type PathScope = "workspace" | "skill" | "external";
 
 export type ResolvedPathResultDetails = {
   scope?: PathScope;
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
 };
 
 export type ReadTextResultDetails = {
@@ -90,7 +84,7 @@ export type ReadTextResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   startLine: number;
   numLines: number;
   totalLines: number;
@@ -108,7 +102,7 @@ export type ReadImageResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   mimeType: string;
   sizeBytes: number;
   mtimeMs: number;
@@ -122,7 +116,7 @@ export type DisplayImageItemDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   sourceType?: "path" | "url" | "base64" | "auto";
   renderMode?: "inline" | "proxy";
   sourceUrl?: string;
@@ -150,7 +144,7 @@ export type ReadPdfResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   pageStart: number;
   numPages: number;
   totalPages: number;
@@ -167,7 +161,7 @@ export type ReadNotebookResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   cellStart: number;
   numCells: number;
   totalCells: number;
@@ -184,7 +178,7 @@ export type ReadDocumentResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   truncated: boolean;
   mimeType?: string;
   sizeBytes?: number;
@@ -243,87 +237,6 @@ export type McpManagerResultDetails = {
   errors?: string[];
 };
 
-export type DelegateAgentItemResultDetails = {
-  id: string;
-  runId?: string;
-  name?: string;
-  role?: string;
-  prompt: string;
-  agentId?: string;
-  agentName?: string;
-  mode: "readonly" | "worktree";
-  taskIntent?: "communication" | "research" | "review" | "implementation" | "document_generation";
-  applyPolicy?: "none" | "explicit" | "auto";
-  allowedOutputPaths?: string[];
-  status: "completed" | "failed";
-  summary: string;
-  durationMs: number;
-  rounds: number;
-  toolCalls: number;
-  error?: string;
-  worktreeRoot?: string;
-  workdir?: string;
-  branchName?: string;
-  changed?: boolean;
-  statusText?: string;
-  diffStat?: string;
-  diff?: string;
-  diffTruncated?: boolean;
-  untrackedFiles?: string[];
-  worktreeStatusError?: string;
-  applyStatus?: "applied" | "skipped" | "failed";
-  applyMethod?: "git_apply" | "git_apply_3way" | "file_copy_fallback";
-  applyChanged?: boolean;
-  applyPatchBytes?: number;
-  applySkippedReason?: string;
-  applyFallbackReason?: string;
-  applyCopiedFiles?: string[];
-  applyDeletedFiles?: string[];
-  applyConflictFiles?: string[];
-  applyError?: string;
-  appliedToWorkdir?: string;
-  worktreeCleanupStatus?: "removed" | "retained" | "skipped" | "failed";
-  worktreeCleanupReason?: string;
-  worktreeCleanupError?: string;
-  worktreeBranchDeleted?: boolean;
-  candidateArtifacts?: string[];
-  changedPaths?: string[];
-};
-
-export type DelegateAgentCardResultDetails = {
-  kind: "delegate_agent_item";
-  parentToolCallId: string;
-  index: number;
-  total: number;
-  concurrency: number;
-  agent: DelegateAgentItemResultDetails;
-};
-
-export type DelegateAgentResultDetails = {
-  kind: "delegate_agent";
-  agentCount: number;
-  concurrency: number;
-  totalDurationMs: number;
-  readOnly: boolean;
-  mode: "readonly" | "worktree" | "mixed";
-  agents: DelegateAgentItemResultDetails[];
-};
-
-export type SubagentMessageResultDetails = {
-  kind: "subagent_message";
-  parentConversationId: string;
-  seq: number;
-  senderAgentId: string;
-  senderDisplayName?: string;
-  recipientAgentId: string;
-  recipientDisplayName?: string;
-  channel: "direct" | "shared" | "decision" | "question";
-  subject?: string;
-  sourceRunId?: string;
-  sourceToolCallId?: string;
-  bodyPreview: string;
-};
-
 export type WriteResultDetails = {
   kind: "write";
   path: string;
@@ -331,7 +244,7 @@ export type WriteResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   mode: "rewrite";
   existedBefore: boolean;
   bytesWritten: number;
@@ -348,7 +261,7 @@ export type EditResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   replacements: number;
   replaceAll: boolean;
   expectedReplacements?: number;
@@ -366,7 +279,7 @@ export type DeleteResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
   targetKind: string;
 };
 
@@ -382,7 +295,8 @@ export type ListResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
+  targetKind?: FsEntryKind;
   depth: number;
   offset: number;
   maxResults: number;
@@ -398,7 +312,8 @@ export type GlobResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
+  targetKind?: FsEntryKind;
   pattern: string;
   sortBy: "path";
   offset: number;
@@ -429,7 +344,8 @@ export type GrepResultDetails = {
   absolutePath?: string;
   relativePath?: string;
   displayPath?: string;
-  pathRef?: string;
+  fileId?: string;
+  targetKind?: FsEntryKind;
   pattern: string;
   filePattern?: string;
   ignoreCase: boolean;
@@ -454,9 +370,9 @@ export type BuiltinToolResultDetails =
   | ReadDocumentResultDetails
   | SkillsManagerResultDetails
   | McpManagerResultDetails
-  | DelegateAgentCardResultDetails
-  | DelegateAgentResultDetails
-  | SubagentMessageResultDetails
+  | SubagentBatchDetails
+  | SubagentCardDetails
+  | SubagentMessageDetails
   | WriteResultDetails
   | EditResultDetails
   | DeleteResultDetails

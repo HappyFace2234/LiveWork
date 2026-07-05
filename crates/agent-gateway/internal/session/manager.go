@@ -9,20 +9,13 @@ import (
 )
 
 var ErrAgentOffline = errors.New("agent offline")
-var ErrChatRunNotFound = errors.New("chat run not found")
 var ErrTunnelNotFound = errors.New("tunnel not found")
 var ErrTunnelExpired = errors.New("tunnel expired")
 var ErrTunnelOverLimit = errors.New("tunnel connection limit exceeded")
-var ErrTunnelLimitExceeded = errors.New("tunnel limit exceeded")
+var ErrCommandQueueFull = errors.New("command queue full")
+var ErrCommandQueueTimeout = errors.New("command queue timeout: agent did not reconnect")
 
 const (
-	maxBufferedChatRunEvents = 50000
-	chatRunDoneRetention     = time.Hour
-	chatRunStartRetention    = 5 * time.Minute
-	chatRunStaleRetention    = 12 * time.Hour
-
-	agentDisconnectedChatRunMessage = "Desktop agent disconnected. Please retry."
-
 	chatRuntimeReadyTTL      = 15 * time.Second
 	agentSessionHeartbeatTTL = 90 * time.Second
 	defaultRuntimeReadyState = "ready"
@@ -35,10 +28,12 @@ type AuthSnapshot struct {
 }
 
 type Manager struct {
-	registry  *sessionRegistry
-	syncHub   *syncHub
-	chatStore *chatRunStore
-	tunnels   *tunnelStore
+	registry     *sessionRegistry
+	syncHub      *syncHub
+	convStreams  *conversationStreamStore
+	tunnels      *tunnelRuntime
+	cmdQueue     *commandQueue
+	workspaceHub *workspaceActivityHub
 }
 
 type AgentSession struct {
@@ -49,6 +44,7 @@ type AgentSession struct {
 	LastPing     time.Time
 
 	toAgent chan *OutboundEnvelope
+	pingCh  chan *gatewayv1.GatewayEnvelope
 	done    chan struct{}
 
 	closeOnce sync.Once
@@ -60,82 +56,6 @@ type AgentSession struct {
 
 type agentStream struct {
 	ch        chan *gatewayv1.AgentEnvelope
-	done      chan struct{}
-	closeOnce sync.Once
-}
-
-type ChatBroadcastEvent struct {
-	RequestID string
-	Event     *gatewayv1.ChatEvent
-	Control   *gatewayv1.ChatControlEvent
-	Payload   map[string]any
-	Seq       int64
-	Workdir   string
-}
-
-type ChatRunSnapshot struct {
-	RequestID       string
-	ConversationID  string
-	ClientRequestID string
-	Workdir         string
-	FirstSeq        int64
-	LatestSeq       int64
-	RunEpoch        int64
-	State           string
-	ErrorCode       string
-	Done            bool
-}
-
-type ActiveChatRunSummary struct {
-	ConversationID string
-	RequestID      string
-	Workdir        string
-	FirstSeq       int64
-	LatestSeq      int64
-	RunEpoch       int64
-	UpdatedAt      int64
-}
-
-const (
-	ChatRunStateQueued        = "queued"
-	ChatRunStateDelivered     = "delivered"
-	ChatRunStateClaimed       = "claimed"
-	ChatRunStateStarting      = "starting"
-	ChatRunStateDesktopQueued = "desktop_queued"
-	ChatRunStateRunning       = "running"
-	ChatRunStateCompleted     = "completed"
-	ChatRunStateFailed        = "failed"
-	ChatRunStateCancelled     = "cancelled"
-)
-
-type chatRun struct {
-	requestID        string
-	conversationID   string
-	clientRequestID  string
-	workdir          string
-	sessionEpoch     uint64
-	runEpoch         int64
-	events           []*ChatBroadcastEvent
-	nextSeq          int64
-	state            string
-	errorCode        string
-	accepted         bool
-	started          bool
-	firstDeltaLogged bool
-	done             bool
-	updatedAt        time.Time
-	expiresAt        time.Time
-	subscribers      map[int]*chatRunSubscriber
-}
-
-type activeHistoryRun struct {
-	conversationID string
-	workdir        string
-	updatedAt      time.Time
-}
-
-type chatRunSubscriber struct {
-	ch        chan *ChatBroadcastEvent
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -157,21 +77,15 @@ type Status struct {
 }
 
 func NewManager() *Manager {
-	return &Manager{
-		registry:  newSessionRegistry(),
-		syncHub:   newSyncHub(),
-		chatStore: newChatRunStore(),
-		tunnels:   newTunnelStore(),
+	m := &Manager{
+		registry:     newSessionRegistry(),
+		syncHub:      newSyncHub(),
+		tunnels:      newTunnelRuntime(),
+		cmdQueue:     newCommandQueue(defaultCommandQueueTimeout),
+		workspaceHub: newWorkspaceActivityHub(),
 	}
+	m.convStreams = newConversationStreamStore(m.IsOnline)
+	go m.tunnelExpirySweepLoop()
+	return m
 }
 
-func NewManagerWithChatEventStore(store ChatEventStore) (*Manager, error) {
-	manager := NewManager()
-	manager.chatStore.eventStore = store
-	if store != nil {
-		if err := store.FailOpenRuns("Gateway restarted before the remote chat run finished. Please retry."); err != nil {
-			return nil, err
-		}
-	}
-	return manager, nil
-}

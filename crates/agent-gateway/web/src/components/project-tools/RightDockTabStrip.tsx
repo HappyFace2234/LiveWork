@@ -1,24 +1,18 @@
 import type { ReactNode } from "react";
 import { useLocale } from "../../i18n";
-import { cn } from "../../lib/shared/utils";
 import type { RightDockTabKind } from "../../lib/settings";
+import { cn } from "../../lib/shared/utils";
 import type { TerminalSession } from "../../lib/terminal/types";
 import { Check, Terminal, X } from "../icons";
-import {
-  getRightDockToolDefinition,
-  type RightDockSingletonTabKind,
-} from "./rightDockRegistry";
-import {
-  formatTerminalSessionTitle,
-  type RightDockVisibleTab,
-} from "./rightDockModel";
+import { formatTerminalSessionTitle, type RightDockVisibleTab } from "./rightDockModel";
+import { getRightDockToolDefinition, type RightDockSingletonTabKind } from "./rightDockRegistry";
 
 type RightDockTabStripProps = {
   tabs: RightDockVisibleTab[];
   currentActiveTab: RightDockTabKind;
   activeSession: TerminalSession | null;
   pendingCloseSessionId: string;
-  closingSessionId: string;
+  closingSessionIds: ReadonlySet<string>;
   draggingTabId: string;
   renderTabDragHandle: (tabId: string, label: string) => ReactNode;
   consumeSuppressedTabClick: (tabId: string) => boolean;
@@ -49,7 +43,7 @@ export function RightDockTabStrip(props: RightDockTabStripProps) {
     currentActiveTab,
     activeSession,
     pendingCloseSessionId,
-    closingSessionId,
+    closingSessionIds,
     draggingTabId,
     renderTabDragHandle,
     consumeSuppressedTabClick,
@@ -133,7 +127,7 @@ export function RightDockTabStrip(props: RightDockTabStripProps) {
 
         const session = tab.session;
         const isPendingClose = pendingCloseSessionId === session.id;
-        const isClosing = closingSessionId === session.id;
+        const isClosing = closingSessionIds.has(session.id);
         const sessionTitle = formatTerminalSessionTitle(
           session.title,
           t("projectTools.terminalTitle"),

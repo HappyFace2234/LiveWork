@@ -213,7 +213,7 @@ func (m *Manager) TerminalSessionSnapshot(projectPathKey string) []*gatewayv1.Te
 	return sessions
 }
 
-func (m *Manager) ReplaceTerminalSessionSnapshot(
+func (m *Manager) replaceTerminalSessionSnapshot(
 	projectPathKey string,
 	sessions []*gatewayv1.TerminalSession,
 ) {
@@ -251,9 +251,9 @@ func (m *Manager) ApplyTerminalResponseSnapshot(
 
 	switch action {
 	case "list":
-		m.ReplaceTerminalSessionSnapshot(projectPathKey, resp.GetSessions())
+		m.replaceTerminalSessionSnapshot(projectPathKey, resp.GetSessions())
 	case "close_project":
-		m.ReplaceTerminalSessionSnapshot(projectPathKey, nil)
+		m.replaceTerminalSessionSnapshot(projectPathKey, nil)
 	case "close":
 		if sessionID := strings.TrimSpace(resp.GetSession().GetId()); sessionID != "" {
 			m.syncHub.terminalMu.Lock()

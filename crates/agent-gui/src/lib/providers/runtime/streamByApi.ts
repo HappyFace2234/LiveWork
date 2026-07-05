@@ -1,4 +1,4 @@
-import type { Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { Context, Model } from "@earendil-works/pi-ai";
 import { streamAnthropic } from "@earendil-works/pi-ai/anthropic";
 import { type GoogleOptions, streamGoogle } from "@earendil-works/pi-ai/google";
 import {
@@ -18,129 +18,14 @@ import {
 } from "../deepSeekProviderAdapter";
 import { isRecord, resolveMaxTokens } from "./common";
 import { normalizeStructuredToolCallHistoryForDeepSeek } from "./textModeToolRecovery";
+import {
+  type AnthropicEffort,
+  type AnthropicThinkingRuntime,
+  clampOpenAIReasoningEffort,
+  resolveAnthropicThinkingRuntime,
+  resolveGeminiThinkingRuntime,
+} from "./thinkingLevels";
 import type { StreamOptionsEx, ToolChoice } from "./types";
-
-type AnthropicEffort = "low" | "medium" | "high" | "max" | "xhigh";
-type AnthropicThinkingMode = "disabled" | "adaptive" | "budget";
-type AnthropicThinkingRuntime = {
-  thinkingEnabled: boolean;
-  mode: AnthropicThinkingMode;
-  maxTokens: number;
-  effort?: AnthropicEffort;
-  thinkingBudgetTokens?: number;
-  display?: "summarized";
-  omitDisabledThinking?: boolean;
-};
-
-function supportsAdaptiveAnthropicThinking(modelId: string) {
-  const id = modelId.toLowerCase();
-  return (
-    isAnthropicMythosPreview(id) ||
-    isClaudeFamilyVersionAtLeast(id, "opus", 6) ||
-    isClaudeFamilyVersionAtLeast(id, "sonnet", 6)
-  );
-}
-
-function isAnthropicMythosPreview(modelId: string) {
-  return modelId.toLowerCase().includes("mythos-preview");
-}
-
-function isClaudeFamilyVersionAtLeast(
-  normalizedModelId: string,
-  family: "opus" | "sonnet",
-  minimumMinor: number,
-) {
-  const match = normalizedModelId.match(new RegExp(`${family}[-.]4[-.](\\d+)`));
-  if (!match) return false;
-  const minor = Number(match[1]);
-  return Number.isFinite(minor) && minor >= minimumMinor;
-}
-
-function supportsXHighAnthropicEffort(modelId: string) {
-  const id = modelId.toLowerCase();
-  return id.includes("mythos-preview") || isClaudeFamilyVersionAtLeast(id, "opus", 7);
-}
-
-function supportsMaxAnthropicEffort(modelId: string) {
-  const id = modelId.toLowerCase();
-  return (
-    id.includes("mythos-preview") ||
-    id.includes("opus-4-6") ||
-    id.includes("opus-4.6") ||
-    id.includes("sonnet-4-6") ||
-    id.includes("sonnet-4.6")
-  );
-}
-
-const ANTHROPIC_THINKING_BUDGETS: Record<NonNullable<SimpleStreamOptions["reasoning"]>, number> = {
-  minimal: 1_024,
-  low: 2_048,
-  medium: 8_192,
-  high: 16_384,
-  xhigh: 16_384,
-};
-
-function mapReasoningToAnthropicEffort(
-  reasoning: SimpleStreamOptions["reasoning"] | undefined,
-  modelId: string,
-): AnthropicEffort {
-  // Anthropic effort: low / medium / high / max / xhigh（按模型能力降级）。
-  const supportsMax = supportsMaxAnthropicEffort(modelId);
-
-  switch (reasoning) {
-    case "minimal":
-      return "low";
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-      return "high";
-    case "xhigh":
-      if (supportsXHighAnthropicEffort(modelId)) return "xhigh";
-      return supportsMax ? "max" : "high";
-    default:
-      return "high";
-  }
-}
-
-function resolveAnthropicThinkingRuntime(
-  model: Model<any>,
-  options: StreamOptionsEx,
-): AnthropicThinkingRuntime {
-  const maxTokens = resolveMaxTokens(options.maxTokens, model.maxTokens);
-  if (!options.reasoning) {
-    return {
-      thinkingEnabled: false,
-      mode: "disabled",
-      maxTokens,
-      omitDisabledThinking: isAnthropicMythosPreview(model.id),
-    };
-  }
-
-  if (supportsAdaptiveAnthropicThinking(model.id)) {
-    return {
-      thinkingEnabled: true,
-      mode: "adaptive",
-      maxTokens,
-      effort: mapReasoningToAnthropicEffort(options.reasoning, model.id),
-      display: "summarized",
-    };
-  }
-
-  let thinkingBudgetTokens = ANTHROPIC_THINKING_BUDGETS[options.reasoning];
-  const adjustedMaxTokens = Math.min(maxTokens + thinkingBudgetTokens, model.maxTokens);
-  if (adjustedMaxTokens <= thinkingBudgetTokens) {
-    thinkingBudgetTokens = Math.max(0, adjustedMaxTokens - 1_024);
-  }
-
-  return {
-    thinkingEnabled: true,
-    mode: "budget",
-    maxTokens: adjustedMaxTokens,
-    thinkingBudgetTokens,
-  };
-}
 
 function resolveDeepSeekAnthropicThinkingRuntime(
   model: Model<any>,
@@ -246,87 +131,6 @@ function buildOpenAIBaseOptions(model: Model<any>, options: StreamOptionsEx) {
   };
 }
 
-type GeminiThinkingLevel = "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
-type GeminiReasoningLevel = Exclude<NonNullable<StreamOptionsEx["reasoning"]>, "xhigh">;
-
-function normalizeGeminiReasoning(
-  reasoning: StreamOptionsEx["reasoning"] | undefined,
-): GeminiReasoningLevel | undefined {
-  if (reasoning === "xhigh") return "high";
-  return reasoning;
-}
-
-function isGemini3ProModel(modelId: string) {
-  return /gemini-3(?:\.\d+)?-pro/.test(modelId.toLowerCase());
-}
-
-function isGemini3FlashModel(modelId: string) {
-  return /gemini-3(?:\.\d+)?-flash/.test(modelId.toLowerCase());
-}
-
-function mapGeminiThinkingLevel(
-  modelId: string,
-  reasoning: GeminiReasoningLevel,
-): GeminiThinkingLevel {
-  if (isGemini3ProModel(modelId)) {
-    return reasoning === "minimal" || reasoning === "low" ? "LOW" : "HIGH";
-  }
-
-  switch (reasoning) {
-    case "minimal":
-      return "MINIMAL";
-    case "low":
-      return "LOW";
-    case "medium":
-      return "MEDIUM";
-    default:
-      return "HIGH";
-  }
-}
-
-function mapGeminiThinkingBudget(modelId: string, reasoning: GeminiReasoningLevel) {
-  const normalizedModelId = modelId.toLowerCase();
-  if (normalizedModelId.includes("2.5-pro")) {
-    return {
-      minimal: 128,
-      low: 2_048,
-      medium: 8_192,
-      high: 32_768,
-    }[reasoning];
-  }
-  if (normalizedModelId.includes("2.5-flash")) {
-    return {
-      minimal: 128,
-      low: 2_048,
-      medium: 8_192,
-      high: 24_576,
-    }[reasoning];
-  }
-  return -1;
-}
-
-function resolveGeminiThinkingRuntime(
-  model: Model<any>,
-  reasoning: StreamOptionsEx["reasoning"] | undefined,
-): GoogleOptions["thinking"] {
-  const normalizedReasoning = normalizeGeminiReasoning(reasoning);
-  if (!normalizedReasoning) {
-    return { enabled: false };
-  }
-
-  if (isGemini3ProModel(model.id) || isGemini3FlashModel(model.id)) {
-    return {
-      enabled: true,
-      level: mapGeminiThinkingLevel(model.id, normalizedReasoning),
-    };
-  }
-
-  return {
-    enabled: true,
-    budgetTokens: mapGeminiThinkingBudget(model.id, normalizedReasoning),
-  };
-}
-
 export function streamSimpleByApi(model: Model<any>, context: Context, options: StreamOptionsEx) {
   switch (model.api) {
     case "anthropic-messages": {
@@ -389,7 +193,7 @@ export function streamSimpleByApi(model: Model<any>, context: Context, options: 
         : context;
       const openAIOptions: OpenAICompletionsOptions = {
         ...buildOpenAIBaseOptions(model, openAICompletionsOptions),
-        reasoningEffort: openAICompletionsOptions.reasoning,
+        reasoningEffort: clampOpenAIReasoningEffort(model.id, openAICompletionsOptions.reasoning),
         toolChoice: mapToolChoiceToOpenAI(openAICompletionsOptions.toolChoice),
       };
       return streamOpenAICompletions(model as any, openAICompletionsContext, openAIOptions);
@@ -397,7 +201,7 @@ export function streamSimpleByApi(model: Model<any>, context: Context, options: 
     case "openai-responses": {
       const openAIOptions: OpenAIResponsesOptions = {
         ...buildOpenAIBaseOptions(model, options),
-        reasoningEffort: options.reasoning,
+        reasoningEffort: clampOpenAIReasoningEffort(model.id, options.reasoning),
       };
       return streamOpenAIResponses(model as any, context, openAIOptions);
     }

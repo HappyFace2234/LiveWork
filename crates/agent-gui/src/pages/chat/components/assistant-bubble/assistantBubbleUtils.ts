@@ -25,7 +25,10 @@ import {
   type ToolTraceItem,
   type UiRound,
 } from "../../../../lib/chat/messages/uiMessages";
-import type { DelegateAgentCardResultDetails } from "../../../../lib/tools/builtinTypes";
+import type {
+  SubagentCardDetails,
+  SubagentReportDetails,
+} from "../../../../lib/subagents/protocol";
 
 export function getToolMeta(name: string): {
   Icon: IconComponent;
@@ -86,42 +89,35 @@ export function compactInlineText(value: unknown, maxChars = 120) {
   return `${text.slice(0, maxChars)}...`;
 }
 
-export function isDelegateAgentCardToolCall(toolCall: {
+export function isSubagentCardToolCall(toolCall: {
   name: string;
   arguments?: Record<string, unknown>;
 }) {
-  return toolCall.name === "Agent" && toolCall.arguments?.delegate_agent_card === true;
+  return toolCall.name === "Agent" && toolCall.arguments?.subagent_card === true;
 }
 
-export function getDelegateAgentTask(agent: { prompt?: unknown; description?: unknown }) {
-  return displayString(agent.prompt) || displayString(agent.description);
+export function getSubagentTask(agent: { prompt?: unknown }) {
+  return displayString(agent.prompt);
 }
 
-export function getDelegateAgentInlineSummary(item: ToolTraceItem) {
-  const details = item.toolResult?.details as Partial<DelegateAgentCardResultDetails> | undefined;
-  const agent = details?.kind === "delegate_agent_item" ? details.agent : undefined;
+export function getSubagentInlineSummary(item: ToolTraceItem) {
+  const details = item.toolResult?.details as Partial<SubagentCardDetails> | undefined;
+  const agent = details?.kind === "subagent_card" ? details.agent : undefined;
   const args = item.toolCall.arguments || {};
-  const name =
-    displayString(agent?.name) ||
-    displayString(agent?.agentName) ||
-    displayString(args.name) ||
-    displayString(args.agent_id) ||
-    displayString(args.id);
-  const task = agent
-    ? getDelegateAgentTask(agent)
-    : displayString(args.prompt) || displayString(args.description);
+  const name = displayString(agent?.name) || displayString(args.name) || displayString(args.id);
+  const task = agent ? getSubagentTask(agent) : displayString(args.prompt);
 
   if (name && task) return `${name} - ${compactInlineText(task, 96)}`;
   return name || compactInlineText(task, 120);
 }
 
-export function shouldShowDelegateApplyStatus(agent: DelegateAgentCardResultDetails["agent"]) {
+export function shouldShowSubagentApplyStatus(agent: SubagentReportDetails) {
   if (!agent.applyStatus) return false;
   if (agent.applyStatus === "applied" || agent.applyStatus === "failed") return true;
   return Boolean(agent.applySkippedReason && agent.applySkippedReason !== "no_changes");
 }
 
-export function shouldShowDelegateCleanupStatus(agent: DelegateAgentCardResultDetails["agent"]) {
+export function shouldShowSubagentCleanupStatus(agent: SubagentReportDetails) {
   return Boolean(
     agent.worktreeCleanupStatus &&
       agent.worktreeCleanupStatus !== "removed" &&
@@ -129,10 +125,10 @@ export function shouldShowDelegateCleanupStatus(agent: DelegateAgentCardResultDe
   );
 }
 
-export function shouldShowDelegateWorktreeLocation(agent: DelegateAgentCardResultDetails["agent"]) {
+export function shouldShowSubagentWorktreeLocation(agent: SubagentReportDetails) {
   return Boolean(
     agent.worktreeRoot &&
-      (agent.status === "failed" ||
+      (agent.status !== "completed" ||
         agent.worktreeCleanupStatus === "retained" ||
         agent.worktreeCleanupStatus === "failed"),
   );

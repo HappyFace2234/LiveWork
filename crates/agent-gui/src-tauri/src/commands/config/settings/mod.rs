@@ -10,9 +10,8 @@ use std::{
 };
 
 use crate::runtime::project_path::project_path_key as normalize_project_path_key;
-use crate::services::cron::{validate_cron_expression, CronManager};
+use crate::services::automation::AutomationScheduler;
 use crate::services::gateway::GatewayController;
-use uuid::Uuid;
 
 const DB_FILENAME: &str = "config.sqlite";
 const DEFAULT_PROJECT_DIRNAME: &str = "default-project";
@@ -23,9 +22,6 @@ const AGENT_PROMPT_TEMPLATES_TABLE: &str = "agent_prompt_templates";
 const SSH_SETTINGS_TABLE: &str = "ssh_settings";
 const SSH_PROJECT_HOST_ASSOCIATIONS_TABLE: &str = "ssh_project_host_associations";
 const SSH_KNOWN_HOSTS_TABLE: &str = "ssh_known_hosts";
-const HOOK_SETTINGS_TABLE: &str = "hook_settings";
-const CRON_SETTINGS_TABLE: &str = "cron_settings";
-const CRON_EXECUTION_LOGS_TABLE: &str = "cron_execution_logs";
 const REMOTE_SETTINGS_TABLE: &str = "remote_settings";
 const MEMORY_SETTINGS_TABLE: &str = "memory_settings";
 
@@ -145,39 +141,10 @@ const SSH_KNOWN_HOSTS_DELETE_SQL: &str = "
     WHERE host = ?1 AND port = ?2
 ";
 
-const HOOK_SETTINGS_SELECT_SQL: &str = "
-    SELECT hook_id, payload_json
-    FROM hook_settings
-    ORDER BY sort_index ASC, hook_id ASC
-";
-const HOOK_SETTINGS_INSERT_SQL: &str = "
-    INSERT INTO hook_settings (hook_id, payload_json, sort_index, updated_at)
-    VALUES (?1, ?2, ?3, ?4)
-";
-const HOOK_SETTINGS_DELETE_SQL: &str = "DELETE FROM hook_settings";
-
-const CRON_SETTINGS_SELECT_SQL: &str = "
-    SELECT task_id, payload_json
-    FROM cron_settings
-    ORDER BY sort_index ASC, task_id ASC
-";
-const CRON_SETTINGS_INSERT_SQL: &str = "
-    INSERT INTO cron_settings (task_id, payload_json, sort_index, updated_at)
-    VALUES (?1, ?2, ?3, ?4)
-";
-const CRON_SETTINGS_UPDATE_SQL: &str = "
-    UPDATE cron_settings
-    SET payload_json = ?1, updated_at = ?2
-    WHERE task_id = ?3
-";
-const CRON_SETTINGS_DELETE_SQL: &str = "DELETE FROM cron_settings";
-
 include!("types.rs");
 include!("remote.rs");
 include!("db.rs");
 include!("json.rs");
-include!("hooks.rs");
-include!("cron.rs");
 include!("providers.rs");
 include!("agents.rs");
 include!("system.rs");

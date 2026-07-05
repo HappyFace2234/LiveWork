@@ -101,29 +101,24 @@ test("web settings normalization canonicalizes project keyed maps with Windows p
   assert.deepEqual(normalized.customSettings.rightDock.projects["c:/repo"], {
     activeTabId: RIGHT_DOCK_TAB_IDS.fileTree,
     tabOrder: [RIGHT_DOCK_TAB_IDS.gitReview, RIGHT_DOCK_TAB_IDS.fileTree],
-    tabs: {
-      [RIGHT_DOCK_TAB_IDS.fileTree]: {
-        id: RIGHT_DOCK_TAB_IDS.fileTree,
-        kind: "fileTree",
-        projectPathKey: "c:/repo",
-        createdAt: 1,
+    tools: {
+      fileTree: {
+        openedAt: 1,
         uiState: {
           query: "legacy",
           selectedPath: "src/main.ts",
           expandedPaths: ["", "src", "src/components"],
           revision: 2,
-          stateVersion: 0,
         },
       },
-      [RIGHT_DOCK_TAB_IDS.gitReview]: {
-        id: RIGHT_DOCK_TAB_IDS.gitReview,
-        kind: "gitReview",
-        projectPathKey: "c:/repo",
-        createdAt: 2,
+      gitReview: {
+        openedAt: 2,
       },
     },
     openVersion: 0,
     stateVersion: 0,
+    writerId: "",
+    lastUsedAt: 0,
   });
 });
 
@@ -1092,7 +1087,6 @@ test("gateway settings sync keeps right dock width local and syncs project state
       selectedPath: "desktop.ts",
       expandedPaths: ["", "src"],
       revision: 1,
-      stateVersion: 3,
     },
   );
   assert.equal(synced.customSettings.rightDock.projects["/shared/project"].openVersion, 5);
@@ -1164,34 +1158,6 @@ test("web remote settings normalize single-slash http gateway URLs", () => {
   assert.equal(remoteWithOversizedPort.grpcPort, 65_535);
 });
 
-test("web cron task normalization preserves finite and exhausted run counts", () => {
-  const finite = settings.normalizeCronTask({
-    id: "cron-finite",
-    type: "bash",
-    script: "echo finite",
-    remainingExecutions: "2",
-  });
-  assert.equal(finite.remainingExecutions, 2);
-
-  const exhausted = settings.normalizeCronTask({
-    id: "cron-exhausted",
-    type: "bash",
-    script: "echo exhausted",
-    enabled: true,
-    remainingExecutions: 0,
-  });
-  assert.equal(exhausted.remainingExecutions, 0);
-  assert.equal(exhausted.enabled, false);
-
-  const invalid = settings.normalizeCronTask({
-    id: "cron-invalid",
-    type: "bash",
-    script: "echo invalid",
-    remainingExecutions: "-1",
-  });
-  assert.equal(invalid.remainingExecutions, undefined);
-});
-
 test("web provider normalization keeps native web search toggle", () => {
   const enabledByDefault = settings.normalizeCustomProvider({
     id: "provider-enabled",
@@ -1207,4 +1173,102 @@ test("web provider normalization keeps native web search toggle", () => {
     nativeWebSearchEnabled: false,
   });
   assert.equal(disabled.nativeWebSearchEnabled, false);
+});
+
+test("web right dock normalize keeps unknown session ids and unresolved active tab", () => {
+  const project = settings.normalizeRightDockProjectState({
+    activeTabId: "sess-active",
+    tabOrder: ["sess-a", RIGHT_DOCK_TAB_IDS.gitReview, "sess-b"],
+    tools: { gitReview: { openedAt: 4 } },
+    openVersion: 1,
+    stateVersion: 2,
+    writerId: "peer",
+    lastUsedAt: 9,
+  });
+  assert.deepEqual(project.tabOrder, ["sess-a", RIGHT_DOCK_TAB_IDS.gitReview, "sess-b"]);
+  assert.equal(project.activeTabId, "sess-active");
+  assert.deepEqual(Object.keys(project.tools), ["gitReview"]);
+});
+
+test("web right dock merge converges symmetrically on writerId ties", () => {
+  const bucket = (writerId, activeTabId) => ({
+    activeTabId,
+    tabOrder: [activeTabId],
+    tools: { gitReview: { openedAt: 1 } },
+    openVersion: 1,
+    stateVersion: 3,
+    writerId,
+    lastUsedAt: 100,
+  });
+  const stateA = settings.normalizeSettings({
+    customSettings: { rightDock: { projects: { "/w/app": bucket("bbb", RIGHT_DOCK_TAB_IDS.gitReview) } } },
+  });
+  const stateB = settings.normalizeSettings({
+    customSettings: { rightDock: { projects: { "/w/app": bucket("aaa", "sess-2") } } },
+  });
+  const aGotB = settingsSync.applyGatewaySettingsSyncPayload(stateA, {
+    customSettings: { rightDock: stateB.customSettings.rightDock },
+  });
+  const bGotA = settingsSync.applyGatewaySettingsSyncPayload(stateB, {
+    customSettings: { rightDock: stateA.customSettings.rightDock },
+  });
+  const mergedA = aGotB.customSettings.rightDock.projects["/w/app"];
+  const mergedB = bGotA.customSettings.rightDock.projects["/w/app"];
+  assert.equal(mergedA.activeTabId, RIGHT_DOCK_TAB_IDS.gitReview);
+  assert.deepEqual(mergedA, mergedB);
+  assert.equal(mergedA.stateVersion, 3);
+  assert.equal(mergedA.lastUsedAt, 100);
+});
+
+test("web right dock buckets are kept by recency and tombstones expire", () => {
+  const now = Date.now();
+  const projects = {};
+  for (let index = 0; index <= 100; index += 1) {
+    projects[`/p/n${String(index).padStart(3, "0")}`] = {
+      tabOrder: [],
+      tools: { gitReview: { openedAt: 1 } },
+      openVersion: 1,
+      stateVersion: 1,
+      writerId: "w",
+      lastUsedAt: now - index * 1000,
+    };
+  }
+  const capped = settings.normalizeRightDockSettings({ projects });
+  assert.equal(Object.keys(capped.projects).length, 100);
+  assert.equal(capped.projects["/p/n100"], undefined);
+  assert.ok(capped.projects["/p/n000"]);
+
+  const tombstones = settings.normalizeRightDockSettings({
+    projects: {
+      "/t/expired": { tools: {}, openVersion: 1, stateVersion: 2, lastUsedAt: now - 91 * 24 * 3600 * 1000 },
+      "/t/fresh": { tools: {}, openVersion: 1, stateVersion: 2, lastUsedAt: now - 1000 },
+      "/t/legacy": { tools: {}, openVersion: 1, stateVersion: 2 },
+    },
+  });
+  assert.deepEqual(Object.keys(tombstones.projects).sort(), ["/t/fresh", "/t/legacy"]);
+  assert.ok(tombstones.projects["/t/legacy"].lastUsedAt >= now - 1000);
+});
+
+test("web right dock migrates the legacy tabs shape", () => {
+  const project = settings.normalizeRightDockProjectState({
+    activeTabId: "sess-1",
+    tabOrder: ["sess-1", RIGHT_DOCK_TAB_IDS.fileTree],
+    tabs: {
+      "sess-1": { id: "sess-1", kind: "terminal", projectPathKey: "/w/app", createdAt: 1 },
+      [RIGHT_DOCK_TAB_IDS.fileTree]: {
+        id: RIGHT_DOCK_TAB_IDS.fileTree,
+        kind: "fileTree",
+        projectPathKey: "/w/app",
+        createdAt: 7,
+        uiState: { query: "q", expandedPaths: ["", "src"] },
+      },
+    },
+    openVersion: 2,
+    stateVersion: 5,
+  });
+  assert.deepEqual(Object.keys(project.tools), ["fileTree"]);
+  assert.equal(project.tools.fileTree.openedAt, 7);
+  assert.equal(project.tools.fileTree.uiState.query, "q");
+  assert.deepEqual(project.tabOrder, ["sess-1", RIGHT_DOCK_TAB_IDS.fileTree]);
+  assert.equal(project.activeTabId, "sess-1");
 });

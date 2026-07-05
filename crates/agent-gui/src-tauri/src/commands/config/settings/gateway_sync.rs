@@ -25,12 +25,12 @@ pub(crate) fn load_gateway_settings_sync_snapshot(conn: &Connection) -> Result<V
         )]))))?,
     );
     snapshot.insert(
-        "hooks".to_string(),
-        load_hooks(conn)?.unwrap_or(Value::Array(Vec::new())),
+        "automationCron".to_string(),
+        load_masked_automation_cron(conn)?,
     );
     snapshot.insert(
-        "cron".to_string(),
-        load_cron(conn)?.unwrap_or(Value::Array(Vec::new())),
+        "automationHooks".to_string(),
+        load_masked_automation_hooks(conn)?,
     );
     snapshot.insert(
         "memory".to_string(),
@@ -46,26 +46,34 @@ pub(crate) fn load_gateway_settings_sync_snapshot(conn: &Connection) -> Result<V
             "enableWebTunnels": remote.enable_web_tunnels,
         }),
     );
-    snapshot.insert("customSettings".to_string(), Value::Object(Map::new()));
-    snapshot.insert("skills".to_string(), Value::Object(Map::new()));
-    snapshot.insert(
-        "chatRuntimeControls".to_string(),
-        json!({
-            "thinkingEnabled": true,
-            "nativeWebSearchEnabled": true,
-            "reasoning": "high",
-            "reasoningByProvider": {
-                "claude_code": "high",
-                "codex_openai_responses": "high",
-                "codex_openai_completions": "high",
-                "gemini": "high",
-            },
-        }),
-    );
-    snapshot.insert("selectedModel".to_string(), Value::Null);
-    snapshot.insert("theme".to_string(), Value::String("light".to_string()));
-    snapshot.insert("locale".to_string(), Value::String("zh-CN".to_string()));
+    // UI-only fields (theme, locale, selectedModel, skills, chatRuntimeControls,
+    // customSettings) live in the webview's localStorage, not in this DB. They are
+    // deliberately omitted here: merge_settings_sync_snapshot overlays the cached
+    // values published by the webview, and receivers treat a missing field as
+    // "keep current". Fabricating defaults here (e.g. theme "light") would clobber
+    // the user's real theme on every publish that happens before the webview syncs.
     Ok(Value::Object(snapshot))
+}
+
+/// Automation snapshots leave the desktop with HTTP header values masked;
+/// remote clients round-trip the sentinel and the store restores the stored
+/// secret on apply.
+fn load_masked_automation_cron(conn: &Connection) -> Result<Value, String> {
+    crate::services::automation::db::ensure_schema(conn)?;
+    let mut snapshot = crate::services::automation::db::read_cron_snapshot(conn)?;
+    for task in &mut snapshot.tasks {
+        crate::services::automation::validate::mask_request_headers(&mut task.requests);
+    }
+    serde_json::to_value(&snapshot).map_err(|e| format!("序列化 automation cron 快照失败：{e}"))
+}
+
+fn load_masked_automation_hooks(conn: &Connection) -> Result<Value, String> {
+    crate::services::automation::db::ensure_schema(conn)?;
+    let mut snapshot = crate::services::automation::db::read_hooks_snapshot(conn)?;
+    for hook in &mut snapshot.hooks {
+        crate::services::automation::validate::mask_request_headers(&mut hook.requests);
+    }
+    serde_json::to_value(&snapshot).map_err(|e| format!("序列化 automation hooks 快照失败：{e}"))
 }
 
 pub(crate) fn redact_gateway_settings_sync_payload(payload: Value) -> Result<Value, String> {
@@ -177,4 +185,3 @@ fn redact_ssh_proxy_secret(proxy: Value) -> Result<Value, String> {
     );
     Ok(Value::Object(payload))
 }
-

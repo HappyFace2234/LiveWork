@@ -7,14 +7,15 @@ export type {
 } from "./gateway/gatewayBridgeTypes";
 export { useGatewayBridgeBatcher } from "./gateway/useGatewayBridgeBatcher";
 export { useGatewayBridgeListeners } from "./gateway/useGatewayBridgeListeners";
-export { useChatHistoryList } from "./history/useChatHistoryList";
-export { useConversationHistoryActions } from "./history/useConversationHistoryActions";
+export {
+  scheduleIdleHydration,
+  useConversationHistoryActions,
+} from "./history/useConversationHistoryActions";
 export { useChatPageRuntimeStore } from "./hooks/useChatPageRuntimeStore";
 export { useChatSkills } from "./hooks/useChatSkills";
 export { useEditResend } from "./hooks/useEditResend";
 export { useLiveTranscriptController } from "./hooks/useLiveTranscriptController";
 export { MAX_UPLOAD_FILES, usePendingUploads } from "./hooks/usePendingUploads";
-export { clearSilentMemoryExtractionState } from "./memory/silentMemoryExtraction";
 export { createChatRuntimeHost } from "./runtime/ChatRuntimeHost";
 export {
   appendSystemPrompt,

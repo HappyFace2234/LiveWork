@@ -8,7 +8,7 @@ import (
 )
 
 func (m *Manager) SubscribeSettingsSync() (<-chan *gatewayv1.SettingsSyncEvent, func()) {
-	ch := make(chan *gatewayv1.SettingsSyncEvent, 32)
+	ch := make(chan *gatewayv1.SettingsSyncEvent, 64)
 
 	m.syncHub.settingsMu.Lock()
 	subID := m.syncHub.nextSettingsSubID

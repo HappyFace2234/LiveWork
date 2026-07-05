@@ -1,11 +1,15 @@
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 
+import { FileChangeBadge } from "../../../../components/chat/FileChangeBadge";
 import { ChevronRight, Search } from "../../../../components/icons";
 import { useLocale } from "../../../../i18n";
+import { deriveFileChangeStats } from "../../../../lib/chat/messages/fileChangeStats";
 import {
-  getStreamingEditToolPreview,
-  getStreamingWriteToolPreview,
+  deriveFileToolPreview,
+  FILE_TOOL_TEXT_FIELDS,
+} from "../../../../lib/chat/messages/toolPreview";
+import {
   previewText,
   safeStringify,
   summarizeToolCall,
@@ -18,12 +22,13 @@ import {
   areStableValuesEqual,
   displayString,
   getBuiltinResultKind,
-  getDelegateAgentInlineSummary,
+  getSubagentInlineSummary,
   getToolDisplayTitle,
   getToolMeta,
-  isDelegateAgentCardToolCall,
+  isSubagentCardToolCall,
   type MetaTag,
 } from "./assistantBubbleUtils";
+import { FileToolArgsDisplay } from "./FileToolArgs";
 import {
   MetaTags,
   PathDisplay,
@@ -34,7 +39,6 @@ import {
   ToolSurface,
   ToolSurfaceLabel,
 } from "./ToolResultDisplay";
-import { EditDiffView } from "./EditDiffView";
 
 function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unknown> }) {
   const args = toolCall.arguments || {};
@@ -93,20 +97,6 @@ function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unk
       if (typeof args.message === "string")
         tags.push({ label: "message", value: `${(args.message as string).length} chars` });
       return { type: "generic" as const, path: null, pattern: null, tags };
-    case "Write":
-      tags.push({ label: "mode", value: "rewrite" });
-      if (typeof args.content === "string")
-        tags.push({ label: "content", value: `${(args.content as string).length} chars` });
-      return { type: "file" as const, path, tags };
-    case "Edit":
-      if (typeof args.old_string === "string")
-        tags.push({ label: "old", value: `${(args.old_string as string).length}c` });
-      if (typeof args.new_string === "string")
-        tags.push({ label: "new", value: `${(args.new_string as string).length}c` });
-      if (typeof args.expected_replacements === "number")
-        tags.push({ label: "×", value: String(args.expected_replacements) });
-      if (args.replace_all === true) tags.push({ label: "all", value: "true" });
-      return { type: "file" as const, path, tags };
     case "Delete":
       return { type: "file" as const, path, tags };
     case "List":
@@ -151,160 +141,22 @@ function getToolDisplay(toolCall: { name: string; arguments?: Record<string, unk
   }
 }
 
-function StreamingArgPlaceholder({ label }: { label: string }) {
-  return (
-    <ToolSurface>
-      <div className="text-[11.5px] leading-[1.6] text-muted-foreground/62">{label}</div>
-    </ToolSurface>
-  );
-}
-
-function StreamingTextPreviewSurface({
-  label,
-  hasValue,
-  emptyLabel,
-  preview,
-}: {
-  label: string;
-  hasValue: boolean;
-  emptyLabel: string;
-  preview: { text: string; chars: number; lines: number; truncated: boolean };
-}) {
-  return (
-    <ToolSurface className="overflow-hidden px-0 py-0">
-      <div className="px-2.5 pt-2">
-        <ToolSurfaceLabel label={label} />
-      </div>
-      {hasValue ? (
-        preview.text ? (
-          <ToolScrollablePre className="max-h-56 rounded-none bg-black/[0.02] dark:bg-white/[0.03]">
-            {preview.text}
-          </ToolScrollablePre>
-        ) : (
-          <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
-            {emptyLabel}
-          </div>
-        )
-      ) : (
-        <div className="px-2.5 pb-2 text-[11.5px] leading-[1.6] text-muted-foreground/62">
-          Waiting for {label}...
-        </div>
-      )}
-    </ToolSurface>
-  );
-}
-
 /** Expanded args display — tool-aware layout */
 function ToolArgsDisplay({ item }: { item: ToolTraceItem }) {
   const toolCall = item.toolCall;
+
+  const filePreview = deriveFileToolPreview(toolCall);
+  if (filePreview) {
+    return <FileToolArgsDisplay preview={filePreview} />;
+  }
+
   const display = getToolDisplay(toolCall);
 
-  const writePreview = getStreamingWriteToolPreview(toolCall);
-  if (writePreview) {
-    const hasAnyArg = Boolean(writePreview.path || writePreview.hasContent);
-    if (!hasAnyArg) {
-      return <StreamingArgPlaceholder label="Waiting for file content..." />;
-    }
-    return (
-      <div className="tool-expand flex flex-col gap-2">
-        {writePreview.path ? (
-          <ToolSurface>
-            <ToolSurfaceLabel label="path" />
-            <PathDisplay
-              path={writePreview.path}
-              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
-            />
-          </ToolSurface>
-        ) : null}
-        {writePreview.hasContent ? (
-          <MetaTags
-            tags={[
-              { label: "mode", value: writePreview.mode },
-              { label: "chars", value: String(writePreview.content.chars) },
-              { label: "lines", value: String(writePreview.content.lines) },
-              ...(writePreview.content.truncated ? [{ label: "preview", value: "partial" }] : []),
-            ]}
-          />
-        ) : null}
-        <StreamingTextPreviewSurface
-          label="content"
-          hasValue={writePreview.hasContent}
-          emptyLabel="(empty content)"
-          preview={writePreview.content}
-        />
-      </div>
-    );
-  }
-
-  const editPreview = getStreamingEditToolPreview(toolCall);
-  if (editPreview) {
-    const hasAnyArg =
-      Boolean(editPreview.path) || editPreview.hasOldString || editPreview.hasNewString;
-    if (!hasAnyArg) {
-      return <StreamingArgPlaceholder label="Waiting for replacement strings..." />;
-    }
-    return (
-      <div className="tool-expand flex flex-col gap-2">
-        {editPreview.path ? (
-          <ToolSurface>
-            <ToolSurfaceLabel label="path" />
-            <PathDisplay
-              path={editPreview.path}
-              className="block min-w-0 break-all font-mono text-[11.5px] leading-[1.6]"
-            />
-          </ToolSurface>
-        ) : null}
-        <MetaTags
-          tags={[
-            ...(typeof editPreview.expectedReplacements === "number"
-              ? [{ label: "expected", value: String(editPreview.expectedReplacements) }]
-              : []),
-            ...(editPreview.replaceAll ? [{ label: "all", value: "true" }] : []),
-            ...(editPreview.hasOldString
-              ? [
-                  { label: "old", value: `${editPreview.oldString.chars} chars` },
-                  { label: "old lines", value: String(editPreview.oldString.lines) },
-                ]
-              : []),
-            ...(editPreview.hasNewString
-              ? [
-                  { label: "new", value: `${editPreview.newString.chars} chars` },
-                  { label: "new lines", value: String(editPreview.newString.lines) },
-                ]
-              : []),
-          ]}
-        />
-        {editPreview.hasOldString && editPreview.hasNewString ? (
-          <EditDiffView
-            beforeText={editPreview.oldString.text}
-            afterText={editPreview.newString.text}
-            filePath={editPreview.path}
-          />
-        ) : (
-          <>
-            <StreamingTextPreviewSurface
-              label="old string"
-              hasValue={editPreview.hasOldString}
-              emptyLabel="(empty old string)"
-              preview={editPreview.oldString}
-            />
-            <StreamingTextPreviewSurface
-              label="new string"
-              hasValue={editPreview.hasNewString}
-              emptyLabel="(empty replacement)"
-              preview={editPreview.newString}
-            />
-          </>
-        )}
-      </div>
-    );
-  }
-
-  if (isDelegateAgentCardToolCall(toolCall)) {
+  if (isSubagentCardToolCall(toolCall)) {
     const args = toolCall.arguments || {};
-    const name = displayString(args.name) || displayString(args.agent_id) || displayString(args.id);
+    const name = displayString(args.name) || displayString(args.id);
     const role = displayString(args.role);
-    const task = displayString(args.prompt) || displayString(args.description);
+    const task = displayString(args.prompt);
 
     return (
       <div className="tool-expand flex flex-col gap-2">
@@ -427,12 +279,11 @@ function ToolCallItem({
   const builtinResultKind = getBuiltinResultKind(result);
   const shouldAutoOpen = item.toolCall.name === "Image" || builtinResultKind === "display_image";
   const [open, setOpen] = useState(shouldAutoOpen);
-  const isDelegateAgentCard = isDelegateAgentCardToolCall(item.toolCall);
+  const isSubagentCard = isSubagentCardToolCall(item.toolCall);
   const hasArgs = Object.keys(item.toolCall.arguments || {}).length > 0;
-  const isStreamingFilePreviewTool =
-    item.toolCall.name === "Write" || item.toolCall.name === "Edit";
+  const isStreamingFilePreviewTool = FILE_TOOL_TEXT_FIELDS[item.toolCall.name] !== undefined;
   const shouldShowArgs =
-    (!isDelegateAgentCard || !result) && (isStreamingFilePreviewTool ? !result : hasArgs);
+    (!isSubagentCard || !result) && (isStreamingFilePreviewTool ? !result : hasArgs);
   const isBash = item.toolCall.name === "Bash";
   const bashCmd =
     isBash && typeof item.toolCall.arguments?.command === "string"
@@ -441,12 +292,13 @@ function ToolCallItem({
   const firstLine = bashCmd ? bashCmd.split("\n")[0] : "";
   const toolArgsSummary = isBash
     ? ""
-    : isDelegateAgentCard
-      ? getDelegateAgentInlineSummary(item)
+    : isSubagentCard
+      ? getSubagentInlineSummary(item)
       : summarizeToolCall(item.toolCall, {
           includeName: false,
           includeManagerAction: false,
         });
+  const fileChangeStats = useMemo(() => deriveFileChangeStats(item.toolCall), [item.toolCall]);
   const meta = getToolMeta(item.toolCall.name);
   const ToolIcon = meta.Icon;
   const title = getToolDisplayTitle(item.toolCall);
@@ -553,6 +405,10 @@ function ToolCallItem({
             >
               {toolArgsSummary}
             </span>
+          ) : null}
+
+          {fileChangeStats ? (
+            <FileChangeBadge added={fileChangeStats.added} removed={fileChangeStats.removed} />
           ) : null}
         </div>
 

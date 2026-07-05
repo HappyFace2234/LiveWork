@@ -7,6 +7,8 @@ import { createWebModuleLoader } from "../../test/helpers/load-web-module.mjs";
 const rootDir = fileURLToPath(new URL("../", import.meta.url));
 const uiMessagesLoader = createWebModuleLoader({ rootDir });
 const uiMessages = uiMessagesLoader.loadModule("src/lib/chat/uiMessages.ts");
+const toolPreview = uiMessagesLoader.loadModule("src/lib/chat/toolPreview.ts");
+const fileChangeStats = uiMessagesLoader.loadModule("src/lib/chat/fileChangeStats.ts");
 const hostedSearch = uiMessagesLoader.loadModule("src/lib/chat/hostedSearch.ts");
 const uploadedImagePreview = uiMessagesLoader.loadModule("src/lib/chat/uploadedImagePreview.ts");
 const loader = createWebModuleLoader({
@@ -35,7 +37,14 @@ const loader = createWebModuleLoader({
   },
 });
 
-const { buildTranscriptItems, pushChatEvent } = loader.loadModule("src/lib/chatUi.ts");
+const { createTurn, applyEventToTurn, rebuildTurnFromSnapshot } = loader.loadModule(
+  "src/lib/chat/transcript/turnReducer.ts",
+);
+const { buildRowsFromEntries } = loader.loadModule("src/lib/chat/transcript/rows.ts");
+
+function newTurn() {
+  return createTurn({ key: "req:test", runId: "run-test" });
+}
 
 function withMockObjectUrl(run) {
   const createDescriptor = Object.getOwnPropertyDescriptor(URL, "createObjectURL");
@@ -121,9 +130,11 @@ test("uploaded image previews fall back to files.preview when no local object UR
   );
 });
 
-function createDelegateAgent(id, prompt, summary) {
+function createSubagentReport(id, prompt, summary, extra = {}) {
   return {
     id,
+    runId: `run-${id}`,
+    name: `Agent ${id}`,
     prompt,
     mode: "readonly",
     status: "completed",
@@ -131,6 +142,7 @@ function createDelegateAgent(id, prompt, summary) {
     durationMs: 1200,
     rounds: 2,
     toolCalls: 3,
+    ...extra,
   };
 }
 
@@ -159,75 +171,182 @@ test("web uiMessages summarizes SendMessage calls", () => {
   });
 });
 
-test("buildTranscriptItems assigns stable user ordinals", () => {
-  const items = buildTranscriptItems([
-    {
-      id: "user-1",
-      kind: "user",
-      text: "first",
-      attachments: [],
-    },
-    {
-      id: "assistant-1",
-      kind: "assistant",
-      text: "reply",
-      round: 1,
-    },
-    {
-      id: "user-2",
-      kind: "user",
-      text: "second",
-      attachments: [],
-    },
-    {
-      id: "checkpoint-1",
-      kind: "checkpoint",
-      content: "summary",
-      summaryId: "summary-1",
-      coveredMessageCount: 2,
-      generatedBy: {
-        providerId: "codex",
-        model: "test-model",
+test("web uiMessages keeps char counts out of Write/Edit summaries", () => {
+  assert.equal(
+    uiMessages.summarizeToolCall({
+      type: "toolCall",
+      id: "write-1",
+      name: "Write",
+      arguments: { path: "src/App.tsx", content: "line-1\nline-2" },
+    }),
+    "Write path=src/App.tsx mode=rewrite",
+  );
+  assert.equal(
+    uiMessages.summarizeToolCall({
+      type: "toolCall",
+      id: "edit-1",
+      name: "Edit",
+      arguments: {
+        path: "src/App.tsx",
+        old_string: "a".repeat(20),
+        new_string: "b".repeat(35),
+        expected_replacements: 1,
+        replace_all: true,
       },
-    },
-    {
-      id: "user-3",
-      kind: "user",
-      text: "third",
-      attachments: [],
-    },
-  ]);
-
-  assert.deepEqual(
-    items.filter((item) => item.kind === "user").map((item) => item.userOrdinal),
-    [0, 1, 2],
+    }),
+    "Edit path=src/App.tsx expected=1 replaceAll=true",
   );
 });
 
-test("pushChatEvent ignores empty start tokens without creating a blank assistant", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("deriveFileChangeStats derives collapsed-bar line counts", () => {
+  const oldLines = Array.from({ length: 50 }, (_, index) => `line-${index}`);
+  const newLines = oldLines.slice();
+  newLines[25] = "line-25-changed";
+  assert.deepEqual(
+    fileChangeStats.deriveFileChangeStats({
+      type: "toolCall",
+      id: "edit-1",
+      name: "Edit",
+      arguments: { old_string: oldLines.join("\n"), new_string: newLines.join("\n") },
+    }),
+    { added: 1, removed: 1 },
+  );
+
+  assert.deepEqual(
+    fileChangeStats.deriveFileChangeStats({
+      type: "toolCall",
+      id: "edit-2",
+      name: "Edit",
+      arguments: {
+        old_string: "o".repeat(4000),
+        new_string: "n".repeat(4000),
+        __liveagent_stream_preview: {
+          v: 2,
+          progress: 17_000,
+          fields: {
+            old_string: { chars: 9000, lines: 300, truncated: true },
+            new_string: { chars: 8000, lines: 280, truncated: false },
+          },
+        },
+      },
+    }),
+    { added: 280, removed: 300 },
+  );
+
+  assert.deepEqual(
+    fileChangeStats.deriveFileChangeStats({
+      type: "toolCall",
+      id: "edit-3",
+      name: "Edit",
+      arguments: { old_string: "a\nb\nc" },
+    }),
+    { added: undefined, removed: 3 },
+  );
+
+  assert.deepEqual(
+    fileChangeStats.deriveFileChangeStats({
+      type: "toolCall",
+      id: "write-1",
+      name: "Write",
+      arguments: {
+        content: "preview…",
+        __liveagent_stream_preview: {
+          v: 2,
+          progress: 12_000,
+          fields: { content: { chars: 12_000, lines: 800, truncated: true } },
+        },
+      },
+    }),
+    { added: 800 },
+  );
+
+  assert.equal(
+    fileChangeStats.deriveFileChangeStats({
+      type: "toolCall",
+      id: "bash-1",
+      name: "Bash",
+      arguments: { command: "ls" },
+    }),
+    undefined,
+  );
+});
+
+test("buildRowsFromEntries emits user rows keyed by entry id", () => {
+  const rows = buildRowsFromEntries(
+    [
+      {
+        id: "user-1",
+        kind: "user",
+        text: "first",
+        attachments: [],
+      },
+      {
+        id: "assistant-1",
+        kind: "assistant",
+        text: "reply",
+        round: 1,
+      },
+      {
+        id: "user-2",
+        kind: "user",
+        text: "second",
+        attachments: [],
+      },
+      {
+        id: "checkpoint-1",
+        kind: "checkpoint",
+        content: "summary",
+        summaryId: "summary-1",
+        coveredMessageCount: 2,
+        generatedBy: {
+          providerId: "codex",
+          model: "test-model",
+        },
+      },
+      {
+        id: "user-3",
+        kind: "user",
+        text: "third",
+        attachments: [],
+      },
+    ],
+    "history",
+  );
+
+  assert.deepEqual(
+    rows.map((row) => row.kind),
+    ["user", "assistant", "user", "checkpoint", "user"],
+  );
+  assert.deepEqual(
+    rows.filter((row) => row.kind === "user").map((row) => row.key),
+    ["user-1", "user-2", "user-3"],
+  );
+});
+
+test("applyEventToTurn ignores empty start tokens without creating a blank assistant", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "",
     round: 0,
     conversation_id: "conversation-1",
   });
-  assert.deepEqual(entries, []);
+  assert.deepEqual(turn.entries, []);
 
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "answer",
     round: 1,
     conversation_id: "conversation-1",
   });
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].kind, "assistant");
-  assert.equal(entries[0].text, "answer");
+  assert.equal(turn.entries.length, 1);
+  assert.equal(turn.entries[0].kind, "assistant");
+  assert.equal(turn.entries[0].text, "answer");
 });
 
-test("pushChatEvent and buildTranscriptItems preserve hosted search events", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("applyEventToTurn and buildRowsFromEntries preserve hosted search events", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-1",
     provider: "gemini",
@@ -236,7 +355,7 @@ test("pushChatEvent and buildTranscriptItems preserve hosted search events", () 
     sources: [],
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-1",
     provider: "gemini",
@@ -245,18 +364,19 @@ test("pushChatEvent and buildTranscriptItems preserve hosted search events", () 
     sources: [{ url: "https://example.com/docs", title: "Docs" }],
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "done",
     round: 1,
   });
 
+  const entries = turn.entries;
   assert.equal(entries.length, 2);
   assert.equal(entries[0].kind, "hosted_search");
   assert.equal(entries[0].hostedSearch.status, "completed");
   assert.equal(entries[0].hostedSearch.sources[0].url, "https://example.com/docs");
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   assert.deepEqual(
@@ -265,14 +385,14 @@ test("pushChatEvent and buildTranscriptItems preserve hosted search events", () 
   );
 });
 
-test("buildTranscriptItems keeps delayed hosted search after streamed text", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("buildRowsFromEntries keeps delayed hosted search after streamed text", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "answer before metadata",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-delayed",
     provider: "codex",
@@ -282,7 +402,7 @@ test("buildTranscriptItems keeps delayed hosted search after streamed text", () 
     round: 1,
   });
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(turn.entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   assert.deepEqual(
@@ -292,14 +412,14 @@ test("buildTranscriptItems keeps delayed hosted search after streamed text", () 
   assert.equal(items[0].rounds[0].blocks[0].text, "answer before metadata");
 });
 
-test("buildTranscriptItems anchors delayed hosted search inside the streamed text", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("buildRowsFromEntries anchors delayed hosted search inside the streamed text", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "任务1完成。现在按顺序进行联网检索设计模式定义。任务2完成：设计模式是可复用方案。",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-pattern",
     provider: "codex",
@@ -309,7 +429,7 @@ test("buildTranscriptItems anchors delayed hosted search inside the streamed tex
     round: 1,
   });
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(turn.entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   const blocks = items[0].rounds[0].blocks;
@@ -321,14 +441,14 @@ test("buildTranscriptItems anchors delayed hosted search inside the streamed tex
   assert.equal(blocks[2].text, "任务2完成：设计模式是可复用方案。");
 });
 
-test("pushChatEvent keeps streamed text after hosted search in event order", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("applyEventToTurn keeps streamed text after hosted search in event order", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "任务1完成。现在开始联网搜索。",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-live-order",
     provider: "codex",
@@ -337,12 +457,12 @@ test("pushChatEvent keeps streamed text after hosted search in event order", () 
     sources: [],
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "任务2继续输出，应该出现在搜索卡片之后。",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-live-order",
     provider: "codex",
@@ -352,6 +472,7 @@ test("pushChatEvent keeps streamed text after hosted search in event order", () 
     round: 1,
   });
 
+  const entries = turn.entries;
   assert.deepEqual(
     entries.map((entry) => entry.kind),
     ["assistant", "hosted_search", "assistant"],
@@ -359,7 +480,7 @@ test("pushChatEvent keeps streamed text after hosted search in event order", () 
   assert.equal(entries[1].hostedSearch.status, "completed");
   assert.equal(entries[1].hostedSearch.sources[0].url, "https://example.com/live-order");
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   const blocks = items[0].rounds[0].blocks;
@@ -371,14 +492,14 @@ test("pushChatEvent keeps streamed text after hosted search in event order", () 
   assert.equal(blocks[2].text, "任务2继续输出，应该出现在搜索卡片之后。");
 });
 
-test("buildTranscriptItems groups live hosted searches separated by streamed text", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("buildRowsFromEntries groups live hosted searches separated by streamed text", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "先查第一组资料。",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-a",
     provider: "codex",
@@ -387,12 +508,12 @@ test("buildTranscriptItems groups live hosted searches separated by streamed tex
     sources: [{ url: "https://example.com/a", title: "A" }],
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "继续说明中间过程。",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-b",
     provider: "codex",
@@ -402,7 +523,7 @@ test("buildTranscriptItems groups live hosted searches separated by streamed tex
     round: 1,
   });
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(turn.entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   const blocks = items[0].rounds[0].blocks;
@@ -418,14 +539,14 @@ test("buildTranscriptItems groups live hosted searches separated by streamed tex
   );
 });
 
-test("pushChatEvent does not split a sentence when hosted search arrives mid sentence", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("applyEventToTurn does not split a sentence when hosted search arrives mid sentence", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "现在反过来，我先看“谁",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-sentence",
     provider: "codex",
@@ -434,13 +555,13 @@ test("pushChatEvent does not split a sentence when hosted search arrives mid sen
     sources: [],
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "为什么会掏钱”。然后再看市场。",
     round: 1,
   });
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(turn.entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   const blocks = items[0].rounds[0].blocks;
@@ -542,9 +663,9 @@ test("web UI hydrates persisted hosted search sources from answer links", () => 
   ]);
 });
 
-test("pushChatEvent hydrates live hosted search sources from streamed answer links", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("applyEventToTurn hydrates live hosted search sources from streamed answer links", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "hosted_search",
     id: "search-live-empty",
     provider: "codex",
@@ -553,14 +674,14 @@ test("pushChatEvent hydrates live hosted search sources from streamed answer lin
     sources: [],
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "参考：Dell 官方 iDRAC 页面：https://www.dell.com/en-us/lp/dt/open-manage-idrac",
     round: 1,
   });
 
-  assert.equal(entries[0].kind, "hosted_search");
-  assert.deepEqual(entries[0].hostedSearch.sources, [
+  assert.equal(turn.entries[0].kind, "hosted_search");
+  assert.deepEqual(turn.entries[0].hostedSearch.sources, [
     {
       url: "https://www.dell.com/en-us/lp/dt/open-manage-idrac",
       title: "参考：Dell 官方 iDRAC 页面",
@@ -651,32 +772,32 @@ test("hosted search finalization does not split a sentence at the stream event o
   assert.equal(assistant.content[2].text, "然后再分析产品。");
 });
 
-test("pushChatEvent keeps streamed text after tool calls in event order", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("applyEventToTurn keeps streamed text after tool calls in event order", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "先说明工具调用前的内容。",
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "tool_call",
     id: "call-1",
     name: "Read",
     arguments: { path: "README.md" },
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "token",
     text: "工具调用后的正文应该留在工具卡之后。",
     round: 1,
   });
 
   assert.deepEqual(
-    entries.map((entry) => entry.kind),
+    turn.entries.map((entry) => entry.kind),
     ["assistant", "tool_call", "assistant"],
   );
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(turn.entries, "stream");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   const blocks = items[0].rounds[0].blocks;
@@ -688,16 +809,16 @@ test("pushChatEvent keeps streamed text after tool calls in event order", () => 
   assert.equal(blocks[2].text, "工具调用后的正文应该留在工具卡之后。");
 });
 
-test("pushChatEvent merges streamed Write deltas with final call and result", () => {
-  let entries = [];
-  entries = pushChatEvent(entries, {
+test("applyEventToTurn merges streamed Write deltas with final call and result", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "tool_call_delta",
     id: "call-write",
     name: "Write",
     arguments: { path: "src/app.ts", content: "con" },
     round: 1,
   });
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "tool_call_delta",
     id: "call-write",
     name: "Write",
@@ -705,11 +826,11 @@ test("pushChatEvent merges streamed Write deltas with final call and result", ()
     round: 1,
   });
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].kind, "tool_call");
-  assert.equal(entries[0].toolCall.arguments.content, "console.log(1);\n");
+  assert.equal(turn.entries.length, 1);
+  assert.equal(turn.entries[0].kind, "tool_call");
+  assert.equal(turn.entries[0].toolCall.arguments.content, "console.log(1);\n");
 
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "tool_call",
     id: "call-write",
     name: "Write",
@@ -717,10 +838,10 @@ test("pushChatEvent merges streamed Write deltas with final call and result", ()
     round: 1,
   });
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].toolCall.arguments.content, "console.log(1);\n");
+  assert.equal(turn.entries.length, 1);
+  assert.equal(turn.entries[0].toolCall.arguments.content, "console.log(1);\n");
 
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "tool_result",
     id: "call-write",
     name: "Write",
@@ -731,13 +852,13 @@ test("pushChatEvent merges streamed Write deltas with final call and result", ()
     round: 1,
   });
 
-  assert.equal(entries.length, 2);
+  assert.equal(turn.entries.length, 2);
   assert.deepEqual(
-    entries.map((entry) => entry.kind),
+    turn.entries.map((entry) => entry.kind),
     ["tool_call", "tool_result"],
   );
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(turn.entries, "stream");
   assert.equal(items.length, 1);
   const toolBlocks = items[0].rounds[0].blocks.filter((block) => block.kind === "tool");
   assert.equal(toolBlocks.length, 1);
@@ -747,28 +868,27 @@ test("pushChatEvent merges streamed Write deltas with final call and result", ()
   assert.deepEqual(items[0].rounds[0].runningToolCallIds, []);
 });
 
-test("pushChatEvent preserves streaming preview metadata for Write metrics", () => {
-  const metadataKey = uiMessages.LIVE_TOOL_PREVIEW_META_KEY;
+test("applyEventToTurn preserves streaming preview metadata for Write metrics", () => {
+  const metadataKey = toolPreview.LIVE_TOOL_PREVIEW_META_KEY;
   const previewContent = "head\n...[truncated 9000 chars]...\ntail";
   const previewArgs = {
     path: "src/large.ts",
     content: previewContent,
     [metadataKey]: {
-      version: 1,
+      v: 2,
+      progress: 12000,
       fields: {
         content: {
           chars: 12000,
           lines: 800,
-          previewChars: previewContent.length,
           truncated: true,
-          strategy: "head-tail",
         },
       },
     },
   };
 
-  let entries = [];
-  entries = pushChatEvent(entries, {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
     type: "tool_call_delta",
     id: "call-large-write",
     name: "Write",
@@ -776,14 +896,14 @@ test("pushChatEvent preserves streaming preview metadata for Write metrics", () 
     round: 1,
   });
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].toolCall.arguments.content, previewContent);
-  const deltaPreview = uiMessages.getStreamingWriteToolPreview(entries[0].toolCall);
+  assert.equal(turn.entries.length, 1);
+  assert.equal(turn.entries[0].toolCall.arguments.content, previewContent);
+  const deltaPreview = toolPreview.deriveFileToolPreview(turn.entries[0].toolCall);
   assert.equal(deltaPreview.content.chars, 12000);
   assert.equal(deltaPreview.content.lines, 800);
   assert.equal(deltaPreview.content.truncated, true);
 
-  entries = pushChatEvent(entries, {
+  turn = applyEventToTurn(turn, {
     type: "tool_call",
     id: "call-large-write",
     name: "Write",
@@ -791,14 +911,141 @@ test("pushChatEvent preserves streaming preview metadata for Write metrics", () 
     round: 1,
   });
 
-  assert.equal(entries.length, 1);
-  const finalPreview = uiMessages.getStreamingWriteToolPreview(entries[0].toolCall);
+  assert.equal(turn.entries.length, 1);
+  const finalPreview = toolPreview.deriveFileToolPreview(turn.entries[0].toolCall);
   assert.equal(finalPreview.content.text, previewContent);
   assert.equal(finalPreview.content.chars, 12000);
   assert.equal(finalPreview.content.lines, 800);
 });
 
-test("buildTranscriptItems expands parent Agent aggregate results into Agent cards", () => {
+function writePreviewArgs(chars, content) {
+  return {
+    path: "src/large.ts",
+    content,
+    [toolPreview.LIVE_TOOL_PREVIEW_META_KEY]: {
+      v: 2,
+      progress: chars,
+      fields: { content: { chars, lines: 1, truncated: true } },
+    },
+  };
+}
+
+test("applyEventToTurn never rolls a streaming Write back to lower progress", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
+    type: "tool_call_delta",
+    id: "call-write",
+    name: "Write",
+    arguments: writePreviewArgs(6000, "newer preview"),
+    round: 1,
+  });
+
+  // A stale writer (late delta replay / lagging snapshot echo) must lose.
+  turn = applyEventToTurn(turn, {
+    type: "tool_call_delta",
+    id: "call-write",
+    name: "Write",
+    arguments: writePreviewArgs(4000, "older preview"),
+    round: 1,
+  });
+  assert.equal(turn.entries.length, 1);
+  assert.equal(
+    toolPreview.deriveFileToolPreview(turn.entries[0].toolCall).content.chars,
+    6000,
+  );
+
+  // A newer writer still advances.
+  turn = applyEventToTurn(turn, {
+    type: "tool_call_delta",
+    id: "call-write",
+    name: "Write",
+    arguments: writePreviewArgs(7000, "newest preview"),
+    round: 1,
+  });
+  assert.equal(
+    toolPreview.deriveFileToolPreview(turn.entries[0].toolCall).content.chars,
+    7000,
+  );
+});
+
+test("rebuildTurnFromSnapshot keeps newer delta-built tool args over a lagging snapshot", () => {
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
+    type: "tool_call_delta",
+    id: "call-write",
+    name: "Write",
+    arguments: writePreviewArgs(6000, "delta preview"),
+    round: 1,
+  });
+
+  const rebuilt = rebuildTurnFromSnapshot(turn, [
+    {
+      id: "runtime-live-0-tool-call-1-call-write-0",
+      kind: "tool_call",
+      round: 1,
+      toolCall: {
+        type: "toolCall",
+        id: "call-write",
+        name: "Write",
+        // Raw snapshot content at an earlier stream position (no meta):
+        // progress falls back to the raw length and must not win.
+        arguments: { path: "src/large.ts", content: "x".repeat(4500) },
+      },
+      summary: "Write",
+      text: "{}",
+    },
+  ]);
+
+  const entry = rebuilt.entries.find((candidate) => candidate.kind === "tool_call");
+  assert.ok(entry, "expected the snapshot tool_call entry");
+  assert.equal(toolPreview.deriveFileToolPreview(entry.toolCall).content.chars, 6000);
+  assert.equal(entry.toolCall.arguments.content, "delta preview");
+
+  // A snapshot that is ahead of the deltas replaces the args.
+  const advanced = rebuildTurnFromSnapshot(turn, [
+    {
+      id: "runtime-live-0-tool-call-1-call-write-0",
+      kind: "tool_call",
+      round: 1,
+      toolCall: {
+        type: "toolCall",
+        id: "call-write",
+        name: "Write",
+        arguments: { path: "src/large.ts", content: "y".repeat(8000) },
+      },
+      summary: "Write",
+      text: "{}",
+    },
+  ]);
+  const advancedEntry = advanced.entries.find((candidate) => candidate.kind === "tool_call");
+  assert.equal(toolPreview.deriveFileToolPreview(advancedEntry.toolCall).content.chars, 8000);
+});
+
+test("applyEventToTurn snapshots mutable streamed Write arguments", () => {
+  const args = { path: "src/app.ts", content: "first" };
+  let turn = newTurn();
+  turn = applyEventToTurn(turn, {
+    type: "tool_call_delta",
+    id: "call-write-mutable",
+    name: "Write",
+    arguments: args,
+    round: 1,
+  });
+
+  args.content = "first\nsecond";
+  assert.equal(turn.entries[0].toolCall.arguments.content, "first");
+
+  turn = applyEventToTurn(turn, {
+    type: "tool_call_delta",
+    id: "call-write-mutable",
+    name: "Write",
+    arguments: args,
+    round: 1,
+  });
+  assert.equal(turn.entries[0].toolCall.arguments.content, "first\nsecond");
+});
+
+test("buildRowsFromEntries expands parent Agent batch results into Agent cards", () => {
   const entries = [
     {
       id: "assistant-tool-call",
@@ -810,9 +1057,10 @@ test("buildTranscriptItems expands parent Agent aggregate results into Agent car
         name: "Agent",
         arguments: {
           agents: [
-            { id: "a", description: "Agent A", prompt: "Inspect A." },
-            { id: "b", description: "Agent B", prompt: "Inspect B." },
+            { id: "a", name: "Agent a", prompt: "Inspect A." },
+            { id: "b", name: "Agent b", prompt: "Inspect B." },
           ],
+          concurrency: 2,
         },
       },
       summary: "Agent",
@@ -828,15 +1076,15 @@ test("buildTranscriptItems expands parent Agent aggregate results into Agent car
         toolName: "Agent",
         content: [{ type: "text", text: "aggregate" }],
         details: {
-          kind: "delegate_agent",
+          kind: "subagent_batch",
+          status: "ok",
           agentCount: 2,
           concurrency: 2,
           totalDurationMs: 2400,
-          readOnly: true,
           mode: "readonly",
           agents: [
-            createDelegateAgent("a", "Agent A", "A done"),
-            createDelegateAgent("b", "Agent B", "B done"),
+            createSubagentReport("a", "Inspect A.", "A done"),
+            createSubagentReport("b", "Inspect B.", "B done"),
           ],
         },
         isError: false,
@@ -847,7 +1095,7 @@ test("buildTranscriptItems expands parent Agent aggregate results into Agent car
     },
   ];
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(entries, "history");
   assert.equal(items.length, 1);
   assert.equal(items[0].kind, "assistant");
   assert.equal(items[0].rounds.length, 1);
@@ -855,12 +1103,12 @@ test("buildTranscriptItems expands parent Agent aggregate results into Agent car
   const toolBlocks = items[0].rounds[0].blocks.filter((block) => block.kind === "tool");
   assert.equal(toolBlocks.length, 2);
   assert.deepEqual(
-    toolBlocks.map((block) => block.item.toolCall.arguments.delegate_agent_card),
+    toolBlocks.map((block) => block.item.toolCall.arguments.subagent_card),
     [true, true],
   );
   assert.deepEqual(
     toolBlocks.map((block) => block.item.toolResult.details.kind),
-    ["delegate_agent_item", "delegate_agent_item"],
+    ["subagent_card", "subagent_card"],
   );
   assert.deepEqual(
     toolBlocks.map((block) => block.item.toolResult.details.agent.summary),
@@ -869,23 +1117,23 @@ test("buildTranscriptItems expands parent Agent aggregate results into Agent car
   assert.deepEqual(items[0].rounds[0].runningToolCallIds, []);
 });
 
-test("buildDelegateAgentPlaceholderToolCalls parses agent_spec into stable Agent cards", () => {
-  const placeholders = uiMessages.buildDelegateAgentPlaceholderToolCalls({
+test("buildSubagentPlaceholderToolCalls builds stable Agent cards from structured agents", () => {
+  const placeholders = uiMessages.buildSubagentPlaceholderToolCalls({
     type: "toolCall",
     id: "call-agent",
     name: "Agent",
     arguments: {
       concurrency: 8,
-      agent_spec: [
-        "@agent id=player1 mode=readonly",
-        "name: 一号玩家",
-        "role: 发言者",
-        "prompt: 第一轮请给出观点",
-        "---",
-        "@agent id=player2 mode=readonly",
-        "name: 二号玩家",
-        "prompt: 第二轮请反驳",
-      ].join("\n"),
+      agents: [
+        {
+          id: "player1",
+          name: "一号玩家",
+          role: "发言者",
+          mode: "readonly",
+          prompt: "第一轮请给出观点",
+        },
+        { id: "player2", name: "二号玩家", mode: "readonly", prompt: "第二轮请反驳" },
+      ],
     },
   });
 
@@ -903,12 +1151,20 @@ test("buildDelegateAgentPlaceholderToolCalls parses agent_spec into stable Agent
     ["第一轮请给出观点", "第二轮请反驳"],
   );
   assert.deepEqual(
-    placeholders.map((item) => item.arguments.delegate_agent_card),
+    placeholders.map((item) => item.arguments.role),
+    ["发言者", undefined],
+  );
+  assert.deepEqual(
+    placeholders.map((item) => item.arguments.subagent_card),
     [true, true],
+  );
+  assert.deepEqual(
+    placeholders.map((item) => item.arguments.concurrency),
+    [2, 2],
   );
 });
 
-test("buildTranscriptItems shows Agent placeholders while aggregate result is pending", () => {
+test("buildRowsFromEntries shows Agent placeholders while aggregate result is pending", () => {
   const parentToolCallEntry = {
     id: "assistant-tool-call",
     kind: "tool_call",
@@ -919,22 +1175,17 @@ test("buildTranscriptItems shows Agent placeholders while aggregate result is pe
       name: "Agent",
       arguments: {
         concurrency: 8,
-        agent_spec: [
-          "@agent id=player1 mode=readonly",
-          "name: 一号玩家",
-          "prompt: 第一轮请给出观点",
-          "---",
-          "@agent id=player2 mode=readonly",
-          "name: 二号玩家",
-          "prompt: 第二轮请反驳",
-        ].join("\n"),
+        agents: [
+          { id: "player1", name: "一号玩家", mode: "readonly", prompt: "第一轮请给出观点" },
+          { id: "player2", name: "二号玩家", mode: "readonly", prompt: "第二轮请反驳" },
+        ],
       },
     },
     summary: "Agent",
     text: "{}",
   };
 
-  const pendingItems = buildTranscriptItems([parentToolCallEntry]);
+  const pendingItems = buildRowsFromEntries([parentToolCallEntry], "history");
   const pendingBlocks = pendingItems[0].rounds[0].blocks.filter(
     (block) => block.kind === "tool",
   );
@@ -952,36 +1203,39 @@ test("buildTranscriptItems shows Agent placeholders while aggregate result is pe
     "call-agent:agent:2",
   ]);
 
-  const completedItems = buildTranscriptItems([
-    parentToolCallEntry,
-    {
-      id: "agent-aggregate-result",
-      kind: "tool_result",
-      round: 1,
-      toolResult: {
-        role: "toolResult",
-        toolCallId: "call-agent",
-        toolName: "Agent",
-        content: [{ type: "text", text: "aggregate" }],
-        details: {
-          kind: "delegate_agent",
-          agentCount: 2,
-          concurrency: 2,
-          totalDurationMs: 2400,
-          readOnly: true,
-          mode: "readonly",
-          agents: [
-            createDelegateAgent("player1", "第一轮请给出观点", "一号完成"),
-            createDelegateAgent("player2", "第二轮请反驳", "二号完成"),
-          ],
+  const completedItems = buildRowsFromEntries(
+    [
+      parentToolCallEntry,
+      {
+        id: "agent-aggregate-result",
+        kind: "tool_result",
+        round: 1,
+        toolResult: {
+          role: "toolResult",
+          toolCallId: "call-agent",
+          toolName: "Agent",
+          content: [{ type: "text", text: "aggregate" }],
+          details: {
+            kind: "subagent_batch",
+            status: "ok",
+            agentCount: 2,
+            concurrency: 2,
+            totalDurationMs: 2400,
+            mode: "readonly",
+            agents: [
+              createSubagentReport("player1", "第一轮请给出观点", "一号完成"),
+              createSubagentReport("player2", "第二轮请反驳", "二号完成"),
+            ],
+          },
+          isError: false,
+          timestamp: 123,
         },
-        isError: false,
-        timestamp: 123,
+        summary: "Agent result",
+        text: "aggregate",
       },
-      summary: "Agent result",
-      text: "aggregate",
-    },
-  ]);
+    ],
+    "history",
+  );
   const completedBlocks = completedItems[0].rounds[0].blocks.filter(
     (block) => block.kind === "tool",
   );
@@ -996,16 +1250,14 @@ test("buildTranscriptItems shows Agent placeholders while aggregate result is pe
   assert.deepEqual(completedItems[0].rounds[0].runningToolCallIds, []);
 });
 
-test("buildTranscriptItems uses the stable Agent name supplied by item results", () => {
-  const firstAgent = {
-    ...createDelegateAgent("agent-1", "哲学视角探讨生命的意义", "first"),
+test("buildRowsFromEntries uses the stable Agent name supplied by item results", () => {
+  const firstAgent = createSubagentReport("agent-1", "哲学视角探讨生命的意义", "first", {
     name: "哲学家 - 苏格拉底",
-  };
-  const secondAgent = {
-    ...createDelegateAgent("agent-1", "哲学家继续回应", "second"),
+  });
+  const secondAgent = createSubagentReport("agent-1", "哲学家继续回应", "second", {
     name: "哲学家 - 苏格拉底",
     role: "哲学视角",
-  };
+  });
   const entries = [
     {
       id: "first-result",
@@ -1017,11 +1269,11 @@ test("buildTranscriptItems uses the stable Agent name supplied by item results",
         toolName: "Agent",
         content: [{ type: "text", text: "first aggregate" }],
         details: {
-          kind: "delegate_agent",
+          kind: "subagent_batch",
+          status: "ok",
           agentCount: 1,
           concurrency: 1,
           totalDurationMs: 1200,
-          readOnly: true,
           mode: "readonly",
           agents: [firstAgent],
         },
@@ -1041,11 +1293,11 @@ test("buildTranscriptItems uses the stable Agent name supplied by item results",
         toolName: "Agent",
         content: [{ type: "text", text: "second aggregate" }],
         details: {
-          kind: "delegate_agent",
+          kind: "subagent_batch",
+          status: "ok",
           agentCount: 1,
           concurrency: 1,
           totalDurationMs: 1200,
-          readOnly: true,
           mode: "readonly",
           agents: [secondAgent],
         },
@@ -1057,7 +1309,7 @@ test("buildTranscriptItems uses the stable Agent name supplied by item results",
     },
   ];
 
-  const items = buildTranscriptItems(entries);
+  const items = buildRowsFromEntries(entries, "history");
   const firstTool = items[0].rounds[0].blocks.find((block) => block.kind === "tool");
   const secondTool = items[0].rounds[1].blocks.find((block) => block.kind === "tool");
   assert.equal(firstTool.item.toolResult.details.agent.name, "哲学家 - 苏格拉底");

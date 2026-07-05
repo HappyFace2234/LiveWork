@@ -4,11 +4,9 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
-  ChevronDown,
   Globe,
   Plus,
   Terminal,
-  Trash2,
   X,
   Zap,
 } from "../../components/icons";
@@ -16,35 +14,29 @@ import {
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../components/ui/select";
 import { Textarea } from "../../components/ui/textarea";
 import { useLocale } from "../../i18n";
 import {
-  type ConversationHook,
-  type ConversationHookType,
-  canHookHttpMethodHaveBody,
-  HOOK_HTTP_METHODS,
-  type HookHttpMethod,
-  type HookLifecycleEventType,
-} from "../../lib/settings";
+  HOOK_EVENT_TRANSLATION_KEYS,
+  type HookDef,
+  type HookEvent,
+  type HookType,
+} from "../../lib/automation";
+import { useModalMotion } from "../../lib/shared/modalMotion";
 import {
-  createEmptyHookRequestDraft,
-  getHookEventLabel,
-  type HookHttpRequestDraft,
-  hookRequestToDraft,
-} from "./hookUtils";
-import { parseHttpRequests } from "./taskConfigUtils";
+  createEmptyRequestDraft,
+  type HttpRequestDraft,
+  HttpRequestListEditor,
+  parseHttpRequestDrafts,
+  requestToDraft,
+} from "./httpRequestEditor";
+
+const DEFAULT_HOOK_TIMEOUT_SECONDS = 60;
 
 type HookModalProps = {
-  event: HookLifecycleEventType;
-  initialData?: ConversationHook;
-  onSave: (data: Omit<ConversationHook, "id">) => void;
+  event: HookEvent;
+  initialData?: HookDef;
+  onSave: (data: Omit<HookDef, "id">) => void | Promise<void>;
   onClose: () => void;
 };
 
@@ -52,21 +44,27 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
   const { t } = useLocale();
   const [name, setName] = useState(initialData?.name ?? "");
   const [description, setDescription] = useState(initialData?.description ?? "");
-  const [type, setType] = useState<ConversationHookType>(initialData?.type ?? "command");
+  const [type, setType] = useState<HookType>(initialData?.type ?? "command");
   const [scriptText, setScriptText] = useState(initialData?.script ?? "");
-  const [requests, setRequests] = useState<HookHttpRequestDraft[]>(() => {
+  const [timeoutSeconds, setTimeoutSeconds] = useState(
+    initialData?.timeoutMs == null ? "" : String(Math.round(initialData.timeoutMs / 1000)),
+  );
+  const [requests, setRequests] = useState<HttpRequestDraft[]>(() => {
     if (initialData?.requests?.length) {
-      return initialData.requests.map((request) => hookRequestToDraft(request));
+      return initialData.requests.map((request) => requestToDraft(request));
     }
-    return [createEmptyHookRequestDraft()];
+    return [createEmptyRequestDraft()];
   });
   const [formError, setFormError] = useState<string | null>(null);
   const [expandedRequest, setExpandedRequest] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const { isClosing, modalState, requestClose } = useModalMotion(onClose);
 
   const isEditing = Boolean(initialData);
 
-  function handleSave() {
+  async function handleSave() {
     try {
+      setIsSaving(true);
       const trimmedName = name.trim();
       if (!trimmedName) {
         throw new Error(t("settings.hooksNameRequired"));
@@ -75,44 +73,47 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
       if (type === "command" && !trimmedScript) {
         throw new Error(t("settings.hooksCommandRequired"));
       }
+      const trimmedTimeout = timeoutSeconds.trim();
+      const parsedTimeoutSeconds = trimmedTimeout ? Number(trimmedTimeout) : undefined;
+      if (
+        parsedTimeoutSeconds !== undefined &&
+        (!Number.isSafeInteger(parsedTimeoutSeconds) || parsedTimeoutSeconds <= 0)
+      ) {
+        throw new Error(t("settings.hooksTimeoutInvalid"));
+      }
 
-      onSave({
+      await onSave({
         event,
         name: trimmedName,
         description: description.trim(),
         enabled: initialData?.enabled ?? true,
         type,
         script: type === "command" ? trimmedScript : undefined,
-        requests:
-          type === "http"
-            ? parseHttpRequests(requests, {
-                required: t("settings.hooksHttpRequestRequired"),
-                urlRequired: (index) => `${t("settings.hooksHttpUrlRequired")} #${index + 1}`,
-                urlInvalid: (index) => `${t("settings.hooksHttpUrlInvalid")} #${index + 1}`,
-                headersInvalid: t("settings.hooksHttpHeadersInvalid"),
-                bodyInvalid: t("settings.hooksHttpBodyInvalid"),
-              })
+        requests: type === "http" ? parseHttpRequestDrafts(requests, t) : undefined,
+        timeoutMs:
+          type === "command" && parsedTimeoutSeconds !== undefined
+            ? parsedTimeoutSeconds * 1000
             : undefined,
       });
+      requestClose();
     } catch (error) {
       setFormError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSaving(false);
     }
-  }
-
-  function updateRequest(id: string, patch: Partial<HookHttpRequestDraft>) {
-    setRequests((prev) =>
-      prev.map((request) => (request.id === id ? { ...request, ...patch } : request)),
-    );
   }
 
   const scriptLineCount = scriptText.split(/\r?\n/).filter((line) => line.trim()).length;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+    <div
+      className="settings-modal-overlay fixed inset-0 z-50 flex items-center justify-center p-4"
+      data-state={modalState}
+    >
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={requestClose} />
 
-      <div className="relative z-10 flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl">
-        <div className="flex items-center gap-3 border-b border-border/40 px-6 py-4">
+      <div className="settings-modal-panel relative z-10 flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl">
+        <div className="settings-modal-header flex items-center gap-3 border-b border-border/40 px-6 py-4">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/10 text-amber-500">
             <Zap className="h-5 w-5" />
           </div>
@@ -124,12 +125,14 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
               <span className="rounded-md bg-muted/60 px-2 py-0.5 font-mono text-[11px] text-muted-foreground">
                 {event}
               </span>
-              <span className="text-xs text-muted-foreground">{getHookEventLabel(t, event)}</span>
+              <span className="text-xs text-muted-foreground">
+                {t(HOOK_EVENT_TRANSLATION_KEYS[event])}
+              </span>
             </div>
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             title={t("settings.cancel")}
             aria-label={t("settings.cancel")}
             className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
@@ -138,7 +141,7 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="settings-modal-body flex-1 overflow-y-auto">
           <div className="border-b border-border/30 px-6 py-5">
             <div className="mb-4 flex items-center gap-2">
               <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-[11px] font-bold text-primary">
@@ -148,7 +151,7 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
             </div>
 
             <div className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="settings-form-grid grid gap-4 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="hook-name" className="text-xs font-medium text-muted-foreground">
                     {t("settings.hooksName")}
@@ -192,7 +195,7 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
               <span className="text-sm font-semibold">{t("settings.hooksType")}</span>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
+            <div className="settings-choice-grid grid grid-cols-2 gap-3">
               <button
                 type="button"
                 onClick={() => {
@@ -276,7 +279,7 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
           </div>
 
           <div className="px-6 py-5">
-            <div className="mb-4 flex items-center justify-between">
+            <div className="settings-modal-step-row mb-4 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="flex h-6 w-6 items-center justify-center rounded-md bg-primary/10 text-[11px] font-bold text-primary">
                   3
@@ -308,7 +311,7 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
                     className="h-7 gap-1 px-2.5 text-xs"
                     onClick={() => {
                       setFormError(null);
-                      const draft = createEmptyHookRequestDraft();
+                      const draft = createEmptyRequestDraft();
                       setRequests((prev) => [...prev, draft]);
                       setExpandedRequest(draft.id);
                     }}
@@ -321,188 +324,85 @@ export function HookModal({ event, initialData, onSave, onClose }: HookModalProp
             </div>
 
             {type === "command" ? (
-              <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/20">
-                <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
-                  <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                    <Terminal className="h-3 w-3" />
-                    <span className="font-medium">{t("settings.hooksCommandList")}</span>
+              <div className="space-y-3">
+                <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/20">
+                  <div className="flex items-center justify-between border-b border-border/30 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <Terminal className="h-3 w-3" />
+                      <span className="font-medium">{t("settings.hooksCommandList")}</span>
+                    </div>
+                    <span className="text-[11px] text-muted-foreground/60">
+                      {t("settings.hooksCommandHint")}
+                    </span>
                   </div>
-                  <span className="text-[11px] text-muted-foreground/60">
-                    {t("settings.hooksCommandHint")}
-                  </span>
+                  <Textarea
+                    value={scriptText}
+                    placeholder={"pnpm install\npnpm build\npnpm test"}
+                    className="min-h-[180px] resize-y rounded-none border-0 bg-transparent font-mono text-xs leading-relaxed focus-visible:ring-0"
+                    onChange={(e) => {
+                      setFormError(null);
+                      setScriptText(e.currentTarget.value);
+                    }}
+                  />
                 </div>
-                <Textarea
-                  value={scriptText}
-                  placeholder={"pnpm install\npnpm build\npnpm test"}
-                  className="min-h-[180px] resize-y rounded-none border-0 bg-transparent font-mono text-sm leading-relaxed focus-visible:ring-0"
-                  onChange={(e) => {
-                    setFormError(null);
-                    setScriptText(e.currentTarget.value);
-                  }}
-                />
+                <div className="settings-form-grid grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label
+                      htmlFor="hook-timeout"
+                      className="text-xs font-medium text-muted-foreground"
+                    >
+                      {t("settings.hooksTimeout")}
+                    </Label>
+                    <Input
+                      id="hook-timeout"
+                      value={timeoutSeconds}
+                      inputMode="numeric"
+                      placeholder={String(DEFAULT_HOOK_TIMEOUT_SECONDS)}
+                      onChange={(e) => {
+                        const next = e.currentTarget.value.trim();
+                        if (next && !/^\d+$/.test(next)) return;
+                        setFormError(null);
+                        setTimeoutSeconds(next);
+                      }}
+                    />
+                  </div>
+                </div>
               </div>
             ) : (
-              <div className="space-y-3">
-                {requests.map((request, index) => {
-                  const bodyEnabled = canHookHttpMethodHaveBody(request.method);
-                  const isExpanded = expandedRequest === request.id;
-
-                  return (
-                    <div
-                      key={request.id}
-                      className="overflow-hidden rounded-xl border border-border/60 bg-background/80 transition-colors hover:border-border/80"
-                    >
-                      <div className="flex items-center gap-3 px-4 py-3">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                          {index + 1}
-                        </div>
-
-                        <Select
-                          value={request.method}
-                          onValueChange={(value) => {
-                            setFormError(null);
-                            updateRequest(request.id, {
-                              method: value as HookHttpMethod,
-                              bodyText: canHookHttpMethodHaveBody(value as HookHttpMethod)
-                                ? request.bodyText
-                                : "",
-                            });
-                          }}
-                        >
-                          <SelectTrigger className="h-8 w-[100px] text-xs font-semibold">
-                            <SelectValue placeholder={t("settings.hooksHttpMethod")} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {HOOK_HTTP_METHODS.map((method) => (
-                              <SelectItem key={method} value={method}>
-                                {method}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-
-                        <Input
-                          value={request.url}
-                          placeholder="https://example.com/hook"
-                          className="h-8 flex-1 font-mono text-xs"
-                          onChange={(e) => {
-                            setFormError(null);
-                            updateRequest(request.id, { url: e.currentTarget.value });
-                          }}
-                        />
-
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setExpandedRequest(isExpanded ? null : request.id)}
-                            className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-muted/50 ${
-                              isExpanded ? "text-primary" : "text-muted-foreground"
-                            }`}
-                            title={isExpanded ? "Collapse" : "Expand"}
-                          >
-                            <ChevronDown
-                              className={`h-3.5 w-3.5 transition-transform ${
-                                isExpanded ? "" : "-rotate-90"
-                              }`}
-                            />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFormError(null);
-                              setRequests((prev) => prev.filter((item) => item.id !== request.id));
-                              if (expandedRequest === request.id) {
-                                setExpandedRequest(null);
-                              }
-                            }}
-                            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-                            title={t("settings.delete")}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {isExpanded ? (
-                        <div className="border-t border-border/30 bg-muted/10 px-4 py-4">
-                          <div className="grid gap-4 sm:grid-cols-2">
-                            <div className="space-y-1.5">
-                              <Label className="text-xs font-medium text-muted-foreground">
-                                {t("settings.hooksHttpHeaders")}
-                              </Label>
-                              <Textarea
-                                value={request.headersText}
-                                placeholder={'{\n  "Authorization": "Bearer ..."\n}'}
-                                className="min-h-[100px] resize-y font-mono text-xs leading-relaxed"
-                                onChange={(e) => {
-                                  setFormError(null);
-                                  updateRequest(request.id, {
-                                    headersText: e.currentTarget.value,
-                                  });
-                                }}
-                              />
-                            </div>
-                            <div className="space-y-1.5">
-                              <Label className="text-xs font-medium text-muted-foreground">
-                                {t("settings.hooksHttpBody")}
-                              </Label>
-                              {bodyEnabled ? (
-                                <Textarea
-                                  value={request.bodyText}
-                                  placeholder={'{\n  "message": "hello"\n}'}
-                                  className="min-h-[100px] resize-y font-mono text-xs leading-relaxed"
-                                  onChange={(e) => {
-                                    setFormError(null);
-                                    updateRequest(request.id, {
-                                      bodyText: e.currentTarget.value,
-                                    });
-                                  }}
-                                />
-                              ) : (
-                                <div className="flex min-h-[100px] items-center justify-center rounded-lg border border-dashed border-border/50 bg-muted/10 text-xs text-muted-foreground/60">
-                                  {t("settings.hooksHttpBodyDisabled")}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-                  );
-                })}
-
-                {requests.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-border/50 bg-muted/5 py-8 text-center">
-                    <Globe className="mx-auto h-6 w-6 text-muted-foreground/30" />
-                    <p className="mt-2 text-xs text-muted-foreground">
-                      {t("settings.hooksHttpRequestRequired")}
-                    </p>
-                  </div>
-                ) : null}
-              </div>
+              <HttpRequestListEditor
+                requests={requests}
+                expandedRequestId={expandedRequest}
+                onExpand={setExpandedRequest}
+                onChange={setRequests}
+                onDirty={() => setFormError(null)}
+                urlPlaceholder="https://example.com/hook"
+              />
             )}
           </div>
         </div>
 
-        <div className="flex items-center justify-between border-t border-border/40 px-6 py-4">
+        <div className="settings-modal-footer flex items-center justify-between border-t border-border/40 px-6 py-4">
           <div className="min-w-0 flex-1">
             {formError ? (
               <div className="flex items-center gap-1.5 text-xs text-destructive">
                 <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                 <span className="truncate">{formError}</span>
               </div>
-            ) : name.trim() ? (
+            ) : name.trim() && (type !== "command" || scriptText.trim()) ? (
               <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400">
                 <Check className="h-3.5 w-3.5" />
                 <span>{t("settings.agentsReady")}</span>
               </div>
             ) : null}
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={onClose}>
+          <div className="settings-modal-actions flex items-center gap-2">
+            <Button variant="outline" onClick={requestClose}>
               {t("settings.cancel")}
             </Button>
-            <Button onClick={handleSave} disabled={!name.trim()}>
+            <Button
+              onClick={() => void handleSave()}
+              disabled={!name.trim() || isSaving || isClosing}
+            >
               {t("settings.save")}
             </Button>
           </div>

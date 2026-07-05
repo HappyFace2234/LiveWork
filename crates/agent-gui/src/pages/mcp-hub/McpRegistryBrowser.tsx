@@ -420,7 +420,7 @@ function McpConfigureModal(props: {
         className="settings-modal-panel relative z-10 flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-border/60 bg-background shadow-2xl"
       >
         <div className="settings-modal-header flex items-center gap-3 border-b border-border/40 px-6 py-4">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
             <Sparkles className="h-5 w-5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -739,8 +739,8 @@ function RegistryCard(props: {
       className={cn(
         "skill-card-enter group relative flex h-full min-h-[228px] cursor-pointer flex-col rounded-2xl border p-3.5 text-left backdrop-blur-xl transition-all focus:outline-none focus:ring-2 focus:ring-foreground/10",
         done
-          ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)]"
-          : "border-border/40 bg-background/55 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/70 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)]",
+          ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)] dark:border-white/[0.10] dark:bg-white/[0.07] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_18px_-12px_rgba(0,0,0,0.55)]"
+          : "border-border/40 bg-background/55 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/70 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.05] dark:bg-white/[0.03] dark:hover:border-white/[0.10] dark:hover:bg-white/[0.06] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)]",
       )}
     >
       {link || hasVersionSelector ? (
@@ -765,11 +765,14 @@ function RegistryCard(props: {
           {hasVersionSelector ? (
             <Select value={card.id} onValueChange={setSelectedCardId}>
               <SelectTrigger
-                className="h-7 w-[5.75rem] rounded-lg border-border/40 bg-background/85 px-2 py-0 text-[10.5px] shadow-none backdrop-blur-md [&>svg]:h-3 [&>svg]:w-3"
-                title={t("mcpHub.storeVersion")}
+                className="h-7 w-[5.75rem] overflow-hidden rounded-lg border-border/40 bg-background/85 px-2 py-0 text-[10.5px] shadow-none backdrop-blur-md [&>svg]:h-3 [&>svg]:w-3 [&>svg]:shrink-0"
+                title={versionLabelForCard(card) ?? t("mcpHub.storeVersionLatest")}
                 aria-label={t("mcpHub.storeVersion")}
               >
-                <SelectValue placeholder={t("mcpHub.storeVersionLatest")} />
+                <SelectValue
+                  className="min-w-0 flex-1 truncate text-left"
+                  placeholder={t("mcpHub.storeVersionLatest")}
+                />
               </SelectTrigger>
               <SelectContent className="z-[70] min-w-[5.75rem]">
                 {versionOptions.map((option) => (
@@ -787,7 +790,7 @@ function RegistryCard(props: {
           className={cn(
             "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border transition-all",
             done
-              ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]"
+              ? "border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
               : "border-border/30 bg-muted/50 text-muted-foreground group-hover:border-border/50 group-hover:bg-background/70 group-hover:text-foreground/85",
           )}
         >
@@ -971,13 +974,13 @@ function McpRegistryPreviewDrawer(props: {
     >
       <aside
         className={cn(
-          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
+          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover/95 dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
           closing ? "skills-drawer-panel-closing" : "skills-drawer-panel",
         )}
       >
         <div className="flex flex-col gap-2.5 border-b border-border/40 px-5 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
               {data.remote ? <Globe2 className="h-5 w-5" /> : <Server className="h-5 w-5" />}
             </div>
             <div className="min-w-0 flex-1">
@@ -1475,7 +1478,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
         </Button>
       </form>
 
-      <div className="hub-panel-enter flex max-w-full items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="hub-panel-enter flex max-w-full items-center gap-1 self-start overflow-x-auto rounded-xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {MCP_REGISTRY_SOURCE_OPTIONS.map((option) => {
           const active = source === option.value;
           return (
@@ -1486,7 +1489,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
               className={cn(
                 "h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-[11.5px] font-medium transition-all",
                 active
-                  ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] ring-1 ring-border/45"
+                  ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] ring-1 ring-border/45 dark:bg-white/[0.08] dark:ring-white/[0.09] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]"
                   : "text-muted-foreground hover:bg-background/80 hover:text-foreground",
               )}
             >
@@ -1556,7 +1559,7 @@ export function McpRegistryBrowser(props: McpRegistryBrowserProps) {
             </div>
           ) : (
             <div className="hub-panel-enter rounded-2xl border border-dashed border-border/45 bg-background/40 px-6 py-12 text-center backdrop-blur-xl">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset]">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border/55 bg-background/80 text-foreground/85 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset] dark:border-white/[0.09] dark:bg-white/[0.06] dark:shadow-[0_1px_0_rgba(255,255,255,0.06)_inset]">
                 <Terminal className="h-6 w-6" />
               </div>
               <p className="mt-4 text-sm font-medium text-foreground">

@@ -1,7 +1,7 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocale } from "@/i18n";
-import { cn } from "@/lib/shared/utils";
 import type { SftpClient } from "@/lib/sftp/types";
+import { cn } from "@/lib/shared/utils";
 import type {
   SshTerminalTab,
   SshTerminalTabKind,
@@ -67,7 +67,8 @@ function tabIdFor(sessionId: string, kind: SshTerminalTabKind) {
 }
 
 export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayProps) {
-  const { openRequest, projectPathKey, sessions, client, sftpClient, theme, isOpen, onHide } = props;
+  const { openRequest, projectPathKey, sessions, client, sftpClient, theme, isOpen, onHide } =
+    props;
   const { t } = useLocale();
   const [isVisible, setIsVisible] = useState(isOpen);
   const [tabsSnapshot, setTabsSnapshot] = useState<SshTerminalTabsSnapshot>({
@@ -108,11 +109,7 @@ export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayPr
 
   const applyTabsSnapshot = useCallback(
     (snapshot: SshTerminalTabsSnapshot) => {
-      if (
-        projectPathKey &&
-        snapshot.projectPathKey &&
-        snapshot.projectPathKey !== projectPathKey
-      ) {
+      if (projectPathKey && snapshot.projectPathKey && snapshot.projectPathKey !== projectPathKey) {
         return;
       }
       setTabsSnapshot(snapshot);
@@ -285,9 +282,7 @@ export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayPr
             {t("workspaceSshTerminal.title")}
           </div>
           <div className="truncate font-mono text-[11px] text-muted-foreground">
-            {activeSession
-              ? sessionEndpointLabel(activeSession)
-              : t("workspaceSshTerminal.empty")}
+            {activeSession ? sessionEndpointLabel(activeSession) : t("workspaceSshTerminal.empty")}
           </div>
         </div>
         <button
@@ -395,7 +390,7 @@ export function WorkspaceSshTerminalOverlay(props: WorkspaceSshTerminalOverlayPr
                     session={session}
                     theme={theme}
                     isActive={isActiveTerminal}
-                    onError={setError}
+                    onError={(_sessionId, message) => setError(message)}
                   />
                 )}
               </div>

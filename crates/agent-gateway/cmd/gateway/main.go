@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/liveagent/agent-gateway/internal/auth"
@@ -26,19 +27,7 @@ const grpcShutdownTimeout = 3 * time.Second
 
 func main() {
 	cfg := config.Load()
-	chatEventStore, err := session.OpenSQLiteChatEventStore(cfg.ChatEventStorePath)
-	if err != nil {
-		log.Fatalf("open chat event store: %v", err)
-	}
-	defer func() {
-		if err := chatEventStore.Close(); err != nil {
-			log.Printf("close chat event store: %v", err)
-		}
-	}()
-	sm, err := session.NewManagerWithChatEventStore(chatEventStore)
-	if err != nil {
-		log.Fatalf("initialize session manager: %v", err)
-	}
+	sm := session.NewManager()
 
 	grpcServer, err := newGRPCServer(cfg, sm)
 	if err != nil {
@@ -111,6 +100,18 @@ func newGRPCServer(cfg *config.Config, sm *session.Manager) (*grpc.Server, error
 		grpc.MaxSendMsgSize(cfg.GRPCMaxMessageBytes),
 		grpc.UnaryInterceptor(auth.GRPCUnaryInterceptor(cfg.Token)),
 		grpc.StreamInterceptor(auth.GRPCStreamInterceptor(cfg.Token)),
+		// Transport-level liveness: h2 PINGs are not subject to application
+		// queue congestion, so dead links are detected even mid-stream.
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    30 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+		// The desktop GUI pings every 10-60s; MinTime must stay below its
+		// floor or grpc-go answers with a too_many_pings GOAWAY.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             5 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	}
 	if cfg.TLSCert != "" || cfg.TLSKey != "" {
 		creds, err := credentials.NewServerTLSFromFile(cfg.TLSCert, cfg.TLSKey)

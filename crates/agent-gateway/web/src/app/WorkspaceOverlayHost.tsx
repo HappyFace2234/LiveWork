@@ -1,11 +1,11 @@
-import { Suspense, lazy } from "react";
+import { lazy, Suspense } from "react";
 
 import type { WorkspaceCodeEditorOpenRequest } from "@/components/workspace-editor/WorkspaceCodeEditorOverlay";
 import type { WorkspaceFilePreviewOpenRequest } from "@/components/workspace-editor/WorkspaceFilePreviewOverlay";
 import type { WorkspaceSshTerminalOpenRequest } from "@/components/workspace-editor/WorkspaceSshTerminalOverlay";
 import { t as translate } from "@/i18n";
-import type { AppSettings } from "@/lib/settings";
 import { lockMonacoNlsLocale, preparePreferredMonacoNlsLocale } from "@/lib/monacoNls";
+import type { AppSettings, EffectiveTheme } from "@/lib/settings";
 import type { SftpClient } from "@/lib/sftp/types";
 import type { TerminalClient, TerminalSession } from "@/lib/terminal/types";
 
@@ -34,7 +34,7 @@ const WorkspaceSshTerminalOverlay = lazy(async () => {
 
 type WorkspaceOverlayHostProps = {
   locale: AppSettings["locale"];
-  theme: AppSettings["theme"];
+  theme: EffectiveTheme;
   workspaceEditorMounted: boolean;
   workspaceEditorOpenRequest: WorkspaceCodeEditorOpenRequest | null;
   workspaceEditorCloseRequestId: number;

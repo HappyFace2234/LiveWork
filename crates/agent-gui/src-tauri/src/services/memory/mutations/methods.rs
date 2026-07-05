@@ -9,16 +9,35 @@ impl MemoryStore {
             model: args.model,
             risk_flag: None,
         };
-        self.write_entry(
+        let mut evidence_applied = None;
+        let body = match args
+            .evidence
+            .as_ref()
+            .filter(|evidence| evidence_args_present(evidence))
+        {
+            Some(evidence) => {
+                let (body, confidence, downgraded) =
+                    apply_evidence_to_body(&args.body, evidence);
+                evidence_applied = Some((confidence, downgraded));
+                body
+            }
+            None => args.body,
+        };
+        let mut response = self.write_entry(
             args.slug,
             args.scope,
             args.workdir,
             args.memory_type,
             args.description,
-            args.body,
+            body,
             options,
             false,
-        )
+        )?;
+        if let Some((confidence, downgraded)) = evidence_applied {
+            response.applied_confidence = Some(confidence);
+            response.auto_downgraded = Some(downgraded);
+        }
+        Ok(response)
     }
 
     pub fn update(&self, args: MemoryUpdateArgs) -> Result<MemoryMutationResponse, String> {
@@ -27,7 +46,7 @@ impl MemoryStore {
 
     fn update_inner(
         &self,
-        args: MemoryUpdateArgs,
+        mut args: MemoryUpdateArgs,
         trigger: Option<String>,
     ) -> Result<MemoryMutationResponse, String> {
         if is_daily_slug(&args.slug) {
@@ -58,6 +77,21 @@ impl MemoryStore {
                     risk_flag: None,
                 },
             );
+        }
+
+        // Daily appends never carry evidence; the ordinary path renders the
+        // canonical evidence frontmatter here so downstream merge/replace logic
+        // (including evidence-only updates) sees a normal body.
+        let mut evidence_applied = None;
+        if let Some(evidence) = args
+            .evidence
+            .take()
+            .filter(|evidence| evidence_args_present(evidence))
+        {
+            let raw_body = args.body.clone().unwrap_or_default();
+            let (body, confidence, downgraded) = apply_evidence_to_body(&raw_body, &evidence);
+            args.body = Some(body);
+            evidence_applied = Some((confidence, downgraded));
         }
 
         let default_mode = if args.actor.as_deref() == Some("extractor") {
@@ -133,7 +167,13 @@ impl MemoryStore {
             model: args.model,
             risk_flag: None,
         };
-        self.replace_existing_entry(resolved, memory_type, description, body, options, mode)
+        let mut response =
+            self.replace_existing_entry(resolved, memory_type, description, body, options, mode)?;
+        if let Some((confidence, downgraded)) = evidence_applied {
+            response.applied_confidence = Some(confidence);
+            response.auto_downgraded = Some(downgraded);
+        }
+        Ok(response)
     }
 
     pub fn delete(&self, args: MemoryDeleteArgs) -> Result<MemoryMutationResponse, String> {
@@ -344,6 +384,8 @@ impl MemoryStore {
             deleted: true,
             index_updated: true,
             warning: None,
+            applied_confidence: None,
+            auto_downgraded: None,
         })
     }
 
@@ -400,6 +442,8 @@ impl MemoryStore {
             deleted: false,
             index_updated: true,
             warning: None,
+            applied_confidence: None,
+            auto_downgraded: None,
         })
     }
 
@@ -653,6 +697,76 @@ impl MemoryStore {
                 }
             };
         }
+        if op == "accept" {
+            let scope = decision
+                .scope
+                .clone()
+                .unwrap_or_else(|| "project".to_string());
+            return match self.accept(MemoryAcceptArgs {
+                slug: decision.slug.clone(),
+                scope,
+                workdir: args.workdir.clone(),
+                workdir_hash: decision_workdir_hash,
+            }) {
+                Ok(resp) => {
+                    updated.push(resp.slug);
+                    true
+                }
+                Err(error) => {
+                    push_batch_warning(
+                        warnings,
+                        warning_details,
+                        error,
+                        Some(&decision),
+                        Some(decision_index),
+                        "accept_failed",
+                    );
+                    false
+                }
+            };
+        }
+        // Partial or evidence-only revision of an existing entry. Unlike
+        // upsert, every content field stays optional and resolves against the
+        // stored entry via update_inner.
+        if op == "update" {
+            let scope = decision
+                .scope
+                .clone()
+                .filter(|value| value == "global" || value == "project");
+            return match self.update_inner(
+                MemoryUpdateArgs {
+                    slug: decision.slug.clone(),
+                    scope,
+                    workdir: args.workdir.clone(),
+                    workdir_hash: decision_workdir_hash,
+                    memory_type: decision.memory_type.clone(),
+                    description: decision.description.clone(),
+                    body: decision.body.clone(),
+                    mode: decision.mode.clone(),
+                    actor: Some("extractor".to_string()),
+                    conversation_id: args.conversation_id.clone(),
+                    model: args.model.clone(),
+                    evidence: decision.evidence.clone(),
+                },
+                args.trigger.clone(),
+            ) {
+                Ok(resp) => {
+                    updated.push(resp.slug);
+                    true
+                }
+                Err(error) => {
+                    push_batch_warning(
+                        warnings,
+                        warning_details,
+                        error,
+                        Some(&decision),
+                        Some(decision_index),
+                        "update_failed",
+                    );
+                    false
+                }
+            };
+        }
         if op != "upsert" {
             push_batch_warning(
                 warnings,
@@ -697,6 +811,14 @@ impl MemoryStore {
             );
             return false;
         };
+        let body = match decision
+            .evidence
+            .as_ref()
+            .filter(|evidence| evidence_args_present(evidence))
+        {
+            Some(evidence) => apply_evidence_to_body(&body, evidence).0,
+            None => body,
+        };
         let scope = decision
             .scope
             .clone()
@@ -716,6 +838,7 @@ impl MemoryStore {
                     actor: Some("extractor".to_string()),
                     conversation_id: args.conversation_id.clone(),
                     model: args.model.clone(),
+                    evidence: None,
                 },
                 args.trigger.clone(),
             ) {
@@ -767,6 +890,7 @@ impl MemoryStore {
                     actor: Some("extractor".to_string()),
                     conversation_id: args.conversation_id.clone(),
                     model: args.model.clone(),
+                    evidence: None,
                 }) {
                     Ok(resp) => {
                         updated.push(resp.slug);

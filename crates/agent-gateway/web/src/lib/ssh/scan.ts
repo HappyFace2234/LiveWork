@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
 import type { SshHostConfig } from "../settings";
+import { invokeFs } from "../tools/fsBackend";
 
 type FsRoot = {
   id: string;
@@ -190,11 +190,7 @@ export function expandIdentityPath(homePath: string, path: string) {
       return joinIdentityPath(homePath, trimmed.slice("%USERPROFILE%".length), profile);
     }
     if (/^%HOMEDRIVE%%HOMEPATH%[\\/]/i.test(trimmed)) {
-      return joinIdentityPath(
-        homePath,
-        trimmed.slice("%HOMEDRIVE%%HOMEPATH%".length),
-        profile,
-      );
+      return joinIdentityPath(homePath, trimmed.slice("%HOMEDRIVE%%HOMEPATH%".length), profile);
     }
     if (trimmed.startsWith("/") || trimmed.startsWith("\\")) return trimmed;
     return joinIdentityPath(homePath, trimmed, profile);
@@ -209,15 +205,13 @@ export function expandIdentityPath(homePath: string, path: string) {
 function toHomeRelativePath(homePath: string, path: string) {
   const profile = pathProfileFromHome(homePath);
   const home =
-    profile === "windows"
-      ? `${normalizePath(homePath)}/`
-      : `${homePath.replace(/\/+$/, "")}/`;
+    profile === "windows" ? `${normalizePath(homePath)}/` : `${homePath.replace(/\/+$/, "")}/`;
   const normalized = profile === "windows" ? normalizePath(path) : path;
   return normalized.startsWith(home) ? normalized.slice(home.length) : "";
 }
 
 async function readHomeFile(homePath: string, relativePath: string) {
-  const response = await invoke<FsReadEditableTextResponse>("fs_read_editable_text", {
+  const response = await invokeFs<FsReadEditableTextResponse>("fs_read_editable_text", {
     workdir: homePath,
     path: relativePath,
   });
@@ -233,7 +227,7 @@ async function readOptionalHomeFile(homePath: string, relativePath: string) {
 }
 
 async function findHomePath() {
-  const response = await invoke<FsRootsResponse>("fs_roots");
+  const response = await invokeFs<FsRootsResponse>("fs_roots", {});
   const home =
     response.roots.find((root) => root.kind === "home") ??
     response.roots.find((root) => root.id === "home");
@@ -242,7 +236,7 @@ async function findHomePath() {
 
 async function listSshDirectory(homePath: string) {
   try {
-    const response = await invoke<FsListResponse>("fs_list", {
+    const response = await invokeFs<FsListResponse>("fs_list", {
       workdir: homePath,
       path: SSH_DIR_PATH,
       depth: 1,

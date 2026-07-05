@@ -60,7 +60,7 @@ func (c *websocketConnection) handleGitRequest(req websocketRequest) {
 		_ = c.writeError(req.ID, "unexpected agent response")
 		return
 	}
-	payload, err := websocketGitResultPayload(resp.GetResultJson())
+	payload, err := unmarshalJSONPayload(resp.GetResultJson())
 	if err != nil {
 		_ = c.writeError(req.ID, err.Error())
 		return

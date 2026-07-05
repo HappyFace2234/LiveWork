@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-
+import { type AppSettings, updateSkills } from "../../lib/settings";
 import {
   discoverSkills,
   isAlwaysEnabledSkillName,
   mergeAlwaysEnabledSkillNames,
-  subscribeSkillsDiscoveryUpdated,
   type SkillSummary,
+  subscribeSkillsDiscoveryUpdated,
 } from "../../lib/skills";
-import { updateSkills, type AppSettings } from "../../lib/settings";
 
 type UseChatSkillsParams = {
   skillsEnabled: boolean;
@@ -64,48 +63,51 @@ export function useChatSkills(params: UseChatSkillsParams) {
     setSkillsLoading(false);
   }, []);
 
-  const runDiscovery = useCallback(async (options?: { force?: boolean }) => {
-    if (!skillsEnabled) {
-      requestSequenceRef.current += 1;
-      applyDisabledState();
-      return null;
-    }
-
-    const requestId = requestSequenceRef.current + 1;
-    requestSequenceRef.current = requestId;
-    if (mountedRef.current) {
-      setSkillsLoading(true);
-      setSkillsLoadError(null);
-    }
-
-    try {
-      const discovery = await discoverSkills({ force: options?.force });
-      if (!mountedRef.current || requestSequenceRef.current !== requestId) {
+  const runDiscovery = useCallback(
+    async (options?: { force?: boolean }) => {
+      if (!skillsEnabled) {
+        requestSequenceRef.current += 1;
+        applyDisabledState();
         return null;
       }
-      setSkillsRootDir(discovery.rootDir);
-      setAvailableSkills(discovery.skills);
-      reconcileSelectedSkills({
-        skills: discovery.skills,
-        selectedSkillNames: selectedSkillNamesRef.current,
-        setSettings,
-      });
-      return discovery;
-    } catch (err) {
-      if (!mountedRef.current || requestSequenceRef.current !== requestId) {
+
+      const requestId = requestSequenceRef.current + 1;
+      requestSequenceRef.current = requestId;
+      if (mountedRef.current) {
+        setSkillsLoading(true);
+        setSkillsLoadError(null);
+      }
+
+      try {
+        const discovery = await discoverSkills({ force: options?.force });
+        if (!mountedRef.current || requestSequenceRef.current !== requestId) {
+          return null;
+        }
+        setSkillsRootDir(discovery.rootDir);
+        setAvailableSkills(discovery.skills);
+        reconcileSelectedSkills({
+          skills: discovery.skills,
+          selectedSkillNames: selectedSkillNamesRef.current,
+          setSettings,
+        });
+        return discovery;
+      } catch (err) {
+        if (!mountedRef.current || requestSequenceRef.current !== requestId) {
+          return null;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        setSkillsRootDir("");
+        setAvailableSkills([]);
+        setSkillsLoadError(msg || "加载 skills 失败");
         return null;
+      } finally {
+        if (mountedRef.current && requestSequenceRef.current === requestId) {
+          setSkillsLoading(false);
+        }
       }
-      const msg = err instanceof Error ? err.message : String(err);
-      setSkillsRootDir("");
-      setAvailableSkills([]);
-      setSkillsLoadError(msg || "加载 skills 失败");
-      return null;
-    } finally {
-      if (mountedRef.current && requestSequenceRef.current === requestId) {
-        setSkillsLoading(false);
-      }
-    }
-  }, [applyDisabledState, setSettings, skillsEnabled]);
+    },
+    [applyDisabledState, setSettings, skillsEnabled],
+  );
 
   const refreshSkills = useCallback(async () => {
     return runDiscovery({ force: true });

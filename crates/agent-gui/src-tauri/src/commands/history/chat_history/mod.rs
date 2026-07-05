@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    commands::{history_db, subagent_history},
+    commands::{history_db, subagent_store},
     services::{
         gateway::{build_history_sync_delete, build_history_sync_upsert, GatewayController},
         memory::{MemoryHistorySearchMatch, MemorySearchArgs},

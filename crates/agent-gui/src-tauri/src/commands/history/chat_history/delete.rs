@@ -1,7 +1,7 @@
 fn delete_chat_history_sync(
     conn: &mut Connection,
     id: &str,
-) -> Result<subagent_history::SubagentRunPruneResult, String> {
+) -> Result<subagent_store::SubagentPruneResult, String> {
     let chat_id = id.trim().to_string();
     if chat_id.is_empty() {
         return Err("历史对话 id 不能为空".to_string());
@@ -24,7 +24,7 @@ fn delete_chat_history_sync(
         .transaction()
         .map_err(|e| format!("开启删除历史事务失败：{e}"))?;
     let subagent_prune_result =
-        subagent_history::delete_subagent_history_for_parent_conversation(&tx, chat_id.as_str())?;
+        subagent_store::delete_subagent_history_for_parent_conversation(&tx, chat_id.as_str())?;
     delete_chat_history_conversation_fts(&tx, chat_id.as_str())?;
     tx.execute(
         "DELETE FROM chatHistorySegment WHERE conversation_id = ?1",
@@ -46,7 +46,7 @@ pub(crate) async fn chat_history_delete_inner(id: String) -> Result<(), String> 
         let chat_id = id.trim().to_string();
         let mut conn = open_db()?;
         let mut subagent_prune_result = delete_chat_history_sync(&mut conn, &chat_id)?;
-        subagent_history::cleanup_pruned_worktrees(&mut subagent_prune_result);
+        subagent_store::cleanup_pruned_worktrees(&mut subagent_prune_result);
         if !subagent_prune_result.worktree_cleanup_errors.is_empty() {
             eprintln!(
                 "Failed to cleanup some deleted conversation subagent worktrees: {}",

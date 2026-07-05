@@ -31,7 +31,34 @@ fn init_schema(conn: &Connection) -> Result<(), String> {
         .map_err(|e| format!("重建旧版记忆索引表失败：{e}"))?;
     }
     conn.execute_batch(MEMORY_SCHEMA_DDL)
-        .map_err(|e| format!("初始化记忆索引表失败：{e}"))
+        .map_err(|e| format!("初始化记忆索引表失败：{e}"))?;
+    ensure_organize_runs_v4_columns(conn)
+}
+
+/// v3 -> v4 is additive: organize-run history survives, missing columns are
+/// added in place. The CREATE TABLE in MEMORY_SCHEMA_DDL only covers fresh DBs.
+fn ensure_organize_runs_v4_columns(conn: &Connection) -> Result<(), String> {
+    let columns = table_columns(conn, "memory_organize_runs")?;
+    let additions: [(&str, &str); 8] = [
+        ("phase", "TEXT"),
+        ("final_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("compression_ratio", "REAL"),
+        ("compression_target", "INTEGER"),
+        ("dry_run", "INTEGER NOT NULL DEFAULT 0"),
+        ("token_usage_total", "INTEGER NOT NULL DEFAULT 0"),
+        ("quota_headroom_at_start", "INTEGER"),
+        ("override_reviewed", "INTEGER NOT NULL DEFAULT 0"),
+    ];
+    for (name, declaration) in additions {
+        if !columns.contains(name) {
+            conn.execute(
+                &format!("ALTER TABLE memory_organize_runs ADD COLUMN {name} {declaration}"),
+                [],
+            )
+            .map_err(|e| format!("迁移 memory_organize_runs 列 {name} 失败：{e}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn memory_schema_needs_rebuild(conn: &Connection) -> Result<bool, String> {
@@ -52,7 +79,7 @@ fn memory_schema_needs_rebuild(conn: &Connection) -> Result<bool, String> {
     if version < 3 {
         return Ok(true);
     }
-    if version > 3 {
+    if version > 4 {
         return Err(format!("unsupported memory schema version: {version}"));
     }
 
@@ -574,6 +601,88 @@ fn build_list_quota(
         used,
         limit: MAX_SCOPE_ENTRIES,
         scope_quotas,
+    })
+}
+
+impl MemoryStore {
+    pub fn quota_summary(
+        &self,
+        args: MemoryQuotaSummaryArgs,
+    ) -> Result<MemoryQuotaSummaryResponse, String> {
+        let workdir_hash = match args
+            .workdir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(workdir) => Some(workdir_hash(workdir)?),
+            None => None,
+        };
+        let conn = self.lock_conn()?;
+        let mut scopes = vec![scope_quota_summary(&conn, "global", "")?];
+        if let Some(hash) = workdir_hash {
+            scopes.push(scope_quota_summary(&conn, "project", &hash)?);
+        }
+        Ok(MemoryQuotaSummaryResponse { scopes })
+    }
+}
+
+fn scope_quota_summary(
+    conn: &Connection,
+    scope: &str,
+    workdir_hash: &str,
+) -> Result<MemoryQuotaScopeSummary, String> {
+    let used = count_non_daily_entries(conn, Some((scope, workdir_hash)))?;
+    let archived_count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM memory_meta WHERE archived = 1 AND scope = ?1 AND workdir_hash = ?2",
+            params![scope, workdir_hash],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| format!("读取归档记忆数量失败：{e}"))?
+        .max(0) as usize;
+
+    // `unreviewed` lives inside source_json, so fold in Rust (<=500 rows/scope).
+    let mut stmt = conn
+        .prepare(
+            "SELECT created_at, source_json FROM memory_meta
+             WHERE type != 'daily' AND scope = ?1 AND workdir_hash = ?2",
+        )
+        .map_err(|e| format!("准备记忆配额扫描失败：{e}"))?;
+    let rows = stmt
+        .query_map(params![scope, workdir_hash], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| format!("扫描记忆配额失败：{e}"))?;
+    let mut unreviewed_count = 0usize;
+    let mut oldest_unreviewed: Option<i64> = None;
+    for row in rows {
+        let (created_at, source_json) = row.map_err(|e| format!("读取记忆配额行失败：{e}"))?;
+        let unreviewed = source_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+            .and_then(|value| value.get("unreviewed").and_then(Value::as_bool))
+            .unwrap_or(false);
+        if unreviewed {
+            unreviewed_count += 1;
+            oldest_unreviewed = Some(match oldest_unreviewed {
+                Some(current) => current.min(created_at),
+                None => created_at,
+            });
+        }
+    }
+    let oldest_unreviewed_age_days = oldest_unreviewed
+        .map(|created_at| ((now_ms() - created_at) as f64 / 86_400_000.0).max(0.0));
+
+    Ok(MemoryQuotaScopeSummary {
+        scope: scope.to_string(),
+        workdir_hash: workdir_hash.to_string(),
+        used,
+        limit: MAX_SCOPE_ENTRIES,
+        headroom: MAX_SCOPE_ENTRIES.saturating_sub(used),
+        archived_count,
+        unreviewed_count,
+        oldest_unreviewed_age_days,
     })
 }
 fn normalize_memory_meta(mut meta: MemoryMeta) -> MemoryMeta {

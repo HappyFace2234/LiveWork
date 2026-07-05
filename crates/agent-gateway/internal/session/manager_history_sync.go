@@ -1,15 +1,11 @@
 package session
 
 import (
-	"log"
-	"strings"
-	"time"
-
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
 
 func (m *Manager) SubscribeHistorySync() (<-chan *gatewayv1.HistorySyncEvent, func()) {
-	ch := make(chan *gatewayv1.HistorySyncEvent, 32)
+	ch := make(chan *gatewayv1.HistorySyncEvent, 128)
 
 	m.syncHub.historyMu.Lock()
 	subID := m.syncHub.nextHistorySubID
@@ -35,9 +31,6 @@ func (m *Manager) broadcastHistorySync(event *gatewayv1.HistorySyncEvent) {
 		return
 	}
 
-	m.updateActiveHistoryRun(event)
-	m.releaseCompletedChatRunAfterHistoryUpsert(event)
-
 	m.syncHub.historyMu.Lock()
 	subscribers := make([]chan *gatewayv1.HistorySyncEvent, 0, len(m.syncHub.historySubscribers))
 	for _, ch := range m.syncHub.historySubscribers {
@@ -51,94 +44,4 @@ func (m *Manager) broadcastHistorySync(event *gatewayv1.HistorySyncEvent) {
 		default:
 		}
 	}
-}
-
-func historySyncConversationID(event *gatewayv1.HistorySyncEvent) string {
-	conversationID := strings.TrimSpace(event.GetConversationId())
-	if conversationID == "" && event.GetConversation() != nil {
-		conversationID = strings.TrimSpace(event.GetConversation().GetId())
-	}
-	return conversationID
-}
-
-func historySyncWorkdir(event *gatewayv1.HistorySyncEvent) string {
-	if event == nil || event.GetConversation() == nil {
-		return ""
-	}
-	return strings.TrimSpace(event.GetConversation().GetCwd())
-}
-
-func (m *Manager) updateActiveHistoryRun(event *gatewayv1.HistorySyncEvent) {
-	kind := strings.TrimSpace(event.GetKind())
-	conversationID := historySyncConversationID(event)
-	if conversationID == "" {
-		return
-	}
-
-	workdir := historySyncWorkdir(event)
-	now := time.Now()
-
-	m.chatStore.chatMu.Lock()
-	m.pruneExpiredChatRunsLocked(now)
-
-	switch kind {
-	case "running":
-		existing := m.chatStore.historyActiveRuns[conversationID]
-		if workdir == "" {
-			workdir = existing.workdir
-		}
-		m.chatStore.historyActiveRuns[conversationID] = activeHistoryRun{
-			conversationID: conversationID,
-			workdir:        workdir,
-			updatedAt:      now,
-		}
-		if requestID := m.chatStore.chatRunByConversation[conversationID]; requestID != "" {
-			if run := m.chatStore.chatRuns[requestID]; run != nil && workdir != "" {
-				run.workdir = workdir
-			}
-		}
-		m.chatStore.chatMu.Unlock()
-		if _, _, err := m.ensureConversationChatRun(conversationID, workdir, now); err != nil {
-			log.Printf("ensure conversation chat run failed conversation_id=%q: %v", conversationID, err)
-		}
-		return
-	case "idle", "delete":
-		delete(m.chatStore.historyActiveRuns, conversationID)
-	case "upsert":
-		if workdir == "" {
-			m.chatStore.chatMu.Unlock()
-			return
-		}
-		if existing, ok := m.chatStore.historyActiveRuns[conversationID]; ok {
-			existing.workdir = workdir
-			existing.updatedAt = now
-			m.chatStore.historyActiveRuns[conversationID] = existing
-		}
-		if requestID := m.chatStore.chatRunByConversation[conversationID]; requestID != "" {
-			if run := m.chatStore.chatRuns[requestID]; run != nil {
-				run.workdir = workdir
-			}
-		}
-	}
-	m.chatStore.chatMu.Unlock()
-}
-
-func (m *Manager) releaseCompletedChatRunAfterHistoryUpsert(event *gatewayv1.HistorySyncEvent) {
-	if strings.TrimSpace(event.GetKind()) != "upsert" {
-		return
-	}
-
-	conversationID := historySyncConversationID(event)
-	if conversationID == "" {
-		return
-	}
-
-	m.chatStore.chatMu.Lock()
-	defer m.chatStore.chatMu.Unlock()
-	requestID := m.chatStore.chatRunByConversation[conversationID]
-	run := m.chatStore.chatRuns[requestID]
-	if run == nil || !run.done {
-		return
-	}
-	m.releaseCompletedChatRunLocked(requestID, run)
 }

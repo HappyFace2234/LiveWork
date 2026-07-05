@@ -137,6 +137,8 @@ impl MemoryStore {
             deleted: false,
             index_updated: true,
             warning,
+            applied_confidence: None,
+            auto_downgraded: None,
         })
     }
 

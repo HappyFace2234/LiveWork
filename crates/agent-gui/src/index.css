@@ -66,6 +66,10 @@
     /* Sidebar */
     --sidebar-bg: 220 14% 96%;
 
+    /* Hub pages (MCP/Skills) canvas — in dark it sits below --background so
+       background-tinted glass panels read as elevated surfaces. */
+    --hub-canvas: var(--background);
+
     /* Chip / pill buttons (MCP, Skills, 新对话) */
     --chip-bg: 220 13% 91%;
     --chip-bg-hover: 220 13% 86%;
@@ -142,6 +146,9 @@
     --chip-bg-hover: 220 16% 30%;
     /* Send button disabled (dark) */
     --send-disabled-bg: 220 16% 24%;
+
+    /* Hub pages canvas (dark) — deeper than --background for glass elevation */
+    --hub-canvas: 224 24% 6.5%;
 
     /* Chat-specific tokens (dark) */
     --sidebar-bg: 224 22% 11%;
@@ -320,6 +327,49 @@
   }
   .upload-file-list:hover::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground) / 0.4);
+  }
+
+  .chat-queue-scroll {
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .chat-queue-scroll::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  .chat-queue-scrollbar {
+    position: absolute;
+    top: 2px;
+    right: 1px;
+    bottom: 2px;
+    z-index: 2;
+    width: 8px;
+    border-radius: 999px;
+    background: hsl(var(--muted) / 0.36);
+    box-shadow: inset 0 0 0 1px hsl(var(--background) / 0.42);
+    cursor: default;
+    touch-action: none;
+  }
+  .chat-queue-scrollbar-thumb {
+    position: absolute;
+    left: 1px;
+    right: 1px;
+    top: 0;
+    min-height: 24px;
+    border-radius: 999px;
+    background: hsl(var(--muted-foreground) / 0.42);
+    box-shadow:
+      inset 0 0 0 1px hsl(var(--background) / 0.55),
+      0 1px 2px hsl(220 22% 10% / 0.08);
+    transition: background-color 0.16s ease;
+  }
+  .chat-queue-scrollbar:hover .chat-queue-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.56);
+  }
+  .chat-queue-scrollbar-thumb:active {
+    background: hsl(var(--muted-foreground) / 0.7);
   }
 
   .tool-text-scroll {
@@ -760,21 +810,6 @@
     isolation: isolate;
   }
 
-  .settings-section-shell::before {
-    content: "";
-    position: absolute;
-    inset: -16px 0 auto;
-    height: 112px;
-    border-radius: 24px;
-    background:
-      radial-gradient(circle at top left, hsl(var(--primary) / 0.12), transparent 58%),
-      linear-gradient(180deg, hsl(var(--primary) / 0.06), transparent 76%);
-    filter: blur(18px);
-    opacity: 0.9;
-    pointer-events: none;
-    z-index: -1;
-  }
-
   .ssh-auth-panel {
     overflow: hidden;
     transition:
@@ -856,10 +891,111 @@
     }
   }
 
+  /* Sidebar recent-conversation list: soft enter when the workspace scope
+   * switches (the list content wrapper is keyed by scope). */
+  .chat-history-scope-enter {
+    animation: chatHistoryScopeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: transform, opacity;
+  }
+
+  @keyframes chatHistoryScopeIn {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Sidebar workspace / recent-conversation context menus: grow out of the
+   * anchor with a soft slide instead of popping in. Base UI drives the popup
+   * lifecycle, so enter/exit are keyed off data-starting-style /
+   * data-ending-style and the transition delays unmount. */
+  .sidebar-context-menu {
+    /* Slide from the anchor side; flipped placements override per data-side. */
+    --sidebar-menu-slide-x: -6px;
+    --sidebar-menu-slide-y: 0px;
+    transform-origin: var(--transform-origin);
+    transition:
+      opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+      transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .sidebar-context-menu[data-side="left"],
+  .sidebar-context-menu[data-side="inline-start"] {
+    --sidebar-menu-slide-x: 6px;
+  }
+
+  .sidebar-context-menu[data-side="bottom"] {
+    --sidebar-menu-slide-x: 0px;
+    --sidebar-menu-slide-y: -6px;
+  }
+
+  .sidebar-context-menu[data-side="top"] {
+    --sidebar-menu-slide-x: 0px;
+    --sidebar-menu-slide-y: 6px;
+  }
+
+  .sidebar-context-menu[data-starting-style],
+  .sidebar-context-menu[data-ending-style] {
+    opacity: 0;
+    transform: translate(var(--sidebar-menu-slide-x), var(--sidebar-menu-slide-y)) scale(0.96);
+  }
+
+  .sidebar-context-menu[data-ending-style] {
+    transition-duration: 0.12s;
+    transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
+    transform: translate(
+        calc(var(--sidebar-menu-slide-x) / 2),
+        calc(var(--sidebar-menu-slide-y) / 2)
+      )
+      scale(0.98);
+  }
+
+  .sidebar-context-menu[data-open] [role="menuitem"] {
+    animation: sidebarMenuItemIn 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .sidebar-context-menu[data-open] [role="menuitem"]:nth-child(2) {
+    animation-delay: 0.02s;
+  }
+  .sidebar-context-menu[data-open] [role="menuitem"]:nth-child(3) {
+    animation-delay: 0.04s;
+  }
+  .sidebar-context-menu[data-open] [role="menuitem"]:nth-child(4) {
+    animation-delay: 0.06s;
+  }
+  .sidebar-context-menu[data-open] [role="menuitem"]:nth-child(n + 5) {
+    animation-delay: 0.08s;
+  }
+
+  @keyframes sidebarMenuItemIn {
+    from {
+      opacity: 0;
+      transform: translate(
+        calc(var(--sidebar-menu-slide-x) / 2),
+        calc(var(--sidebar-menu-slide-y) / 2)
+      );
+    }
+    to {
+      opacity: 1;
+      transform: translate(0, 0);
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .settings-section-enter,
-    .settings-section-title-enter {
+    .settings-section-title-enter,
+    .chat-history-scope-enter {
       animation: none;
+    }
+
+    .sidebar-context-menu,
+    .sidebar-context-menu [role="menuitem"] {
+      animation: none !important;
+      transition: none !important;
     }
 
     .ssh-auth-panel,
@@ -867,11 +1003,6 @@
     .settings-modal-overlay,
     .settings-modal-panel {
       transition-duration: 1ms;
-    }
-
-    .settings-section-shell::before {
-      opacity: 0.45;
-      filter: none;
     }
   }
 
@@ -1676,6 +1807,13 @@
     animation: hubFrostSheen 2.6s ease-in-out infinite;
     pointer-events: none;
   }
+  .dark .hub-frost-hero {
+    border-color: hsl(0 0% 100% / 0.08);
+    background: linear-gradient(180deg, hsl(0 0% 100% / 0.06), hsl(0 0% 100% / 0.03));
+    box-shadow:
+      0 1px 0 hsl(0 0% 100% / 0.05) inset,
+      0 8px 28px -18px hsl(0 0% 0% / 0.6);
+  }
   .dark .hub-frost-hero::after {
     background: linear-gradient(90deg, transparent, hsl(0 0% 100% / 0.06), transparent);
   }
@@ -2419,4 +2557,26 @@ body > div:not(#root) [data-streamdown="mermaid"] svg {
 .editor-context-menu {
   animation: editorContextMenuIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
   transform-origin: top left;
+}
+
+/*
+ * Right-dock header metrics — the dock markup is byte-mirrored with the
+ * gateway WebUI and therefore carries the web-sized utilities (h-11 header,
+ * h-8 tab row, no vertical padding). The desktop GUI restores its own
+ * metrics here. MUST stay outside @layer so these rules beat the Tailwind
+ * utility classes baked into the mirrored markup (unlayered styles win over
+ * the utilities layer in Tailwind v4).
+ */
+.project-tools-panel-header {
+  height: 3.25rem;
+}
+.project-tools-panel-tabs {
+  height: 2.5rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+/* Mobile drag handle from the mirrored WebUI markup; the desktop GUI has no
+ * mobile sheet presentation, so it is never shown here. */
+.project-tools-panel-handle {
+  display: none;
 }

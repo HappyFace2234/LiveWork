@@ -107,6 +107,8 @@ impl MemoryStore {
             deleted: false,
             index_updated: true,
             warning: None,
+            applied_confidence: None,
+            auto_downgraded: None,
         })
     }
 
@@ -186,6 +188,8 @@ impl MemoryStore {
             deleted: false,
             index_updated: true,
             warning: None,
+            applied_confidence: None,
+            auto_downgraded: None,
         })
     }
 

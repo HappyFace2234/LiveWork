@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "lint": "biome check src/",
+    "format": "biome format --write src/",
+    "lint:fix": "biome check --write src/"
   },
   "dependencies": {
     "@git-diff-view/file": "^0.1.3",
@@ -39,6 +42,7 @@
     "yet-another-react-lightbox": "^3.31.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.4.15",
     "@iconify-json/logos": "^1.2.11",
     "@iconify-json/lucide": "^1.2.108",
     "@iconify-json/material-icon-theme": "1.2.67",

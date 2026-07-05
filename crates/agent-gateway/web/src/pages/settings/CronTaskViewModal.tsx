@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { invoke } from "@tauri-apps/api/core";
 import {
+  AlertTriangle,
   BrushCleaning,
   CheckCircle2,
   ChevronDown,
@@ -15,13 +15,19 @@ import {
 } from "../../components/icons";
 
 import { useLocale } from "../../i18n";
+import {
+  type CronRunRecord,
+  type CronTask,
+  type CronTaskType,
+  clearCronRuns,
+  listCronRuns,
+  useAutomation,
+} from "../../lib/automation";
 import { useModalMotion } from "../../lib/shared/modalMotion";
-import type { CronExecutionLog, CronTask, CronTaskType } from "../../lib/settings";
 import { ConfirmActionPopover } from "./shared";
-import { stringifyTaskBody, stringifyTaskHeaders } from "./taskConfigUtils";
 
 type CronTaskViewModalProps = {
-  task: CronTask;
+  taskId: string;
   onClose: () => void;
 };
 
@@ -56,7 +62,7 @@ const TYPE_CONFIG: Record<
     accentBg: "bg-violet-500/10",
     accentBorder: "border-violet-500/20",
   },
-}
+};
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -65,6 +71,16 @@ function formatDuration(ms: number): string {
 
 function formatTimestamp(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
+}
+
+function stringifyHeaders(headers?: Record<string, string>) {
+  if (!headers || Object.keys(headers).length === 0) return "";
+  return JSON.stringify(headers, null, 2);
+}
+
+function stringifyBody(body?: unknown) {
+  if (body === undefined) return "";
+  return JSON.stringify(body, null, 2);
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -115,9 +131,7 @@ function LeftPanel({
           </div>
 
           {/* Name */}
-          <h2 className="mt-3 text-base font-bold leading-tight text-foreground">
-            {task.name}
-          </h2>
+          <h2 className="mt-3 text-base font-bold leading-tight text-foreground">{task.name}</h2>
 
           {/* Description */}
           <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
@@ -166,6 +180,13 @@ function LeftPanel({
               )}
             </div>
           </div>
+
+          {task.lastError ? (
+            <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-red-500/20 bg-red-500/[0.04] px-2.5 py-2 text-[11px] leading-relaxed text-red-700 dark:text-red-300">
+              <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+              <span className="min-w-0 break-all">{task.lastError}</span>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -198,8 +219,8 @@ function LeftPanel({
             (task.requests ?? []).length > 0 ? (
               <div className="space-y-2.5">
                 {(task.requests ?? []).map((req, i) => {
-                  const headersText = stringifyTaskHeaders(req.headers);
-                  const bodyText = stringifyTaskBody(req.body);
+                  const headersText = stringifyHeaders(req.headers);
+                  const bodyText = stringifyBody(req.body);
                   const hasHeaders = headersText.trim().length > 0;
                   const hasBody = bodyText.trim().length > 0;
                   return (
@@ -300,9 +321,18 @@ function LeftPanel({
 
 /* ─────────────────────── Right panel ─────────────────────── */
 
-function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => string; onClose: () => void }) {
+function RightPanel({
+  task,
+  t,
+  onClose,
+}: {
+  task: CronTask;
+  t: (key: string) => string;
+  onClose: () => void;
+}) {
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
-  const [logs, setLogs] = useState<CronExecutionLog[]>([]);
+  const [logs, setLogs] = useState<CronRunRecord[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [isClearing, setIsClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
 
@@ -311,17 +341,16 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
 
     async function loadLogs() {
       try {
-        const nextLogs = await invoke<CronExecutionLog[]>("cron_list_logs", {
-          task_id: task.id,
-          limit: 100,
-        } as any);
+        const nextLogs = await listCronRuns(task.id, 100);
         if (!cancelled) {
-          setClearError(null);
+          setLoadError(null);
           setLogs(Array.isArray(nextLogs) ? nextLogs : []);
         }
-      } catch {
+      } catch (error) {
+        // Keep the last successfully loaded list; a failed fetch must not
+        // masquerade as "no logs".
         if (!cancelled) {
-          setLogs([]);
+          setLoadError(error instanceof Error ? error.message : String(error));
         }
       }
     }
@@ -348,9 +377,7 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
     try {
       setIsClearing(true);
       setClearError(null);
-      await invoke("cron_clear_logs", {
-        task_id: task.id,
-      } as any);
+      await clearCronRuns(task.id);
       setExpandedLogId(null);
       setLogs([]);
     } catch {
@@ -365,9 +392,7 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
       {/* ── Fixed header ── */}
       <div className="settings-cron-logs-header flex shrink-0 items-center gap-2 border-b border-border/30 px-5 py-3.5">
         <ScrollText className="h-4 w-4 text-muted-foreground/50" />
-        <span className="text-sm font-semibold text-foreground">
-          {t("settings.cronViewLogs")}
-        </span>
+        <span className="text-sm font-semibold text-foreground">{t("settings.cronViewLogs")}</span>
         <div className="ml-auto flex items-center gap-2">
           <ConfirmActionPopover
             title={t("settings.cronViewClearLogsConfirm")}
@@ -389,14 +414,10 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
                 onClick={open}
                 disabled={logs.length === 0 || isClearing}
                 title={
-                  isClearing
-                    ? t("settings.cronViewClearingLogs")
-                    : t("settings.cronViewClearLogs")
+                  isClearing ? t("settings.cronViewClearingLogs") : t("settings.cronViewClearLogs")
                 }
                 aria-label={
-                  isClearing
-                    ? t("settings.cronViewClearingLogs")
-                    : t("settings.cronViewClearLogs")
+                  isClearing ? t("settings.cronViewClearingLogs") : t("settings.cronViewClearLogs")
                 }
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -431,6 +452,14 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
 
       {/* ── Scrollable log list ── */}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {loadError ? (
+          <div className="mb-3 flex items-start gap-1.5 rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="min-w-0 break-all">
+              {t("settings.cronViewLogsLoadFailed")}: {loadError}
+            </span>
+          </div>
+        ) : null}
         {clearError ? (
           <div className="mb-3 rounded-lg border border-red-500/20 bg-red-500/[0.03] px-3 py-2 text-[11px] text-red-700 dark:text-red-300">
             {clearError}
@@ -440,6 +469,7 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
           <div className="space-y-2">
             {logs.map((log) => {
               const isExpanded = expandedLogId === log.id;
+              const isExpired = log.state === "expired";
 
               return (
                 <div
@@ -453,9 +483,7 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
                   {/* Summary — fixed-width columns for vertical alignment */}
                   <button
                     type="button"
-                    onClick={() =>
-                      setExpandedLogId(isExpanded ? null : log.id)
-                    }
+                    onClick={() => setExpandedLogId(isExpanded ? null : log.id)}
                     className="settings-log-row flex w-full items-center gap-2 px-3 py-2.5 text-left"
                   >
                     {/* Status icon */}
@@ -478,7 +506,9 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
                     >
                       {log.success
                         ? t("settings.cronViewLogSuccess")
-                        : t("settings.cronViewLogFailed")}
+                        : isExpired
+                          ? t("settings.cronViewLogExpired")
+                          : t("settings.cronViewLogFailed")}
                     </span>
                     {/* Duration — right-aligned fixed width */}
                     <span className="ml-auto w-[48px] shrink-0 text-right text-[11px] tabular-nums text-muted-foreground/50">
@@ -559,10 +589,24 @@ function RightPanel({ task, t, onClose }: { task: CronTask; t: (key: string) => 
 
 /* ─────────────────────── Modal shell ─────────────────────── */
 
-export function CronTaskViewModal({ task, onClose }: CronTaskViewModalProps) {
+export function CronTaskViewModal({ taskId, onClose }: CronTaskViewModalProps) {
   const { t } = useLocale();
-  const cfg = TYPE_CONFIG[task.type];
   const { modalState, requestClose } = useModalMotion(onClose);
+  // Live subscription: enable/disable toggles, executor decrements and
+  // scheduler errors show up while the modal is open.
+  const { cron } = useAutomation();
+  const task = cron.tasks.find((item) => item.id === taskId);
+
+  useEffect(() => {
+    if (!task) {
+      requestClose();
+    }
+  }, [task, requestClose]);
+
+  if (!task) {
+    return null;
+  }
+  const cfg = TYPE_CONFIG[task.type];
 
   return createPortal(
     <div

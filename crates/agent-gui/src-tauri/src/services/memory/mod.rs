@@ -142,7 +142,15 @@ CREATE TABLE IF NOT EXISTS memory_organize_runs (
     parse_failures        INTEGER NOT NULL DEFAULT 0,
     error                 TEXT,
     final_summary         TEXT,
-    trimmed_protocol_json TEXT    NOT NULL DEFAULT '{}'
+    trimmed_protocol_json TEXT    NOT NULL DEFAULT '{}',
+    phase                 TEXT,
+    final_count           INTEGER NOT NULL DEFAULT 0,
+    compression_ratio     REAL,
+    compression_target    INTEGER,
+    dry_run               INTEGER NOT NULL DEFAULT 0,
+    token_usage_total     INTEGER NOT NULL DEFAULT 0,
+    quota_headroom_at_start INTEGER,
+    override_reviewed     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_organize_runs_recent
@@ -157,7 +165,7 @@ CREATE TABLE IF NOT EXISTS memory_schema_version (
 );
 
 INSERT OR IGNORE INTO memory_schema_version (version, applied_at)
-VALUES (3, strftime('%s','now') * 1000);
+VALUES (4, strftime('%s','now') * 1000);
 "#;
 
 include!("types.rs");

@@ -63,9 +63,8 @@ function normalizeSource(value: unknown): HostedSearchSource | null {
   const title = normalizeText(value.title ?? value.name);
   const snippet = normalizeText(value.snippet ?? value.description);
   const citedText = normalizeText(value.citedText ?? value.cited_text);
-  const sourceType = value.sourceType === "citation" || value.type === "url_citation"
-    ? "citation"
-    : "source";
+  const sourceType =
+    value.sourceType === "citation" || value.type === "url_citation" ? "citation" : "source";
 
   return {
     url: rawUrl,
@@ -174,9 +173,7 @@ export function enrichHostedSearchBlockWithText(
 }
 
 export function normalizeHostedSearchStatus(value: unknown): HostedSearchStatus {
-  return value === "completed" || value === "failed" || value === "searching"
-    ? value
-    : "searching";
+  return value === "completed" || value === "failed" || value === "searching" ? value : "searching";
 }
 
 export function normalizeHostedSearchBlock(value: unknown): HostedSearchBlock | null {
@@ -187,9 +184,10 @@ export function normalizeHostedSearchBlock(value: unknown): HostedSearchBlock | 
   const provider = normalizeText(value.provider);
   const queries = uniqueTexts(Array.isArray(value.queries) ? value.queries : [value.query]);
   const sources = normalizeSources(Array.isArray(value.sources) ? value.sources : []);
-  const updatedAt = typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt)
-    ? value.updatedAt
-    : undefined;
+  const updatedAt =
+    typeof value.updatedAt === "number" && Number.isFinite(value.updatedAt)
+      ? value.updatedAt
+      : undefined;
   return {
     type: "hostedSearch",
     id,
@@ -219,9 +217,7 @@ export function mergeHostedSearchBlocks(
 ): HostedSearchBlock {
   if (!previous) return incoming;
   const status =
-    statusRank(incoming.status) >= statusRank(previous.status)
-      ? incoming.status
-      : previous.status;
+    statusRank(incoming.status) >= statusRank(previous.status) ? incoming.status : previous.status;
   return {
     type: "hostedSearch",
     id: incoming.id || previous.id,
@@ -331,7 +327,10 @@ function findHostedSearchTextSplitIndex(text: string, block: HostedSearchBlock) 
       const index = lowerText.indexOf(lowerCandidate, fromIndex);
       if (index < 0) break;
       const sentence = sentenceAround(text, index);
-      const hasSearchAction = /联网|搜索|搜寻|检索|查询|查找|查阅|搜索中|search|searching|searched|lookup|look up/i.test(sentence);
+      const hasSearchAction =
+        /联网|搜索|搜寻|检索|查询|查找|查阅|搜索中|search|searching|searched|lookup|look up/i.test(
+          sentence,
+        );
       const end = sentenceEndAfter(text, index + candidate.length);
       const score = index - (hasSearchAction ? 100_000 : 0) - candidate.length;
       if (!best || score < best.score) {
@@ -416,10 +415,7 @@ export function resolveHostedSearchTextBoundary(text: string, offset: number) {
   return text.length;
 }
 
-function insertHostedSearchesByTextOffset(
-  content: unknown[],
-  orderedContent: unknown[],
-) {
+function insertHostedSearchesByTextOffset(content: unknown[], orderedContent: unknown[]) {
   const fullText = content
     .filter(isTextContentBlock)
     .map((block) => block.text)
@@ -442,9 +438,7 @@ function insertHostedSearchesByTextOffset(
 
   if (placements.length === 0) return content;
 
-  const pending = placements
-    .slice()
-    .sort((a, b) => a.offset - b.offset || a.order - b.order);
+  const pending = placements.slice().sort((a, b) => a.offset - b.offset || a.order - b.order);
   const out: unknown[] = [];
   let textOffset = 0;
 
@@ -505,7 +499,8 @@ export function applyHostedSearchOrderToAssistant<TMessage extends { content: un
       continue;
     }
 
-    const hostedSearch = hostedSearchById.get(block.item.id) ?? normalizeHostedSearchBlock(block.item);
+    const hostedSearch =
+      hostedSearchById.get(block.item.id) ?? normalizeHostedSearchBlock(block.item);
     if (!hostedSearch || usedHostedSearchIds.has(hostedSearch.id)) continue;
     usedHostedSearchIds.add(hostedSearch.id);
     const previous = nextContent[nextContent.length - 1];

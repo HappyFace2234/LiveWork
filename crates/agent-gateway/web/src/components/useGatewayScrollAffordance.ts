@@ -107,10 +107,7 @@ export function useGatewayScrollAffordance() {
     [],
   );
 
-  const hasActiveBottomLock = useCallback(
-    () => Date.now() <= bottomLockUntilRef.current,
-    [],
-  );
+  const hasActiveBottomLock = useCallback(() => Date.now() <= bottomLockUntilRef.current, []);
 
   const attachAutoScroll = useCallback(() => {
     shouldAutoScrollRef.current = true;
@@ -124,11 +121,7 @@ export function useGatewayScrollAffordance() {
 
   const syncAutoScroll = useCallback(
     (options?: { force?: boolean }) => {
-      if (
-        options?.force !== true &&
-        !shouldAutoScrollRef.current &&
-        !hasActiveBottomLock()
-      ) {
+      if (options?.force !== true && !shouldAutoScrollRef.current && !hasActiveBottomLock()) {
         return false;
       }
 
@@ -158,18 +151,21 @@ export function useGatewayScrollAffordance() {
     });
   }, [syncAutoScroll]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior) => {
-    attachAutoScroll();
-    const viewport = resolveViewport(scrollAreaRef.current);
-    if (!viewport) {
-      return;
-    }
-    const bottomScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    viewport.scrollTo({ top: bottomScrollTop, behavior });
-    requestAnimationFrame(() => {
-      applyShowJumpToBottom(shouldShowJumpToBottom(viewport));
-    });
-  }, [applyShowJumpToBottom, attachAutoScroll]);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior) => {
+      attachAutoScroll();
+      const viewport = resolveViewport(scrollAreaRef.current);
+      if (!viewport) {
+        return;
+      }
+      const bottomScrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+      viewport.scrollTo({ top: bottomScrollTop, behavior });
+      requestAnimationFrame(() => {
+        applyShowJumpToBottom(shouldShowJumpToBottom(viewport));
+      });
+    },
+    [applyShowJumpToBottom, attachAutoScroll],
+  );
 
   const jumpToBottom = useCallback(() => {
     scrollToBottom("smooth");
@@ -193,11 +189,8 @@ export function useGatewayScrollAffordance() {
 
   const preserveScrollPosition = useCallback(
     (callback: () => void, options?: { stickToBottom?: boolean }) => {
-      const previousViewport =
-        viewportRef.current ?? resolveViewport(scrollAreaRef.current);
-      const previousBottomGap = previousViewport
-        ? getViewportBottomGap(previousViewport)
-        : 0;
+      const previousViewport = viewportRef.current ?? resolveViewport(scrollAreaRef.current);
+      const previousBottomGap = previousViewport ? getViewportBottomGap(previousViewport) : 0;
       const shouldStickToBottom =
         options?.stickToBottom ?? (previousViewport ? isViewportAtLatest(previousViewport) : false);
 
@@ -205,7 +198,7 @@ export function useGatewayScrollAffordance() {
         const viewport =
           previousViewport?.isConnected === true
             ? previousViewport
-            : viewportRef.current ?? resolveViewport(scrollAreaRef.current);
+            : (viewportRef.current ?? resolveViewport(scrollAreaRef.current));
         if (!viewport) {
           return;
         }

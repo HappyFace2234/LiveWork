@@ -64,10 +64,7 @@ function MarkdownReadOnlyLink(props: MarkdownAnchorFallbackProps) {
         ? href.trim()
         : undefined;
   return (
-    <span
-      className="text-primary underline decoration-primary/35 underline-offset-4"
-      title={label}
-    >
+    <span className="text-primary underline decoration-primary/35 underline-offset-4" title={label}>
       {children}
     </span>
   );

@@ -10,7 +10,11 @@ import {
 } from "../../../../lib/chat/messages/uiMessages";
 import { cn } from "../../../../lib/shared/utils";
 import type {
-  DelegateAgentCardResultDetails,
+  SubagentBatchDetails,
+  SubagentCardDetails,
+  SubagentMessageDetails,
+} from "../../../../lib/subagents/protocol";
+import type {
   DeleteResultDetails,
   EditResultDetails,
   GlobResultDetails,
@@ -23,17 +27,16 @@ import type {
   ReadPdfResultDetails,
   ReadTextResultDetails,
   SkillsManagerResultDetails,
-  SubagentMessageResultDetails,
   WriteResultDetails,
 } from "../../../../lib/tools/builtinTypes";
 import {
   getBuiltinResultKind,
-  getDelegateAgentTask,
+  getSubagentTask,
   isShellResultDetails,
   type MetaTag,
-  shouldShowDelegateApplyStatus,
-  shouldShowDelegateCleanupStatus,
-  shouldShowDelegateWorktreeLocation,
+  shouldShowSubagentApplyStatus,
+  shouldShowSubagentCleanupStatus,
+  shouldShowSubagentWorktreeLocation,
   summarizeShellStream,
 } from "./assistantBubbleUtils";
 import { EditDiffView } from "./EditDiffView";
@@ -111,14 +114,12 @@ function buildPagedResultTags(params: {
 function filePathTags(details: {
   scope?: string;
   displayPath?: string;
-  pathRef?: string;
   absolutePath?: string;
 }): MetaTag[] {
   return [
     ...(details.scope && details.scope !== "workspace"
       ? [{ label: "scope", value: details.scope }]
       : []),
-    ...(details.pathRef ? [{ label: "pathRef", value: details.pathRef }] : []),
   ];
 }
 
@@ -529,9 +530,7 @@ export function ToolResultDisplay({
     const details = result.details as DeleteResultDetails;
     return (
       <ToolSurface>
-        <MetaTags
-          tags={[...filePathTags(details), { label: "kind", value: details.targetKind }]}
-        />
+        <MetaTags tags={[...filePathTags(details), { label: "kind", value: details.targetKind }]} />
       </ToolSurface>
     );
   }
@@ -674,15 +673,51 @@ export function ToolResultDisplay({
     );
   }
 
-  if (kind === "delegate_agent") {
-    return null;
+  if (kind === "subagent_batch") {
+    const details = result.details as SubagentBatchDetails;
+    if (details.status !== "rejected" && result.isError !== true) {
+      // The successful parent batch is rendered as per-agent cards.
+      return null;
+    }
+    const issues = details.issues ?? [];
+    return (
+      <ToolSurface className="space-y-2">
+        <MetaTags
+          tags={[
+            { label: "agent", value: "rejected" },
+            { label: "issues", value: String(issues.length) },
+          ]}
+        />
+        <div className="text-[12px] font-semibold leading-[1.45] text-foreground/90">
+          Agent call rejected — no subagents were started
+        </div>
+        {issues.length > 0 ? (
+          <CodePreview
+            text={issues
+              .map(
+                (item, index) =>
+                  `${index + 1}. [${item.code}]${item.agentId ? ` agent=${item.agentId}` : ""} ${item.message}`,
+              )
+              .join("\n")}
+            maxChars={2400}
+          />
+        ) : (
+          <CodePreview
+            text={result.content
+              .map((block) => (block.type === "text" ? block.text : ""))
+              .join("\n")}
+            maxChars={2400}
+          />
+        )}
+      </ToolSurface>
+    );
   }
 
-  if (kind === "delegate_agent_item") {
-    const details = result.details as DelegateAgentCardResultDetails;
+  if (kind === "subagent_card") {
+    const details = result.details as SubagentCardDetails;
     const agent = details.agent;
-    const agentDisplayName = agent.name || agent.agentName || agent.id;
-    const agentTask = getDelegateAgentTask(agent);
+    const agentDisplayName = agent.name || agent.id;
+    const agentTask = getSubagentTask(agent);
     const tags: MetaTag[] = [
       { label: "agent", value: `${details.index + 1}/${details.total}` },
       { label: "status", value: agent.status },
@@ -690,10 +725,10 @@ export function ToolResultDisplay({
     if (agent.mode === "worktree") {
       tags.push({ label: "mode", value: agent.mode });
     }
-    if (shouldShowDelegateApplyStatus(agent) && agent.applyStatus) {
+    if (shouldShowSubagentApplyStatus(agent) && agent.applyStatus) {
       tags.push({ label: "apply", value: agent.applyStatus });
     }
-    if (shouldShowDelegateCleanupStatus(agent) && agent.worktreeCleanupStatus) {
+    if (shouldShowSubagentCleanupStatus(agent) && agent.worktreeCleanupStatus) {
       tags.push({ label: "cleanup", value: agent.worktreeCleanupStatus });
     }
 
@@ -702,8 +737,8 @@ export function ToolResultDisplay({
     const showUntrackedFiles = agent.applyStatus !== "applied" && untrackedFiles.length > 0;
     const showCandidateArtifacts = Boolean(
       candidateArtifacts.length > 0 &&
-        (agent.taskIntent === "document_generation" ||
-          (agent.applySkippedReason && agent.applySkippedReason !== "no_changes")),
+        agent.applySkippedReason &&
+        agent.applySkippedReason !== "no_changes",
     );
 
     return (
@@ -723,7 +758,7 @@ export function ToolResultDisplay({
               <span className="text-muted-foreground">task</span> {agentTask}
             </div>
           ) : null}
-          {shouldShowDelegateWorktreeLocation(agent) ? (
+          {shouldShowSubagentWorktreeLocation(agent) ? (
             <div className="break-all text-[10px] text-muted-foreground/70">
               {agent.branchName ? `${agent.branchName} | ` : ""}
               {agent.worktreeRoot}
@@ -782,6 +817,12 @@ export function ToolResultDisplay({
               maxChars={1200}
             />
           ) : null}
+          {agent.persistenceWarnings && agent.persistenceWarnings.length > 0 ? (
+            <CodePreview
+              text={`persistence warning:\n${agent.persistenceWarnings.map((item) => `- ${item}`).join("\n")}`}
+              maxChars={1200}
+            />
+          ) : null}
           {agent.error ? (
             <CodePreview text={agent.error} maxChars={1200} />
           ) : agent.summary ? (
@@ -793,9 +834,9 @@ export function ToolResultDisplay({
   }
 
   if (kind === "subagent_message") {
-    const details = result.details as SubagentMessageResultDetails;
-    const from = details.senderDisplayName || details.senderAgentId;
-    const to = details.recipientDisplayName || details.recipientAgentId;
+    const details = result.details as SubagentMessageDetails;
+    const from = details.senderName || details.senderId;
+    const to = details.recipientName || details.recipientId;
     return (
       <ToolSurface className="space-y-2">
         <MetaTags

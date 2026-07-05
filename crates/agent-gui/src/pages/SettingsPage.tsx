@@ -18,7 +18,7 @@ import { AboutSection } from "./settings/AboutSection";
 import { AgentsSection } from "./settings/AgentsSection";
 import { CronSection } from "./settings/CronSection";
 import { HooksSection } from "./settings/HooksSection";
-import { MemoryPanel } from "./settings/MemoryPanel";
+import { MemoryPanel } from "./settings/memory/MemoryPanel";
 import { ProvidersSection } from "./settings/ProvidersSection";
 import { RemoteSection } from "./settings/RemoteSection";
 import { SshSection } from "./settings/SshSection";
@@ -98,9 +98,7 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     labelKey: "settings.groupIntelligence",
-    items: [
-      { id: "memory", icon: <Brain className="h-3.5 w-3.5" /> },
-    ],
+    items: [{ id: "memory", icon: <Brain className="h-3.5 w-3.5" /> }],
   },
   {
     labelKey: "settings.groupAutomation",
@@ -118,9 +116,7 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     labelKey: "settings.groupOther",
-    items: [
-      { id: "about", icon: <Info className="h-3.5 w-3.5" /> },
-    ],
+    items: [{ id: "about", icon: <Info className="h-3.5 w-3.5" /> }],
   },
 ];
 
@@ -160,10 +156,7 @@ export function SettingsPage(props: SettingsPageProps) {
       })).filter((group) => group.items.length > 0),
     [hiddenSectionSet, sectionLabels, t],
   );
-  const allNavItems = useMemo(
-    () => navGroups.flatMap((g) => g.items),
-    [navGroups],
-  );
+  const allNavItems = useMemo(() => navGroups.flatMap((g) => g.items), [navGroups]);
 
   useEffect(() => {
     setSection(initialSection);

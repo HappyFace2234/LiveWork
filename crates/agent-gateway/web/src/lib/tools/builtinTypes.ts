@@ -1,6 +1,11 @@
 import type { Tool, ToolCall, ToolResultMessage } from "../agentTypes";
+import type {
+  SubagentBatchDetails,
+  SubagentCardDetails,
+  SubagentMessageDetails,
+} from "../subagents/protocol";
 
-export type BuiltinToolGroupId = "fs" | "shell" | "skill" | "system" | "mcp" | "delegate";
+export type BuiltinToolGroupId = "fs" | "shell" | "skill" | "system" | "mcp" | "subagent";
 
 export type BuiltinToolDisplayCategory =
   | "file"
@@ -30,20 +35,37 @@ export type BuiltinToolBundle<TExtra extends object = {}> = TExtra & {
 };
 
 export function createBuiltinMetadataMap(
-  entries: Array<[toolName: string, metadata: Omit<BuiltinToolMetadata, "groupId"> & {
-    groupId: BuiltinToolGroupId;
-  }]>,
+  entries: Array<
+    [
+      toolName: string,
+      metadata: Omit<BuiltinToolMetadata, "groupId"> & {
+        groupId: BuiltinToolGroupId;
+      },
+    ]
+  >,
 ) {
   return new Map<string, BuiltinToolMetadata>(entries);
 }
 
 export type FsEntryKind = "file" | "dir";
-export type FileToolRoot = "workspace" | "skills";
+export type PathScope = "workspace" | "skill" | "external";
+
+export type ResolvedPathResultDetails = {
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
+};
 
 export type ReadTextResultDetails = {
   kind: "read_text";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   startLine: number;
   numLines: number;
   totalLines: number;
@@ -56,8 +78,12 @@ export type ReadTextResultDetails = {
 
 export type ReadImageResultDetails = {
   kind: "read_image";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   mimeType: string;
   sizeBytes: number;
   mtimeMs: number;
@@ -67,6 +93,11 @@ export type ReadImageResultDetails = {
 
 export type DisplayImageItemDetails = {
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   sourceType?: "path" | "url" | "base64" | "auto";
   renderMode?: "inline" | "proxy";
   sourceUrl?: string;
@@ -89,8 +120,12 @@ export type DisplayImageResultDetails = {
 
 export type ReadPdfResultDetails = {
   kind: "read_pdf";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   pageStart: number;
   numPages: number;
   totalPages: number;
@@ -102,8 +137,12 @@ export type ReadPdfResultDetails = {
 
 export type ReadNotebookResultDetails = {
   kind: "read_notebook";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   cellStart: number;
   numCells: number;
   totalCells: number;
@@ -115,8 +154,12 @@ export type ReadNotebookResultDetails = {
 
 export type ReadDocumentResultDetails = {
   kind: "read_word" | "read_spreadsheet" | "read_archive";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   truncated: boolean;
   mimeType?: string;
   sizeBytes?: number;
@@ -142,6 +185,7 @@ export type SkillsManagerActionResultDetails = {
   invalidCount?: number;
   installedCount?: number;
   createdName?: string;
+  deletedName?: string;
   validationOk?: boolean;
   packageArchive?: string;
   seededCount?: number;
@@ -174,92 +218,14 @@ export type McpManagerResultDetails = {
   errors?: string[];
 };
 
-export type DelegateAgentItemResultDetails = {
-  id: string;
-  runId?: string;
-  name?: string;
-  role?: string;
-  prompt: string;
-  description?: string;
-  agentId?: string;
-  agentName?: string;
-  mode: "readonly" | "worktree";
-  taskIntent?: "communication" | "research" | "review" | "implementation" | "document_generation";
-  applyPolicy?: "none" | "explicit" | "auto";
-  allowedOutputPaths?: string[];
-  status: "completed" | "failed";
-  summary: string;
-  durationMs: number;
-  rounds: number;
-  toolCalls: number;
-  error?: string;
-  worktreeRoot?: string;
-  workdir?: string;
-  branchName?: string;
-  changed?: boolean;
-  statusText?: string;
-  diffStat?: string;
-  diff?: string;
-  diffTruncated?: boolean;
-  untrackedFiles?: string[];
-  worktreeStatusError?: string;
-  applyStatus?: "applied" | "skipped" | "failed";
-  applyMethod?: "git_apply" | "git_apply_3way" | "file_copy_fallback";
-  applyChanged?: boolean;
-  applyPatchBytes?: number;
-  applySkippedReason?: string;
-  applyFallbackReason?: string;
-  applyCopiedFiles?: string[];
-  applyDeletedFiles?: string[];
-  applyConflictFiles?: string[];
-  applyError?: string;
-  appliedToWorkdir?: string;
-  worktreeCleanupStatus?: "removed" | "retained" | "skipped" | "failed";
-  worktreeCleanupReason?: string;
-  worktreeCleanupError?: string;
-  worktreeBranchDeleted?: boolean;
-  candidateArtifacts?: string[];
-  changedPaths?: string[];
-};
-
-export type DelegateAgentCardResultDetails = {
-  kind: "delegate_agent_item";
-  parentToolCallId: string;
-  index: number;
-  total: number;
-  concurrency: number;
-  agent: DelegateAgentItemResultDetails;
-};
-
-export type DelegateAgentResultDetails = {
-  kind: "delegate_agent";
-  agentCount: number;
-  concurrency: number;
-  totalDurationMs: number;
-  readOnly: boolean;
-  mode: "readonly" | "worktree" | "mixed";
-  agents: DelegateAgentItemResultDetails[];
-};
-
-export type SubagentMessageResultDetails = {
-  kind: "subagent_message";
-  parentConversationId: string;
-  seq: number;
-  senderAgentId: string;
-  senderDisplayName?: string;
-  recipientAgentId: string;
-  recipientDisplayName?: string;
-  channel: "direct" | "shared" | "decision" | "question";
-  subject?: string;
-  sourceRunId?: string;
-  sourceToolCallId?: string;
-  bodyPreview: string;
-};
-
 export type WriteResultDetails = {
   kind: "write";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   mode: "rewrite";
   existedBefore: boolean;
   bytesWritten: number;
@@ -271,8 +237,12 @@ export type WriteResultDetails = {
 
 export type EditResultDetails = {
   kind: "edit";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   replacements: number;
   replaceAll: boolean;
   expectedReplacements?: number;
@@ -285,8 +255,12 @@ export type EditResultDetails = {
 
 export type DeleteResultDetails = {
   kind: "delete";
-  root?: FileToolRoot;
   path: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
   targetKind: string;
 };
 
@@ -297,8 +271,13 @@ export type ListResultEntry = {
 
 export type ListResultDetails = {
   kind: "list";
-  root?: FileToolRoot;
   path?: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
+  targetKind?: FsEntryKind;
   depth: number;
   offset: number;
   maxResults: number;
@@ -309,8 +288,13 @@ export type ListResultDetails = {
 
 export type GlobResultDetails = {
   kind: "glob";
-  root?: FileToolRoot;
   path?: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
+  targetKind?: FsEntryKind;
   pattern: string;
   sortBy: "path";
   offset: number;
@@ -336,8 +320,13 @@ export type GrepResultFileSummary = {
 
 export type GrepResultDetails = {
   kind: "grep";
-  root?: FileToolRoot;
   path?: string;
+  scope?: PathScope;
+  absolutePath?: string;
+  relativePath?: string;
+  displayPath?: string;
+  fileId?: string;
+  targetKind?: FsEntryKind;
   pattern: string;
   filePattern?: string;
   ignoreCase: boolean;
@@ -362,9 +351,9 @@ export type BuiltinToolResultDetails =
   | ReadDocumentResultDetails
   | SkillsManagerResultDetails
   | McpManagerResultDetails
-  | DelegateAgentCardResultDetails
-  | DelegateAgentResultDetails
-  | SubagentMessageResultDetails
+  | SubagentBatchDetails
+  | SubagentCardDetails
+  | SubagentMessageDetails
   | WriteResultDetails
   | EditResultDetails
   | DeleteResultDetails

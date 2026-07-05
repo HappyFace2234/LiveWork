@@ -43,8 +43,6 @@ export type GatewaySettingsSyncPayload = {
   mcp: AppSettings["mcp"];
   agents: AppSettings["agents"];
   ssh: AppSettings["ssh"];
-  hooks: AppSettings["hooks"];
-  cron: AppSettings["cron"];
   remote?: Pick<
     AppSettings["remote"],
     "enableWebTerminal" | "enableWebSshTerminal" | "enableWebGit" | "enableWebTunnels"
@@ -68,8 +66,6 @@ const GATEWAY_SETTINGS_SYNC_FIELDS = [
   "mcp",
   "agents",
   "ssh",
-  "hooks",
-  "cron",
   "remote",
   "memory",
   "customSettings",
@@ -734,6 +730,19 @@ function applySyncedSshPatch(
   }).ssh;
 }
 
+// Per-project last-writer-wins ordered by (stateVersion, writerId): both
+// sides of a sync evaluate the same total order, so concurrent writers
+// converge deterministically instead of relying on tie-break direction.
+function rightDockIncomingWins(
+  incoming: { stateVersion: number; writerId: string },
+  current: { stateVersion: number; writerId: string },
+): boolean {
+  if (incoming.stateVersion !== current.stateVersion) {
+    return incoming.stateVersion > current.stateVersion;
+  }
+  return incoming.writerId > current.writerId;
+}
+
 function mergeSyncedRightDockSettings(
   current: AppSettings["customSettings"]["rightDock"],
   incoming: unknown,
@@ -748,23 +757,22 @@ function mergeSyncedRightDockSettings(
       projects[pathKey] = incomingProject;
       continue;
     }
-    const source =
-      incomingProject.stateVersion >= currentProject.stateVersion
-        ? incomingProject
-        : currentProject;
+    const winner = rightDockIncomingWins(incomingProject, currentProject)
+      ? incomingProject
+      : currentProject;
     projects[pathKey] = {
-      activeTabId: source.activeTabId,
-      tabOrder: source.tabOrder,
-      tabs: source.tabs,
+      ...winner,
       openVersion: Math.max(currentProject.openVersion, incomingProject.openVersion),
       stateVersion: Math.max(currentProject.stateVersion, incomingProject.stateVersion),
+      lastUsedAt: Math.max(currentProject.lastUsedAt, incomingProject.lastUsedAt),
     };
   }
 
-  return {
+  // Width stays device-local; re-normalizing applies the LRU project cap.
+  return normalizeRightDockSettings({
     width: currentState.width,
     projects,
-  };
+  });
 }
 
 export function buildGatewaySettingsSyncPayload(
@@ -777,8 +785,6 @@ export function buildGatewaySettingsSyncPayload(
     mcp: settings.mcp,
     agents: settings.agents,
     ssh: redactSshSettingsForGateway(settings.ssh),
-    hooks: settings.hooks,
-    cron: settings.cron,
     remote: {
       enableWebTerminal: settings.remote.enableWebTerminal,
       enableWebSshTerminal: settings.remote.enableWebSshTerminal,
@@ -885,8 +891,6 @@ export function applyGatewaySettingsSyncPayload(
       : Object.hasOwn(source, "sshPatch")
         ? applySyncedSshPatch(current.ssh, source.sshPatch, sshSecretUpdates)
         : current.ssh,
-    hooks: (source.hooks as AppSettings["hooks"] | undefined) ?? current.hooks,
-    cron: (source.cron as AppSettings["cron"] | undefined) ?? current.cron,
     memory: memory as AppSettings["memory"],
     customSettings: {
       ...incomingCustomSettings,

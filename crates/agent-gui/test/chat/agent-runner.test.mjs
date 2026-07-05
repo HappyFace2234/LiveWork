@@ -335,9 +335,7 @@ const loader = createTsModuleLoader({
 });
 
 const { runAssistantWithTools } = loader.loadModule("src/lib/chat/runner/agentRunner.ts");
-const { createSubagentScheduler } = loader.loadModule(
-  "src/lib/chat/subagent/subagentScheduler.ts",
-);
+const { createSubagentScheduler } = loader.loadModule("src/lib/subagents/scheduler.ts");
 
 function resetFakeStreams(...assistants) {
   streamQueue.length = 0;
@@ -1130,78 +1128,62 @@ test("runAssistantWithTools emits streaming tool call argument deltas before fin
   );
 });
 
-test("runAssistantWithTools stops streaming Write content when preflight returns an error", async () => {
-  const finalWriteCall = createToolCall("call_00_preflight_write", "Write", {
-    path: "test6/gobang.html",
-    content: "<html>\nSHOULD_NOT_STREAM\n</html>",
+function createRawFragmentToolCallStream(finalToolCall, fragments, options = {}) {
+  const assistant = createAssistant([finalToolCall], "toolUse", options.extra ?? {});
+  const partialFor = (bufferedArguments) => ({
+    ...assistant,
+    content: [{ ...finalToolCall, arguments: bufferedArguments }],
   });
+  const events = [
+    { type: "start", partial: { ...assistant, content: [] } },
+    { type: "toolcall_start", contentIndex: 0, partial: partialFor({}) },
+    ...fragments.map((fragment) => ({
+      type: "toolcall_delta",
+      contentIndex: 0,
+      delta: fragment,
+      partial: partialFor(finalToolCall.arguments),
+    })),
+    ...(options.omitToolCallEnd
+      ? []
+      : [
+          {
+            type: "toolcall_end",
+            contentIndex: 0,
+            toolCall: finalToolCall,
+            partial: { ...assistant, content: [finalToolCall] },
+          },
+        ]),
+    { type: "done", reason: "toolUse", message: assistant },
+  ];
+  return createQueuedStream(events, assistant);
+}
+
+test("runAssistantWithTools executes a content-first streaming Write untouched (009 regression)", async () => {
+  // The historical bug: a mid-stream preflight aborted the model while the
+  // path argument was still streaming, freezing "test2" as the final path.
+  const completeArguments = {
+    content: "# New File via Workspace-Relative Path\nCreated at test2/new-write-test.md\n",
+    path: "test2/new-write-test.md",
+  };
+  const finalWriteCall = createToolCall("call_00_content_first_write", "Write", completeArguments);
+  const rawJson = JSON.stringify(completeArguments);
+  const cut = rawJson.indexOf("test2") + "test2".length;
   resetFakeStreams(
-    createToolCallDeltaStream(finalWriteCall, [
-      createToolCall(finalWriteCall.id, "Write", {}),
-      createToolCall(finalWriteCall.id, "Write", { path: "test6/gobang.html" }),
-      createToolCall(finalWriteCall.id, "Write", {
-        path: "test6/gobang.html",
-        content: "<html>\nSHOULD_NOT_STREAM",
-      }),
-    ]),
-    createTextAssistant("after read-first reminder"),
+    createRawFragmentToolCallStream(finalWriteCall, [rawJson.slice(0, cut), rawJson.slice(cut)]),
+    createTextAssistant("after content-first write"),
   );
   const writeTool = {
     name: "Write",
     description: "Write files",
     parameters: { type: "object", properties: {} },
   };
-  const deltas = [];
   const toolResults = [];
-  const preflightCalls = [];
   const { params, executedToolCalls } = createBaseParams({
     tools: [writeTool],
     context: {
       systemPrompt: "Base system prompt",
       messages: [{ role: "user", content: "Start", timestamp: 1 }],
       tools: [writeTool],
-    },
-    async preflightToolCall(toolCall) {
-      preflightCalls.push({
-        id: toolCall.id,
-        name: toolCall.name,
-        arguments: { ...(toolCall.arguments ?? {}) },
-      });
-      if (toolCall.name !== "Write" || typeof toolCall.arguments?.path !== "string") {
-        return null;
-      }
-      const completedToolCall = {
-        ...toolCall,
-        arguments: {
-          ...toolCall.arguments,
-          content:
-            typeof toolCall.arguments.content === "string" ? toolCall.arguments.content : "",
-        },
-      };
-      return {
-        toolCall: completedToolCall,
-        toolResult: {
-          role: "toolResult",
-          toolCallId: completedToolCall.id,
-          toolName: completedToolCall.name,
-          content: [
-            {
-              type: "text",
-              text: "Write requires a full-file Read first for existing files: test6/gobang.html.",
-            },
-          ],
-          details: {},
-          isError: true,
-          timestamp: Date.now(),
-        },
-      };
-    },
-    onToolCallDelta: (toolCall) => {
-      deltas.push({
-        id: toolCall.id,
-        name: toolCall.name,
-        arguments: { ...(toolCall.arguments ?? {}) },
-      });
     },
     onToolResult: (toolCall, toolResult) => {
       toolResults.push({ toolCall, toolResult });
@@ -1210,28 +1192,242 @@ test("runAssistantWithTools stops streaming Write content when preflight returns
 
   const result = await runAssistantWithTools(params);
 
-  assert.deepEqual(
-    deltas.map((delta) => delta.arguments),
-    [{}, { path: "test6/gobang.html" }],
-  );
-  assert.equal(
-    preflightCalls.some((call) => String(call.arguments.content ?? "").includes("SHOULD_NOT_STREAM")),
-    false,
-  );
-  assert.equal(executedToolCalls.length, 0);
+  assert.equal(executedToolCalls.length, 1);
+  assert.deepEqual(executedToolCalls[0].arguments, completeArguments);
   assert.equal(toolResults.length, 1);
-  assert.equal(toolResults[0].toolResult.isError, true);
-  assert.match(toolResults[0].toolResult.content[0].text, /full-file Read first/);
-  const earlyAssistantToolCall = result.emittedMessages[0].content.find(
+  assert.equal(Boolean(toolResults[0].toolResult.isError), false);
+  const assistantToolCall = result.emittedMessages[0].content.find(
     (block) => block.type === "toolCall",
   );
-  assert.equal(earlyAssistantToolCall.arguments.path, "test6/gobang.html");
-  assert.equal(earlyAssistantToolCall.arguments.content, "");
-  assert.equal(JSON.stringify(result.emittedMessages[0]).includes("SHOULD_NOT_STREAM"), false);
+  assert.equal(assistantToolCall.arguments.path, "test2/new-write-test.md");
   assert.deepEqual(
     result.emittedMessages.map((message) => message.role),
     ["assistant", "toolResult", "assistant"],
   );
+});
+
+test("runAssistantWithTools refuses a Write whose argument stream was truncated", async () => {
+  // Simulates pi-ai finalizing a half-streamed buffer: the raw fragments stop
+  // mid-path and the end-event arguments equal the lenient repair of that
+  // same truncated buffer.
+  const truncatedBuffer = '{"content": "# Temp File\\n", "path": "test2';
+  const truncatedWriteCall = createToolCall("call_00_truncated_write", "Write", {
+    content: "# Temp File\n",
+    path: "test2",
+  });
+  resetFakeStreams(
+    createRawFragmentToolCallStream(truncatedWriteCall, [
+      truncatedBuffer.slice(0, 20),
+      truncatedBuffer.slice(20),
+    ]),
+    createTextAssistant("after truncated write"),
+  );
+  const writeTool = {
+    name: "Write",
+    description: "Write files",
+    parameters: { type: "object", properties: {} },
+  };
+  const toolResults = [];
+  const { params, executedToolCalls } = createBaseParams({
+    tools: [writeTool],
+    context: {
+      systemPrompt: "Base system prompt",
+      messages: [{ role: "user", content: "Start", timestamp: 1 }],
+      tools: [writeTool],
+    },
+    onToolResult: (toolCall, toolResult) => {
+      toolResults.push({ toolCall, toolResult });
+    },
+  });
+
+  await runAssistantWithTools(params);
+
+  assert.equal(executedToolCalls.length, 0);
+  assert.equal(toolResults.length, 1);
+  assert.equal(toolResults[0].toolResult.isError, true);
+  assert.match(toolResults[0].toolResult.content[0].text, /truncated in transit/);
+  assert.match(toolResults[0].toolResult.content[0].text, /re-issue the complete Write call/);
+});
+
+test("runAssistantWithTools keeps a truncated Agent call out of its siblings' parallel batch", async () => {
+  const agentA = {
+    type: "toolCall",
+    id: "call-agent-batch-a",
+    name: "Agent",
+    arguments: { id: "a", prompt: "Ask A" },
+  };
+  const truncatedBuffer = '{"id": "b", "prompt": "Ask B with a long detailed';
+  const agentB = {
+    type: "toolCall",
+    id: "call-agent-batch-b",
+    name: "Agent",
+    arguments: { id: "b", prompt: "Ask B with a long detailed" },
+  };
+  const assistant = createAssistant([agentA, agentB], "toolUse");
+  resetFakeStreams(
+    createQueuedStream(
+      [
+        { type: "start", partial: { ...assistant, content: [] } },
+        { type: "toolcall_start", contentIndex: 0, partial: assistant },
+        {
+          type: "toolcall_delta",
+          contentIndex: 0,
+          delta: JSON.stringify(agentA.arguments),
+          partial: assistant,
+        },
+        { type: "toolcall_end", contentIndex: 0, toolCall: agentA, partial: assistant },
+        { type: "toolcall_start", contentIndex: 1, partial: assistant },
+        {
+          type: "toolcall_delta",
+          contentIndex: 1,
+          delta: truncatedBuffer.slice(0, 24),
+          partial: assistant,
+        },
+        {
+          type: "toolcall_delta",
+          contentIndex: 1,
+          delta: truncatedBuffer.slice(24),
+          partial: assistant,
+        },
+        { type: "toolcall_end", contentIndex: 1, toolCall: agentB, partial: assistant },
+        { type: "done", reason: "toolUse", message: assistant },
+      ],
+      assistant,
+    ),
+    createTextAssistant("after batch"),
+  );
+  const agentTool = {
+    name: "Agent",
+    description: "Delegate",
+    parameters: { type: "object", properties: {} },
+  };
+  const toolResults = [];
+  const { params, executedToolCalls } = createBaseParams({
+    tools: [agentTool],
+    context: {
+      systemPrompt: "Base system prompt",
+      messages: [{ role: "user", content: "Start", timestamp: 1 }],
+      tools: [agentTool],
+    },
+    onToolResult: (toolCall, toolResult) => {
+      toolResults.push({ toolCall, toolResult });
+    },
+  });
+
+  await runAssistantWithTools(params);
+
+  // Only the intact call may execute — the truncated sibling must not ride
+  // into execution on the batch.
+  assert.deepEqual(
+    executedToolCalls.map((call) => call.id),
+    ["call-agent-batch-a"],
+  );
+  const refused = toolResults.find((entry) => entry.toolCall.id === "call-agent-batch-b");
+  assert.ok(refused);
+  assert.equal(refused.toolResult.isError, true);
+  assert.match(refused.toolResult.content[0].text, /truncated in transit/);
+});
+
+test("runAssistantWithTools rewrites schema-validation errors for truncated calls into the transport teaching", async () => {
+  // Truncation cut the stream before `content` started, so the repaired
+  // arguments also fail Write's real schema. pi-agent-core validates before
+  // beforeToolCall, so the refusal hook never runs — the rewrite pass must
+  // still deliver the truthful teaching to the model on the next turn.
+  const truncatedBuffer = '{"path": "test2';
+  const truncatedWriteCall = createToolCall("call_00_schema_truncated", "Write", {
+    path: "test2",
+  });
+  resetFakeStreams(
+    createRawFragmentToolCallStream(truncatedWriteCall, [
+      truncatedBuffer.slice(0, 9),
+      truncatedBuffer.slice(9),
+    ]),
+    createTextAssistant("after schema-truncated write"),
+  );
+  const writeTool = {
+    name: "Write",
+    description: "Write files",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["path", "content"],
+      additionalProperties: false,
+    },
+  };
+  const toolResults = [];
+  const { params, executedToolCalls } = createBaseParams({
+    tools: [writeTool],
+    context: {
+      systemPrompt: "Base system prompt",
+      messages: [{ role: "user", content: "Start", timestamp: 1 }],
+      tools: [writeTool],
+    },
+    onToolResult: (toolCall, toolResult) => {
+      toolResults.push({ toolCall, toolResult });
+    },
+  });
+
+  await runAssistantWithTools(params);
+
+  assert.equal(executedToolCalls.length, 0);
+  // Prove the exercised path: schema validation rejected the call before the
+  // beforeToolCall refusal hook could run.
+  assert.equal(toolResults.length, 1);
+  assert.match(toolResults[0].toolResult.content[0].text, /Validation failed/);
+  // The context sent to the model on the follow-up turn must carry the
+  // transport teaching, not a schema error blaming the corrupted arguments.
+  const followUpContext = observedStreamContexts.at(-1);
+  const followUpToolResult = followUpContext.messages.find(
+    (message) => message.role === "toolResult" && message.toolCallId === truncatedWriteCall.id,
+  );
+  assert.ok(followUpToolResult);
+  const followUpText = followUpToolResult.content
+    .map((block) => (typeof block === "string" ? block : (block.text ?? "")))
+    .join("\n");
+  assert.match(followUpText, /truncated in transit/);
+  assert.doesNotMatch(followUpText, /Validation failed/);
+});
+
+test("runAssistantWithTools refuses a tool call salvaged without a toolcall_end", async () => {
+  // Simulates the DSML wrapper's recoverable-stream-end salvage: the done
+  // message carries a toolCall block whose argument stream never finished.
+  const danglingWriteCall = createToolCall("call_00_dangling_write", "Write", {
+    path: "/",
+    content: "",
+  });
+  resetFakeStreams(
+    createRawFragmentToolCallStream(danglingWriteCall, ['{"path": "/'], {
+      omitToolCallEnd: true,
+    }),
+    createTextAssistant("after dangling write"),
+  );
+  const writeTool = {
+    name: "Write",
+    description: "Write files",
+    parameters: { type: "object", properties: {} },
+  };
+  const toolResults = [];
+  const { params, executedToolCalls } = createBaseParams({
+    tools: [writeTool],
+    context: {
+      systemPrompt: "Base system prompt",
+      messages: [{ role: "user", content: "Start", timestamp: 1 }],
+      tools: [writeTool],
+    },
+    onToolResult: (toolCall, toolResult) => {
+      toolResults.push({ toolCall, toolResult });
+    },
+  });
+
+  await runAssistantWithTools(params);
+
+  assert.equal(executedToolCalls.length, 0);
+  assert.equal(toolResults.length, 1);
+  assert.equal(toolResults[0].toolResult.isError, true);
+  assert.match(toolResults[0].toolResult.content[0].text, /truncated in transit/);
 });
 
 test("runAssistantWithTools strips bare tool_name text without duplicate execution", async () => {

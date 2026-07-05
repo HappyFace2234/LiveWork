@@ -12,7 +12,7 @@
 | UI 组件 | `src/components/*`、`src/components/ui/*` | Sidebar、Markdown、ImagePreview、通用 button/input/select/dropdown/scroll 等。 |
 | 前端设置库 | `src/lib/settings/*` | 默认值、normalize、storage、Gateway sync snapshot、provider redaction。 |
 | 模型层 | `src/lib/providers/llm.ts` | provider 到具体模型 API 的映射、headers、Responses/Anthropic/Gemini stream、thinking/cache/search。 |
-| 工具层 | `src/lib/tools/*` | builtin tool registry、FS、Shell、MCP、Skills、Cron、Memory、Delegate、custom system tools。 |
+| 工具层 | `src/lib/tools/*`、`src/lib/subagents/*` | builtin tool registry、FS、Shell、MCP、Skills、Cron、Memory、custom system tools；subagents 域提供 `Agent`/`SendMessage` 委托工具。 |
 | Tauri 后端 | `src-tauri/src` | 系统命令、SQLite、MCP runtime、MemoryStore、GatewayController、CronManager、代理服务。 |
 
 ## App Shell
@@ -48,9 +48,9 @@
 | 领域 | 命令族 |
 |---|---|
 | Chat history | `chat_history_list/search/get/upsert/upsert_active_segment/append_segment/rename/set_pinned/share_get/share_set/delete` |
-| Subagent history | `subagent_identity_*`、`subagent_run_*`、`subagent_message_*` |
+| Subagent store | `subagent_identity_upsert/list`、`subagent_run_save/list/load/prune`、`subagent_message_append/list` |
 | File system | `fs_read_text/read_image_source/write_text/edit_text/delete/list/glob/grep/mention_list` |
-| Delegate worktree | `delegate_create_worktree/status/apply_worktree_changes/cleanup*` |
+| Subagent worktree | `subagent_worktree_create/status/apply/cleanup` |
 | MCP runtime | `mcp_list_tools/call_tool/runtime_status/stop_server/test_server/restart_server` |
 | Memory | `memory_list/read/search/write/update/delete/accept/apply_batch/organize_* /index_overview/paths_info/recent_rejections/today_daily/wipe_all` |
 | Settings | `settings_load_all/save_providers/save_system/save_mcp/save_agents/save_hooks/save_cron/save_remote/save_memory` |
@@ -83,7 +83,7 @@
 | Memory | `services/memory.rs` | `~/.liveagent/memory/**/*.md` + `memory-index.sqlite3` |
 | Skills | `services/skills.rs` | `~/.liveagent/skills` |
 | Cron logs | `commands/settings.rs`、`services/cron.rs` | `cron_execution_logs` |
-| Subagent runs | `commands/subagent_history.rs` | chat history 连接中的 subagent schema |
+| Subagent identity/run/message | `commands/history/subagent_store.rs` | chat history 库内 `subagentMeta` 版本标记 + `subagentIdentity`/`subagentRun`/`subagentRunSegment`/`subagentMessage`（schema v2，版本不符即 drop-and-recreate，无 event 表） |
 
 ## GUI 的设计取舍
 

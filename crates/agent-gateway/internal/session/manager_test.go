@@ -2,7 +2,6 @@ package session
 
 import (
 	"testing"
-	"time"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
@@ -58,7 +57,7 @@ func TestApplySettingsJSONPreservingRemoteDoesNotTrustIncomingRemote(t *testing.
 
 func TestTerminalSessionSnapshotPreservesSshMetadataAndSorts(t *testing.T) {
 	manager := NewManager()
-	manager.ReplaceTerminalSessionSnapshot("", []*gatewayv1.TerminalSession{
+	manager.replaceTerminalSessionSnapshot("", []*gatewayv1.TerminalSession{
 		{
 			Id:             "ssh-2",
 			ProjectPathKey: "/workspace/b",
@@ -134,61 +133,30 @@ func TestTerminalSessionSnapshotPreservesSshMetadataAndSorts(t *testing.T) {
 	}
 }
 
-func TestAppendCappedChatRunEventKeepsLatestEvents(t *testing.T) {
-	var events []*ChatBroadcastEvent
-	for seq := int64(1); seq <= 5; seq++ {
-		events = appendCappedChatRunEvent(events, &ChatBroadcastEvent{Seq: seq}, 3)
-	}
-
-	if len(events) != 3 {
-		t.Fatalf("events len = %d, want 3", len(events))
-	}
-	if got := []int64{events[0].Seq, events[1].Seq, events[2].Seq}; got[0] != 3 || got[1] != 4 || got[2] != 5 {
-		t.Fatalf("events seqs = %#v, want [3 4 5]", got)
-	}
-
-	events = appendCappedChatRunEvent(events, nil, 3)
-	if got := []int64{events[0].Seq, events[1].Seq, events[2].Seq}; got[0] != 3 || got[1] != 4 || got[2] != 5 {
-		t.Fatalf("nil event changed buffered seqs to %#v, want [3 4 5]", got)
-	}
-}
-
-func TestChatRunShouldPruneRetainsRunningUntilStale(t *testing.T) {
-	now := time.Now()
-	running := &chatRun{
-		state:     ChatRunStateRunning,
-		updatedAt: now.Add(-(chatRunStartRetention + time.Second)),
-	}
-	if running.shouldPrune(now) {
-		t.Fatal("running chat should survive the start retention window")
-	}
-
-	queued := &chatRun{
-		state:     ChatRunStateQueued,
-		updatedAt: now.Add(-(chatRunStartRetention + time.Second)),
-	}
-	if !queued.shouldPrune(now) {
-		t.Fatal("unstarted queued chat should prune after start retention")
-	}
-
-	done := &chatRun{
-		done:      true,
-		expiresAt: now.Add(-time.Second),
-	}
-	if !done.shouldPrune(now) {
-		t.Fatal("done chat should prune after expiresAt")
-	}
-}
-
-func TestPruneExpiredChatRunsDropsNilEntries(t *testing.T) {
+func TestActiveConversationActivitiesTracksRunLifecycle(t *testing.T) {
 	manager := NewManager()
-	manager.chatStore.chatMu.Lock()
-	manager.chatStore.chatRuns["nil-run"] = nil
-	manager.pruneExpiredChatRunsLocked(time.Now())
-	_, exists := manager.chatStore.chatRuns["nil-run"]
-	manager.chatStore.chatMu.Unlock()
 
-	if exists {
-		t.Fatal("nil chat run should be deleted during pruning")
+	manager.StartChatCommand("run-1", "conv-1", "/workspace", "client-1", nil)
+	manager.ingestChatControl("run-1", &gatewayv1.ChatControlEvent{
+		RequestId:      "run-1",
+		ConversationId: "conv-1",
+		Type:           "started",
+		State:          "running",
+	})
+
+	activities := manager.ActiveConversationActivities()
+	if len(activities) != 1 || activities[0].RunID != "run-1" || activities[0].State != RunActivityRunning {
+		t.Fatalf("activities = %#v, want running run-1", activities)
+	}
+
+	manager.ingestChatControl("run-1", &gatewayv1.ChatControlEvent{
+		RequestId:      "run-1",
+		ConversationId: "conv-1",
+		Type:           "completed",
+		State:          "completed",
+	})
+
+	if activities := manager.ActiveConversationActivities(); len(activities) != 0 {
+		t.Fatalf("completed run should not appear in activities, got %#v", activities)
 	}
 }

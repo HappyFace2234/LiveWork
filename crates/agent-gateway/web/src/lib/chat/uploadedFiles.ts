@@ -123,10 +123,7 @@ export function buildUploadedFilesInstruction(files: PendingUploadedFile[]) {
   ].join("\n");
 }
 
-export function buildUserMessageContentWithUploads(
-  userText: string,
-  files: PendingUploadedFile[],
-) {
+export function buildUserMessageContentWithUploads(userText: string, files: PendingUploadedFile[]) {
   const normalizedText = userText.trim();
   if (files.length === 0) return normalizedText;
 

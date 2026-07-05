@@ -173,7 +173,7 @@ fn spawn_shell_command(command: &str, cwd: &Path, log: File) -> Result<(Child, S
         .try_clone()
         .map_err(|err| format!("Failed to clone process log: {err}"))?;
 
-    let spawned = spawn_platform_shell_command(command, cwd, || {
+    let spawned = spawn_platform_shell_command(command, cwd, &[], || {
         Ok((
             Stdio::from(log.try_clone()?),
             Stdio::from(stderr.try_clone()?),

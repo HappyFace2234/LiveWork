@@ -117,6 +117,10 @@ jobs:
         working-directory: crates/agent-gateway/web
         run: pnpm build
 
+      - name: Lint WebUI
+        working-directory: crates/agent-gateway/web
+        run: pnpm lint
+
       - name: Test WebUI modules
         working-directory: crates/agent-gateway
         run: node --test test/webui/*.test.mjs web/test/*.test.mjs
@@ -137,6 +141,14 @@ jobs:
       - name: Install dependencies
         working-directory: crates/agent-gui
         run: pnpm install --frozen-lockfile
+
+      - name: Typecheck and build GUI frontend
+        working-directory: crates/agent-gui
+        run: pnpm build
+
+      - name: Lint GUI frontend
+        working-directory: crates/agent-gui
+        run: pnpm lint
 
       - name: Test frontend modules
         working-directory: crates/agent-gui
@@ -178,6 +190,19 @@ jobs:
         env:
           CARGO_TERM_COLOR: always
         run: cargo test --manifest-path crates/agent-gui/src-tauri/Cargo.toml chat_history --lib
+
+  mirror:
+    name: GUI/WebUI Mirror Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check mirrored files are byte-identical
+        run: node scripts/check-mirror.mjs
 
   whitespace:
     name: Diff Hygiene

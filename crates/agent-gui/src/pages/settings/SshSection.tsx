@@ -789,7 +789,7 @@ function SshHostCard(props: {
   const showAgentConfigured = host.authType === "agent";
   const showProxy =
     host.proxy.url.trim().length > 0 || host.proxy.port > 0 || host.proxy.passwordConfigured;
-  const hasMeta = showKeyPath || showKeyConfigured || showAgentConfigured || showProxy;
+  const hasMeta = showKeyPath || showKeyConfigured || showAgentConfigured;
   const hasFooter = hasMeta || resetStatus;
 
   const actions = (
@@ -844,7 +844,6 @@ function SshHostCard(props: {
       {showKeyPath ? <PromptTag label={host.privateKeyPath} muted /> : null}
       {showKeyConfigured ? <PromptTag label={t("settings.sshPrivateKeyConfigured")} muted /> : null}
       {showAgentConfigured ? <PromptTag label={t("settings.sshAgentConfigured")} muted /> : null}
-      {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
     </div>
   );
 
@@ -868,8 +867,9 @@ function SshHostCard(props: {
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium text-foreground">{host.name}</div>
-            <div className="mt-1 flex">
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <PromptTag label={authLabel(host, t)} />
+              {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
             </div>
           </div>
         </div>
@@ -896,6 +896,7 @@ function SshHostCard(props: {
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-medium text-foreground">{host.name}</span>
             <PromptTag label={authLabel(host, t)} />
+            {showProxy ? <PromptTag label={t("settings.sshAdvancedProxy")} muted /> : null}
           </div>
           <div className="mt-1 truncate font-mono text-xs text-muted-foreground">
             {endpointLabel(host)}
