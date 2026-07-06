@@ -670,10 +670,12 @@ export function useLiveTranscriptController(params: UseLiveTranscriptControllerP
 
       const handleContentResize = () => {
         if (shouldAutoScrollRef.current) {
-          if (!isViewportAtLatest(viewport) && hasRecentUserScrollIntent()) {
-            detachAutoScroll();
-            return;
-          }
+          // Detach decisions belong to the wheel/touch/key/scroll handlers,
+          // which run in the input phase before this observer fires. Content
+          // growth widens the bottom gap without any user input, so checking
+          // user-scroll intent here would misread "just scrolled back to the
+          // bottom" as "scrolling away" and tear down a re-engaged follow on
+          // the next stream flush.
           // ResizeObserver fires after layout and before paint: correcting a
           // large gap here keeps single-commit height jumps from ever being
           // painted. Small gaps are ordinary streaming growth and stay on the
