@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Component, Path, PathBuf};
 use walkdir::WalkDir;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use super::*;
@@ -370,7 +370,7 @@ pub(crate) fn package_installed_skill(
     let archive_file = fs::File::create(&archive)
         .map_err(|e| format!("Failed to create Skill archive {}: {e}", archive.display()))?;
     let mut writer = ZipWriter::new(archive_file);
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .unix_permissions(0o644);
 

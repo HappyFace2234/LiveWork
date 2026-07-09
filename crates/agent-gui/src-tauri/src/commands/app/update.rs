@@ -174,7 +174,7 @@ fn release_link_from_attributes(element: &BytesStart<'_>) -> Result<Option<Strin
         let attr =
             attr.map_err(|error| format!("failed to parse release feed link attribute: {error}"))?;
         let value = attr
-            .decode_and_unescape_value(element.decoder())
+            .decoded_and_normalized_value(quick_xml::XmlVersion::default(), element.decoder())
             .map_err(|error| format!("failed to decode release feed link attribute: {error}"))?
             .into_owned();
         match attr.key.as_ref() {

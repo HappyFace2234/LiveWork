@@ -1543,64 +1543,11 @@ fn build_pdf_window(
 }
 
 fn decode_xml_entities(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch != '&' {
-            out.push(ch);
-            continue;
-        }
-
-        let mut entity = String::new();
-        let mut terminated = false;
-        while let Some(next) = chars.peek().copied() {
-            chars.next();
-            if next == ';' {
-                terminated = true;
-                break;
-            }
-            if entity.len() > 16 {
-                break;
-            }
-            entity.push(next);
-        }
-
-        if !terminated {
-            out.push('&');
-            out.push_str(&entity);
-            continue;
-        }
-
-        match entity.as_str() {
-            "amp" => out.push('&'),
-            "lt" => out.push('<'),
-            "gt" => out.push('>'),
-            "quot" => out.push('"'),
-            "apos" => out.push('\''),
-            _ if entity.starts_with("#x") => {
-                if let Ok(value) = u32::from_str_radix(&entity[2..], 16) {
-                    if let Some(decoded) = char::from_u32(value) {
-                        out.push(decoded);
-                    }
-                }
-            }
-            _ if entity.starts_with('#') => {
-                if let Ok(value) = entity[1..].parse::<u32>() {
-                    if let Some(decoded) = char::from_u32(value) {
-                        out.push(decoded);
-                    }
-                }
-            }
-            _ => {
-                out.push('&');
-                out.push_str(&entity);
-                out.push(';');
-            }
-        }
+    // 办公文档 XML 由软件生成，正常都能解码；遇到非法实体时保留原文降级。
+    match quick_xml::escape::unescape(input) {
+        Ok(decoded) => decoded.into_owned(),
+        Err(_) => input.to_string(),
     }
-
-    out
 }
 
 fn xml_attr(tag: &str, name: &str) -> Option<String> {
@@ -4486,7 +4433,7 @@ mod tests {
     use super::*;
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
 
     fn unique_test_workdir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
@@ -4507,7 +4454,8 @@ mod tests {
     fn build_test_zip(entries: &[(&str, &str)]) -> Vec<u8> {
         let cursor = Cursor::new(Vec::new());
         let mut writer = zip::ZipWriter::new(cursor);
-        let options = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
         for (name, content) in entries {
             writer.start_file(*name, options).expect("start zip file");
             writer
@@ -4871,6 +4819,18 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(workdir);
+    }
+
+    #[test]
+    fn decode_xml_entities_covers_named_and_numeric_forms() {
+        assert_eq!(
+            decode_xml_entities("a &amp; b &lt;c&gt; &quot;d&quot; &apos;e&apos;"),
+            "a & b <c> \"d\" 'e'"
+        );
+        assert_eq!(decode_xml_entities("&#65;&#x4E2D;"), "A中");
+        // 非法实体走宽容降级：保留原文。
+        assert_eq!(decode_xml_entities("keep &bogus; text"), "keep &bogus; text");
+        assert_eq!(decode_xml_entities("no entities"), "no entities");
     }
 
     #[test]

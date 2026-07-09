@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 fn write_skill(root: &Path, name: &str, description: &str) -> PathBuf {
@@ -325,7 +325,7 @@ fn install_source_from_local_skill_archive_installs_skill() {
     {
         let file = fs::File::create(&archive).expect("archive file");
         let mut writer = ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         writer
             .start_file("archive-skill/SKILL.md", options)
             .expect("start skill file");
@@ -626,7 +626,7 @@ fn safe_extract_zip_rejects_parent_traversal() {
     {
         let file = fs::File::create(&archive).expect("archive file");
         let mut writer = ZipWriter::new(file);
-        let options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         writer
             .start_file("../evil.txt", options)
             .expect("start unsafe file");

@@ -35,7 +35,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", proto_file.display());
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_server(false)
         .compile_protos(&[proto_file], &[proto_dir])
         .expect("compile gateway proto");
