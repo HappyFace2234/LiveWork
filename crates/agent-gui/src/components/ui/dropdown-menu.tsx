@@ -75,19 +75,26 @@ export const DropdownMenuCheckboxItem = React.forwardRef<
 ));
 DropdownMenuCheckboxItem.displayName = "DropdownMenuCheckboxItem";
 
-export const DropdownMenuSubTrigger = React.forwardRef<
-  HTMLElement,
-  React.ComponentPropsWithoutRef<typeof Menu.SubmenuTrigger>
->(({ className, ...props }, ref) => (
-  <Menu.SubmenuTrigger
-    ref={ref}
-    className={cn(
-      "relative flex cursor-default select-none items-center rounded-xs px-2 py-1.5 text-sm outline-hidden transition-colors data-[disabled]:pointer-events-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground data-[disabled]:opacity-50",
-      className,
-    )}
-    {...props}
-  />
-));
+type DropdownMenuSubTriggerProps = React.ComponentPropsWithoutRef<typeof Menu.SubmenuTrigger> & {
+  // Menu-button style trigger (e.g. an icon "⋯" button): disables hover-open,
+  // which flips Base UI's click handling from open-only to an open/close
+  // toggle so a second click dismisses the submenu.
+  clickToggle?: boolean;
+};
+
+export const DropdownMenuSubTrigger = React.forwardRef<HTMLElement, DropdownMenuSubTriggerProps>(
+  ({ className, clickToggle, ...props }, ref) => (
+    <Menu.SubmenuTrigger
+      ref={ref}
+      openOnHover={clickToggle ? false : undefined}
+      className={cn(
+        "relative flex cursor-default select-none items-center rounded-xs px-2 py-1.5 text-sm outline-hidden transition-colors data-[disabled]:pointer-events-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground data-[popup-open]:bg-accent data-[popup-open]:text-accent-foreground data-[disabled]:opacity-50",
+        className,
+      )}
+      {...props}
+    />
+  ),
+);
 DropdownMenuSubTrigger.displayName = "DropdownMenuSubTrigger";
 
 export const DropdownMenuSubContent = React.forwardRef<HTMLDivElement, DropdownMenuContentProps>(

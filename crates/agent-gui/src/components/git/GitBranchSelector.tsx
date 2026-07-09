@@ -972,7 +972,9 @@ export function GitBranchSelector(props: {
         openBranchActions(branch);
       }}
       className={cn(
-        "group/branch gap-2 text-xs",
+        // active: gives touch long-press (contextmenu) visible pressed
+        // feedback; on desktop it coincides with the hover highlight.
+        "group/branch gap-2 text-xs active:bg-accent active:text-accent-foreground",
         (isCurrent || !canWrite) && "text-muted-foreground",
       )}
     >
@@ -1244,6 +1246,7 @@ export function GitBranchSelector(props: {
                   </button>
                   <DropdownMenuSub>
                     <DropdownMenuSubTrigger
+                      clickToggle
                       className="shrink-0 px-1.5 text-xs"
                       aria-label={t("git.branchSelector.moreActions")}
                       title={t("git.branchSelector.moreActions")}

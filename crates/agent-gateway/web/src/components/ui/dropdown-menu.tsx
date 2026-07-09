@@ -5,7 +5,39 @@ import { Check } from "../icons";
 
 export const DropdownMenu = DropdownMenuPrimitive.Root;
 export const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
-export const DropdownMenuSub = DropdownMenuPrimitive.Sub;
+
+// Radix's SubTrigger only ever opens its submenu; mirror the open state here
+// so a `clickToggle` trigger can close it on a second activation.
+const DropdownMenuSubOpenContext = React.createContext<{
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+} | null>(null);
+
+export const DropdownMenuSub = ({
+  open,
+  defaultOpen,
+  onOpenChange,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Sub>) => {
+  const [internalOpen, setInternalOpen] = React.useState(defaultOpen ?? false);
+  const resolvedOpen = open ?? internalOpen;
+  const handleOpenChange = React.useCallback(
+    (next: boolean) => {
+      setInternalOpen(next);
+      onOpenChange?.(next);
+    },
+    [onOpenChange],
+  );
+  const contextValue = React.useMemo(
+    () => ({ open: resolvedOpen, onOpenChange: handleOpenChange }),
+    [handleOpenChange, resolvedOpen],
+  );
+  return (
+    <DropdownMenuSubOpenContext.Provider value={contextValue}>
+      <DropdownMenuPrimitive.Sub open={resolvedOpen} onOpenChange={handleOpenChange} {...props} />
+    </DropdownMenuSubOpenContext.Provider>
+  );
+};
 
 export const DropdownMenuContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.Content>,
@@ -73,17 +105,41 @@ DropdownMenuCheckboxItem.displayName = DropdownMenuPrimitive.CheckboxItem.displa
 
 export const DropdownMenuSubTrigger = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubTrigger>,
-  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger>
->(({ className, ...props }, ref) => (
-  <DropdownMenuPrimitive.SubTrigger
-    ref={ref}
-    className={cn(
-      "relative flex cursor-default select-none items-center rounded-xs px-2 py-1.5 text-sm outline-hidden transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-accent-foreground data-[disabled]:opacity-50",
-      className,
-    )}
-    {...props}
-  />
-));
+  React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger> & {
+    // Menu-button style trigger (e.g. an icon "⋯" button): a second click
+    // closes the submenu, and hover no longer opens it (it would immediately
+    // undo the click-to-close).
+    clickToggle?: boolean;
+  }
+>(({ className, clickToggle, onClick, onPointerMove, ...props }, ref) => {
+  const sub = React.useContext(DropdownMenuSubOpenContext);
+  return (
+    <DropdownMenuPrimitive.SubTrigger
+      ref={ref}
+      onClick={(event) => {
+        onClick?.(event);
+        if (!clickToggle || !sub?.open || event.defaultPrevented) return;
+        // Radix's own click handler only opens; preventDefault keeps it from
+        // re-opening while we close the mirrored sub state.
+        event.preventDefault();
+        sub.onOpenChange(false);
+      }}
+      onPointerMove={(event) => {
+        onPointerMove?.(event);
+        if (!clickToggle || event.pointerType !== "mouse" || event.defaultPrevented) return;
+        // Suppressing Radix's hover-open also skips its hover focus; restore
+        // the focus highlight it would have applied.
+        event.preventDefault();
+        event.currentTarget.focus({ preventScroll: true });
+      }}
+      className={cn(
+        "relative flex cursor-default select-none items-center rounded-xs px-2 py-1.5 text-sm outline-hidden transition-colors focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-accent-foreground data-[disabled]:opacity-50",
+        className,
+      )}
+      {...props}
+    />
+  );
+});
 DropdownMenuSubTrigger.displayName = DropdownMenuPrimitive.SubTrigger.displayName;
 
 export const DropdownMenuSubContent = React.forwardRef<
