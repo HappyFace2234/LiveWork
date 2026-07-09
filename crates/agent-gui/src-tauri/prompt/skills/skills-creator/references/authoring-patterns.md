@@ -2,14 +2,6 @@
 
 Use these patterns when shaping a LiveAgent skill.
 
-## Language Pattern
-
-Use this for every generated skill document.
-
-1. Convert non-English source notes into English before drafting.
-2. Keep commands, code identifiers, filenames, URLs, and literal values unchanged.
-3. Review `SKILL.md` and every Markdown reference for non-English prose before validation or packaging.
-
 ## Workflow Skill
 
 Use this when the task has a fixed sequence.

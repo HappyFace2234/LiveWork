@@ -2,11 +2,9 @@
 
 Use this reference when writing or reviewing a LiveAgent-compatible skill.
 
-## Language Policy
+## Language
 
-- Generated skill documentation must be written in English only.
-- This applies to `SKILL.md`, Markdown files in `references/`, and any example documentation that ships with the skill.
-- Translate user-provided non-English workflow notes into English before writing them into skill documentation.
+- Prefer English for skill documentation (`SKILL.md`, Markdown files in `references/`, example documentation) so skills stay broadly reusable; other languages are accepted, so follow the user's preference when they state one.
 - Keep code identifiers, filenames, shell commands, URLs, API names, and literal values unchanged when they are part of the workflow.
 
 ## Discovery Model
@@ -44,7 +42,7 @@ description: Do a specific LiveAgent workflow. Use when the user asks for the ex
 ---
 ```
 
-The `description` is both the trigger text and the UI summary. Write it in English. Include what the skill does and when it should be used. Do not hide trigger conditions in the body because the body is loaded only after the skill is selected or read.
+The `description` is both the trigger text and the UI summary. Include what the skill does and when it should be used. Do not hide trigger conditions in the body because the body is loaded only after the skill is selected or read.
 
 `allowed-tools` is accepted only as compatibility metadata when importing existing skills. LiveAgent currently enforces tool access through the chat Skills selector and runtime `SkillAccessPolicy`, not through per-skill frontmatter.
 
@@ -53,6 +51,5 @@ The `description` is both the trigger text and the UI summary. Write it in Engli
 - Relative paths inside a skill are resolved from the skill base directory. When inspecting or updating enabled skill files, use file tools with `skill://<baseDir>/...`, an absolute path returned by a tool, or the exact `pathRef` returned by a prior tool.
 - Use `SkillsManager` actions for LiveAgent skill creation, installation, listing, validation, and packaging. Do not bundle Python helper scripts for these core workflows.
 - If the skill needs reference or asset files, mention them from `SKILL.md` with exact relative paths.
-- Keep every generated Markdown document in English. Validation rejects obvious non-English writing-system characters in skill documentation.
 - If a workflow writes outside the repository workspace, make that explicit and require the user to confirm the destination.
 - Creating or installing into the fixed Skills root is an explicit `SkillsManager` action; do not silently write repository source copies.

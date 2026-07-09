@@ -19,7 +19,7 @@ pub(crate) fn render_skill_template(name: &str, description: &str, body: Option<
     let rendered_body = body.map_or_else(
         || {
             format!(
-                "# {}\n\n## Language Policy\n\n- Write this skill document and every Markdown reference in English only.\n- Translate non-English source notes into English before adding them here.\n- Preserve code identifiers, filenames, commands, URLs, and literal values exactly when needed.\n\n## Workflow\n\n1. Inspect the user's request and gather the required context.\n2. Follow the workflow this skill is meant to capture.\n3. Validate the result and report changed files or outputs.\n",
+                "# {}\n\n> Prefer English for skill documentation so it stays broadly reusable; other languages are accepted.\n\n## Workflow\n\n1. Inspect the user's request and gather the required context.\n2. Follow the workflow this skill is meant to capture.\n3. Validate the result and report changed files or outputs.\n",
                 title_case_skill_name(name)
             )
         },

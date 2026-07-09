@@ -267,9 +267,7 @@ fn builtin_seed_updates_changed_valid_target_before_writing() {
     assert!(creator.backup.is_some());
     let content =
         fs::read_to_string(root.join("skills-creator").join("SKILL.md")).expect("read seeded");
-    assert!(
-        content.contains("All generated skill documentation must be written in English only")
-    );
+    assert!(content.contains("Prefer English for generated skill documentation"));
     let validation = validate_skill_dir(&root.join("skills-creator"));
     assert!(validation.ok, "{:?}", validation.errors);
 }
@@ -537,46 +535,41 @@ fn validate_allows_single_line_frontmatter() {
 }
 
 #[test]
-fn validate_rejects_non_english_markdown_documentation() {
-    let tmp = TempDir::new("liveagent-skill-english-doc-test").expect("temp dir");
+fn validate_accepts_non_english_markdown_documentation() {
+    let tmp = TempDir::new("liveagent-skill-language-doc-test").expect("temp dir");
     let root = tmp.path().join("skills");
-    let dir = root.join("english-only-skill");
+    let dir = root.join("multilingual-skill");
     fs::create_dir_all(&dir).expect("create skill dir");
     fs::write(
         dir.join("SKILL.md"),
-        "---\nname: english-only-skill\ndescription: English documentation test\n---\n\n# English Only Skill\n\nTranslate \u{4E2D} before saving the skill.\n",
+        "---\nname: multilingual-skill\ndescription: \u{591A}\u{8BED}\u{8A00}\u{6587}\u{6863}\u{6D4B}\u{8BD5}\n---\n\n# \u{591A}\u{8BED}\u{8A00} Skill\n\n\u{4FDD}\u{5B58}\u{524D}\u{5148}\u{68C0}\u{67E5}\u{5DE5}\u{4F5C}\u{6D41}\u{3002}\n",
     )
     .expect("write skill");
 
     let validation =
-        validate_installed_skill(&root, "english-only-skill").expect("validate skill");
+        validate_installed_skill(&root, "multilingual-skill").expect("validate skill");
 
-    assert!(!validation.ok);
-    assert!(
-        validation
-            .errors
-            .iter()
-            .any(|error| error.contains("English only")),
-        "{:?}",
-        validation.errors
-    );
+    assert!(validation.ok, "{:?}", validation.errors);
 }
 
 #[test]
-fn create_skill_rejects_non_english_body() {
-    let tmp = TempDir::new("liveagent-skill-create-english-test").expect("temp dir");
+fn create_skill_accepts_non_english_body() {
+    let tmp = TempDir::new("liveagent-skill-create-language-test").expect("temp dir");
     let root = tmp.path().join("skills");
     let payload = json!({
-        "name": "english-create-skill",
-        "description": "Create only English documentation",
-        "body": "# English Create Skill\n\nTranslate \u{4E2D} before writing docs.",
+        "name": "multilingual-create-skill",
+        "description": "\u{521B}\u{5EFA}\u{4E2D}\u{6587}\u{6587}\u{6863}",
+        "body": "# \u{4E2D}\u{6587} Skill\n\n\u{6309}\u{6B65}\u{9AA4}\u{6267}\u{884C}\u{5DE5}\u{4F5C}\u{6D41}\u{3002}",
         "conflict": "fail"
     });
     let payload = payload.as_object().expect("payload object");
 
-    let error = create_skill_from_payload(&root, payload).expect_err("create should fail");
+    let result = create_skill_from_payload(&root, payload).expect("create should succeed");
 
-    assert!(error.contains("English only"), "unexpected error: {error}");
+    assert_eq!(result.name, "multilingual-create-skill");
+    let content = fs::read_to_string(root.join("multilingual-create-skill").join("SKILL.md"))
+        .expect("read created skill");
+    assert!(content.contains("\u{4E2D}\u{6587} Skill"));
 }
 
 #[test]

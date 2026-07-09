@@ -10,7 +10,7 @@
 //! - [`jobs`]：后台安装任务注册表与 install_start 工作线程
 //! - [`clawhub`]：ClawHub 注册表搜索与安装
 //! - [`create`]：SKILL.md 模板渲染与 create 编排
-//! - [`validate`]：Skill 目录校验与英文文档检查
+//! - [`validate`]：Skill 目录校验
 //! - [`builtin`]：内置 Agent Skill 定义、修改保护与种子写入
 //! - [`manager`]：`system_manage_skill_sync` 动作分发入口
 

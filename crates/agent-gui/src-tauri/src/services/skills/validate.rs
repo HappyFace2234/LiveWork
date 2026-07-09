@@ -1,4 +1,4 @@
-//! Skill 校验：目录结构、元数据约束与英文文档检查。
+//! Skill 校验：目录结构与元数据约束。
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -6,79 +6,6 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use super::*;
-
-const NON_ENGLISH_SCRIPT_RANGES: &[(u32, u32)] = &[
-    (0x0370, 0x03FF),   // Greek
-    (0x0400, 0x052F),   // Cyrillic
-    (0x0590, 0x05FF),   // Hebrew
-    (0x0600, 0x06FF),   // Arabic
-    (0x0750, 0x077F),   // Arabic Supplement
-    (0x08A0, 0x08FF),   // Arabic Extended-A
-    (0x0900, 0x0DFF),   // Indic scripts
-    (0x0E00, 0x0E7F),   // Thai
-    (0x0E80, 0x0EFF),   // Lao
-    (0x0F00, 0x0FFF),   // Tibetan
-    (0x1000, 0x109F),   // Myanmar
-    (0x10A0, 0x10FF),   // Georgian
-    (0x1100, 0x11FF),   // Hangul Jamo
-    (0x1780, 0x17FF),   // Khmer
-    (0x3040, 0x30FF),   // Hiragana and Katakana
-    (0x3130, 0x318F),   // Hangul Compatibility Jamo
-    (0x31F0, 0x31FF),   // Katakana Phonetic Extensions
-    (0x3400, 0x4DBF),   // CJK Extension A
-    (0x4E00, 0x9FFF),   // CJK Unified Ideographs
-    (0xAC00, 0xD7AF),   // Hangul Syllables
-    (0xF900, 0xFAFF),   // CJK Compatibility Ideographs
-    (0xFF00, 0xFFEF),   // Halfwidth and Fullwidth Forms
-    (0x20000, 0x2FA1F), // CJK Extensions and compatibility supplements
-];
-
-pub(crate) fn is_non_english_script_char(ch: char) -> bool {
-    let codepoint = ch as u32;
-    NON_ENGLISH_SCRIPT_RANGES
-        .iter()
-        .any(|(start, end)| codepoint >= *start && codepoint <= *end)
-}
-
-pub(crate) fn first_non_english_script_char(content: &str) -> Option<char> {
-    content.chars().find(|ch| is_non_english_script_char(*ch))
-}
-
-pub(crate) fn is_markdown_document(rel: &Path) -> bool {
-    let is_markdown = rel
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("md"))
-        .unwrap_or(false);
-    if !is_markdown {
-        return false;
-    }
-    rel.components().count() == 1 || rel.starts_with("references")
-}
-
-pub(crate) fn validate_english_markdown_document(
-    path: &Path,
-    rel: &Path,
-    errors: &mut Vec<String>,
-) {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) => {
-            errors.push(format!(
-                "Failed to read Markdown documentation {}: {error}",
-                rel.to_string_lossy()
-            ));
-            return;
-        }
-    };
-    if let Some(ch) = first_non_english_script_char(&content) {
-        errors.push(format!(
-            "Markdown documentation must be written in English only: {} contains non-English script character U+{:04X}",
-            rel.to_string_lossy(),
-            ch as u32
-        ));
-    }
-}
 
 pub(crate) fn validate_skill_dir(skill_dir: &Path) -> SkillValidationResult {
     let mut errors = Vec::new();
@@ -236,12 +163,6 @@ pub(crate) fn validate_skill_dir(skill_dir: &Path) -> SkillValidationResult {
         if metadata.description.contains('<') || metadata.description.contains('>') {
             errors.push("Description cannot contain angle brackets (< or >)".to_string());
         }
-        if let Some(ch) = first_non_english_script_char(&metadata.description) {
-            errors.push(format!(
-                "Description must be written in English only; found non-English script character U+{:04X}",
-                ch as u32
-            ));
-        }
         if metadata.description.len() > MAX_SKILL_DESCRIPTION_LENGTH {
             errors.push(format!(
                 "Description is too long; maximum is {MAX_SKILL_DESCRIPTION_LENGTH}"
@@ -283,9 +204,6 @@ pub(crate) fn validate_skill_dir(skill_dir: &Path) -> SkillValidationResult {
                 "Forbidden documentation file found: {}",
                 rel.to_string_lossy()
             ));
-        }
-        if is_markdown_document(rel) {
-            validate_english_markdown_document(entry.path(), rel, &mut errors);
         }
         let ext = entry
             .path()
