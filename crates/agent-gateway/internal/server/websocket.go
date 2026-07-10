@@ -31,6 +31,11 @@ type websocketEnvelope struct {
 	Type    string `json:"type"`
 	Payload any    `json:"payload,omitempty"`
 	Error   string `json:"error,omitempty"`
+
+	// priority is transport-local metadata and is never serialized. It lets
+	// latency-sensitive acknowledgements bypass a congested data queue without
+	// promoting every potentially large response.
+	priority bool
 }
 
 type websocketAuthPayload struct {
@@ -739,6 +744,15 @@ func (c *websocketConnection) writeResponse(requestID string, payload any) error
 	})
 }
 
+func (c *websocketConnection) writePriorityResponse(requestID string, payload any) error {
+	return c.writeEnvelope(websocketEnvelope{
+		ID:       requestID,
+		Type:     "response",
+		Payload:  payload,
+		priority: true,
+	})
+}
+
 func (c *websocketConnection) writeError(requestID string, message string) error {
 	return c.writeEnvelope(websocketEnvelope{
 		ID:    requestID,
@@ -775,7 +789,7 @@ func isControlEnvelopeType(envelopeType string) bool {
 // the write loop's direct-write failures — a genuinely unwritable socket —
 // terminate the connection.
 func (c *websocketConnection) writeEnvelope(envelope websocketEnvelope) error {
-	if isControlEnvelopeType(envelope.Type) {
+	if envelope.priority || isControlEnvelopeType(envelope.Type) {
 		return c.enqueueControlEnvelope(envelope)
 	}
 	err := c.enqueueEnvelope(envelope)

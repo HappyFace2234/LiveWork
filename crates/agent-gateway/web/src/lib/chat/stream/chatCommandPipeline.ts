@@ -1,3 +1,4 @@
+import type { HistoryMessageRef } from "../conversationState";
 import type { TranscriptStore } from "../transcript/transcriptStore";
 import type { ChatCommandAccepted, ChatCommandUpdate } from "./streamTypes";
 
@@ -14,9 +15,11 @@ export type ChatCommandRequest = {
     Parameters<TranscriptStore["addOptimisticUserEntry"]>[0]["attachments"],
     unknown
   >;
-  // edit_resend commands seed an optimistic `rebased` truncation; compensation
-  // paths (queued_in_gui / failed) need to know to restore the transcript.
+  // edit_resend commands apply the truncation and replacement bubble in the
+  // same optimistic transcript commit. Compensation paths
+  // (queued_in_gui / failed) need to know to restore the persisted suffix.
   isEditResend?: boolean;
+  baseMessageRef?: HistoryMessageRef;
   // Queue-destined submissions (a run is already streaming) skip the local
   // echo: the prompt belongs in the queue panel, and a transcript bubble
   // would just flash until the queued_in_gui compensation removed it.
@@ -36,6 +39,7 @@ export type ChatCommandOutcome =
   | { kind: "accepted"; accepted: ChatCommandAccepted }
   | { kind: "queued_in_gui"; update: ChatCommandUpdate }
   | { kind: "bound"; update: ChatCommandUpdate }
+  | { kind: "settled" }
   | { kind: "failed"; errorCode: string | null; message: string };
 
 export type ChatCommandPipelineHooks = {
@@ -55,6 +59,7 @@ export class ChatCommandPipeline {
   private pending = new Map<string, PendingChatCommand>();
   private byRunId = new Map<string, PendingChatCommand>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  private settledOutcomes = new WeakMap<PendingChatCommand, ChatCommandOutcome>();
 
   constructor(private readonly hooks: ChatCommandPipelineHooks) {}
 
@@ -74,6 +79,7 @@ export class ChatCommandPipeline {
         clientRequestId: request.clientRequestId,
         text: request.message,
         attachments: request.attachments as never,
+        baseMessageRef: request.baseMessageRef,
       });
     }
 
@@ -89,6 +95,10 @@ export class ChatCommandPipeline {
     try {
       const accepted = await request.submit();
       pending.runId = accepted.runId;
+      const settledOutcome = this.settledOutcomes.get(pending);
+      if (settledOutcome) {
+        return settledOutcome;
+      }
       if (this.pending.get(pending.conversationId) === pending) {
         // Only register while the pending is still live: an own run signal
         // (matched by client_request_id) may have settled it before the
@@ -97,9 +107,12 @@ export class ChatCommandPipeline {
       }
       return { kind: "accepted", accepted };
     } catch (error) {
+      const settledOutcome = this.settledOutcomes.get(pending);
+      if (settledOutcome) {
+        return settledOutcome;
+      }
       const message = error instanceof Error ? error.message : "chat command failed";
-      this.fail(pending, null, message);
-      return { kind: "failed", errorCode: null, message };
+      return this.fail(pending, null, message);
     }
   }
 
@@ -141,9 +154,16 @@ export class ChatCommandPipeline {
         // anymore, the queue panel shows it. The seeded entries are removed
         // by the stream's run_queued event; the optimistic entry may still
         // exist if the seed never reached the stream (draft conversations).
-        this.hooks
-          .getTranscriptStore(pending.conversationId)
-          .removeOptimisticUserEntry(pending.clientRequestId);
+        const store = this.hooks.getTranscriptStore(pending.conversationId);
+        if (pending.isEditResend) {
+          // Server-side history is unchanged for a parked edit: restore the
+          // optimistically truncated suffix locally right away; the hook's
+          // history refresh remains the authoritative reconciliation.
+          store.restoreEditResendTranscript?.(pending.clientRequestId);
+        }
+        store.removeOptimisticUserEntry(pending.clientRequestId);
+        const outcome: ChatCommandOutcome = { kind: "queued_in_gui", update };
+        this.settledOutcomes.set(pending, outcome);
         this.clearPending(pending);
         this.hooks.onQueuedInGui?.(update, pending);
         return;
@@ -172,16 +192,30 @@ export class ChatCommandPipeline {
       clientRequestId !== "" &&
       clientRequestId === pending.clientRequestId;
     if (matchesRunId || matchesClientRequest) {
+      this.settledOutcomes.set(pending, { kind: "settled" });
       this.clearPending(pending);
     }
   }
 
-  private fail(pending: PendingChatCommand, errorCode: string | null, message: string): void {
+  private fail(
+    pending: PendingChatCommand,
+    errorCode: string | null,
+    message: string,
+  ): Extract<ChatCommandOutcome, { kind: "failed" }> {
+    const outcome = { kind: "failed" as const, errorCode, message };
+    this.settledOutcomes.set(pending, outcome);
     const store = this.hooks.getTranscriptStore(pending.conversationId);
+    if (pending.isEditResend) {
+      // Offline-safe compensation: the command never ran, so the transcript
+      // stashed before the optimistic truncation is still authoritative. The
+      // onFailed hook's history refresh reconciles when the network works.
+      store.restoreEditResendTranscript?.(pending.clientRequestId);
+    }
     store.removeOptimisticUserEntry(pending.clientRequestId);
     store.appendLocalError(message);
     this.clearPending(pending);
     this.hooks.onFailed?.(pending, errorCode, message);
+    return outcome;
   }
 
   private setPending(conversationId: string, pending: PendingChatCommand): void {

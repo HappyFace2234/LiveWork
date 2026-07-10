@@ -48,6 +48,12 @@ function tailTexts(store) {
   return store.getSnapshot().liveRows.map((row) => rowText(row));
 }
 
+function transcriptTexts(store) {
+  store.flush();
+  const snapshot = store.getSnapshot();
+  return [...snapshot.foldedRows, ...snapshot.liveRows].map((row) => rowText(row));
+}
+
 test("submit inserts the optimistic bubble and resolves the accepted run", async () => {
   const { pipeline, stores } = createHarness();
   const outcome = await pipeline.submit({
@@ -64,6 +70,119 @@ test("submit inserts the optimistic bubble and resolves the accepted run", async
 
   // The stream's run signal settles the pending spinner.
   pipeline.handleRunSignal("conv-1", "run-1");
+  assert.equal(pipeline.hasPending("conv-1"), false);
+});
+
+test("edit-resend truncates at the edited message before command acknowledgement", async () => {
+  const { pipeline, stores } = createHarness();
+  const store = createTranscriptStore();
+  stores.set("conv-1", store);
+  const baseMessageRef = {
+    segmentIndex: 0,
+    messageIndex: 2,
+    segmentId: "segment-0",
+    messageId: "message-2",
+    role: "user",
+    contentHash: "hash-2",
+  };
+  store.applyHistorySnapshot(
+    [
+      {
+        id: "user-1",
+        kind: "user",
+        text: "first question",
+        attachments: [],
+        messageRef: {
+          segmentIndex: 0,
+          messageIndex: 0,
+          segmentId: "segment-0",
+          messageId: "message-0",
+          role: "user",
+          contentHash: "hash-0",
+        },
+      },
+      { id: "assistant-1", kind: "assistant", text: "first answer", round: 1 },
+      {
+        id: "user-2",
+        kind: "user",
+        text: "old second question",
+        attachments: [],
+        messageRef: baseMessageRef,
+      },
+      { id: "assistant-2", kind: "assistant", text: "old second answer", round: 1 },
+      {
+        id: "user-3",
+        kind: "user",
+        text: "later question",
+        attachments: [],
+        messageRef: {
+          segmentIndex: 0,
+          messageIndex: 4,
+          segmentId: "segment-0",
+          messageId: "message-4",
+          role: "user",
+          contentHash: "hash-4",
+        },
+      },
+      { id: "assistant-3", kind: "assistant", text: "later answer", round: 1 },
+    ],
+    { mode: "replace" },
+  );
+
+  let acceptCommand;
+  const acceptGate = new Promise((resolve) => {
+    acceptCommand = resolve;
+  });
+  const submitPromise = pipeline.submit({
+    conversationId: "conv-1",
+    clientRequestId: "client-edit",
+    message: "edited second question",
+    isEditResend: true,
+    baseMessageRef,
+    submit: () => acceptGate,
+  });
+
+  assert.deepEqual(
+    transcriptTexts(store),
+    ["first question", "first answer", "edited second question"],
+    "the stale suffix is gone in the same optimistic update as the replacement bubble",
+  );
+
+  // The gateway's authoritative rebase arrives later and must be a no-op,
+  // while user_message binds the existing optimistic bubble instead of
+  // appending another one.
+  store.applyEvent({
+    type: "rebased",
+    conversation_id: "conv-1",
+    run_id: "run-edit",
+    seq: 1,
+    base_message_ref: {
+      segment_index: 0,
+      message_index: 2,
+      segment_id: "segment-0",
+      message_id: "message-2",
+      role: "user",
+      content_hash: "hash-2",
+    },
+  });
+  store.applyEvent({
+    type: "user_message",
+    conversation_id: "conv-1",
+    run_id: "run-edit",
+    client_request_id: "client-edit",
+    seq: 2,
+    message: "edited second question",
+  });
+  assert.deepEqual(transcriptTexts(store), [
+    "first question",
+    "first answer",
+    "edited second question",
+  ]);
+
+  acceptCommand({ runId: "run-edit", conversationId: "conv-1", acceptedSeq: 2 });
+  const outcome = await submitPromise;
+  assert.equal(outcome.kind, "accepted");
+  pipeline.handleRunSignal("conv-1", "run-edit");
   assert.equal(pipeline.hasPending("conv-1"), false);
 });
 
@@ -189,7 +308,7 @@ test("run signals settle only on strict identity (runId or own clientRequestId)"
 
   releaseAccept();
   const outcome = await submitPromise;
-  assert.equal(outcome.kind, "accepted");
+  assert.equal(outcome.kind, "settled");
   // The late accept response must not resurrect a byRunId registration for
   // the already-settled pending: a later command_update for that run id is a
   // no-op instead of firing hooks against a dead pending.
@@ -202,6 +321,60 @@ test("run signals settle only on strict identity (runId or own clientRequestId)"
     message: null,
   });
   assert.equal(pipeline.hasPending("conv-other"), false);
+});
+
+test("a run signal that beats a lost acknowledgement prevents a false local failure", async () => {
+  const { pipeline, stores, outcomes } = createHarness();
+  let rejectAccept;
+  const acceptGate = new Promise((_, reject) => {
+    rejectAccept = reject;
+  });
+  const submitPromise = pipeline.submit({
+    conversationId: "conv-1",
+    clientRequestId: "client-1",
+    message: "hello",
+    submit: () => acceptGate,
+  });
+
+  pipeline.handleRunSignal("conv-1", "run-1", "client-1");
+  rejectAccept(new Error("chat command acknowledgement lost"));
+  const outcome = await submitPromise;
+
+  assert.equal(outcome.kind, "settled");
+  assert.equal(pipeline.hasPending("conv-1"), false);
+  assert.equal(outcomes.failed.length, 0, "no duplicate local failure hook");
+  assert.deepEqual(tailTexts(stores.get("conv-1")), ["hello"]);
+});
+
+test("a queued update that beats a lost acknowledgement remains queued", async () => {
+  const { pipeline, stores, outcomes } = createHarness();
+  let rejectAccept;
+  const acceptGate = new Promise((_, reject) => {
+    rejectAccept = reject;
+  });
+  const submitPromise = pipeline.submit({
+    conversationId: "conv-1",
+    clientRequestId: "client-1",
+    message: "queue me",
+    submit: () => acceptGate,
+  });
+
+  const update = {
+    runId: "run-1",
+    clientRequestId: "client-1",
+    conversationId: "conv-1",
+    phase: "queued_in_gui",
+    errorCode: null,
+    message: null,
+  };
+  pipeline.handleCommandUpdate(update);
+  rejectAccept(new Error("chat command acknowledgement lost"));
+  const outcome = await submitPromise;
+
+  assert.equal(outcome.kind, "queued_in_gui");
+  assert.equal(outcomes.queued.length, 1);
+  assert.equal(outcomes.failed.length, 0);
+  assert.deepEqual(tailTexts(stores.get("conv-1")), []);
 });
 
 test("run signals with a known runId settle regardless of clientRequestId", async () => {

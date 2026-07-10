@@ -27,9 +27,10 @@
 | `LIVEAGENT_GATEWAY_TOKEN` | 是 | WebUI、HTTP API、桌面 gRPC 的共享访问 token。 |
 | `PORT` | Railway 自动提供 | HTTP/WebUI 监听端口，未提供时 Dockerfile 默认 `8080`。 |
 | `LIVEAGENT_GATEWAY_GRPC_ADDR` | 否 | gRPC 监听地址，默认 `:50051`。 |
-| `LIVEAGENT_GATEWAY_CHAT_EVENT_STORE` | 否 | Gateway Chat Event Store SQLite 路径；Docker 镜像默认使用 `/var/lib/liveagent/gateway-chat.sqlite3`，其他运行方式未设置时使用用户配置目录下的 `LiveAgent/gateway-chat.sqlite3`。生产容器建议挂载持久卷。 |
-| `LIVEAGENT_GATEWAY_CHAT_START_TIMEOUT` | 否 | Chat command 下发后等待桌面端回报 `delivered/claimed/starting` 的超时，默认 `15s`。 |
-| `LIVEAGENT_GATEWAY_CHAT_RENDER_START_TIMEOUT` | 否 | 桌面端接受 command 后等待 `started` 的超时，默认 `45s`。 |
+| `LIVEAGENT_GATEWAY_CHAT_PREPARE_TIMEOUT` | 否 | `chat.prepare` 与 command accepted 前关联原生 Ping/Pong 的最大等待时间，默认 `2s`。 |
+| `LIVEAGENT_GATEWAY_CHAT_DELIVERY_TIMEOUT` | 否 | accepted 后把 `ChatCommandRequest` 投递到当前桌面 Agent stream 的最大等待时间，默认 `5s`。 |
+| `LIVEAGENT_GATEWAY_CHAT_START_TIMEOUT` | 否 | Chat command 进入桌面运行态的第一段 watchdog，默认 `5s`。 |
+| `LIVEAGENT_GATEWAY_CHAT_RENDER_START_TIMEOUT` | 否 | 第一段 watchdog 后继续等待桌面 run settled 的附加窗口，默认 `10s`。 |
 
 本地 smoke run 示例：
 
@@ -67,7 +68,12 @@ Gateway 运行时变量由用户在自己的平台配置：
 |---|---|
 | `LIVEAGENT_GATEWAY_TOKEN` | WebUI、HTTP API、桌面 gRPC 的共享访问 token。 |
 | `LIVEAGENT_GATEWAY_GRPC_ADDR` | 保持 `:50051`，供 Railway TCP Proxy 转发。 |
-| `LIVEAGENT_GATEWAY_CHAT_EVENT_STORE` | 指向持久卷内 SQLite 文件，保存 `chat_runs`、`chat_command_dedup`、`chat_events`。 |
+| `LIVEAGENT_GATEWAY_CHAT_PREPARE_TIMEOUT` | 默认 `2s`；通常无需调大，超时应暴露半开连接并让客户端快速恢复。 |
+| `LIVEAGENT_GATEWAY_CHAT_DELIVERY_TIMEOUT` | 默认 `5s`；控制 accepted 后投递桌面 stream 的上限。 |
+| `LIVEAGENT_GATEWAY_CHAT_START_TIMEOUT` | 默认 `5s`；控制远程 command 启动 watchdog 的第一阶段。 |
+| `LIVEAGENT_GATEWAY_CHAT_RENDER_START_TIMEOUT` | 默认 `10s`；控制启动 watchdog 的附加阶段。 |
+
+Gateway 的 conversation stream replay 与 `client_request_id` 去重当前都是进程内有界状态，不需要 SQLite 持久卷。事件窗口默认保留最近 10 分钟、最多 4096 条或约 8 MiB；command 去重记录保留 24 小时，但 Gateway 进程重启后不会保留。
 
 ## GitHub Secrets
 

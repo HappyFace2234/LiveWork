@@ -19,6 +19,7 @@ type sessionRegistry struct {
 	runtimeLastHeartbeat  time.Time
 	runtimeVisible        bool
 	runtimeActiveRunCount uint32
+	chatRuntimeProbeAt    time.Time
 }
 
 func newSessionRegistry() *sessionRegistry {
@@ -68,4 +69,3 @@ func newSyncHub() *syncHub {
 		chatQueueSnapshots:        make(map[string]chatQueueSnapshotRecord),
 	}
 }
-

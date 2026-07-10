@@ -1,14 +1,16 @@
-
 use super::{
     build_chat_event_envelope, build_chat_runtime_snapshot_envelope, build_endpoint,
     build_gateway_runtime_status_envelope, build_grpc_url,
     build_local_settings_update_event_payload, chat_event_is_terminal,
-    format_gateway_terminal_stream_rpc_error, history_share_resolve_error_code,
-    merge_settings_sync_snapshot, merge_settings_update_into_snapshot, proto,
-    queue_terminal_stream_handshake_frame, required_terminal_project_path_key,
-    set_disconnected_status, GatewayChatRequestEvent, GatewayChatRuntimeSnapshot,
-    GatewayController, GatewayStatusSnapshot, RemoteChatInboxRecord, GATEWAY_CHAT_LEASE_MS,
-    GATEWAY_CHAT_RUNNING_LEASE_MS, GATEWAY_RUNTIME_STATUS_REPUBLISH_MAX_AGE,
+    format_gateway_terminal_stream_rpc_error, gateway_connection_needs_restart,
+    gateway_connection_stale_after, gateway_reconnect_backoff, history_share_resolve_error_code,
+    is_chat_runtime_wake_request_id, merge_settings_sync_snapshot,
+    merge_settings_update_into_snapshot, proto, queue_terminal_stream_handshake_frame,
+    required_terminal_project_path_key, set_disconnected_status, GatewayChatRequestEvent,
+    GatewayChatRuntimeSnapshot, GatewayController, GatewayStatusSnapshot, RemoteChatInboxRecord,
+    GATEWAY_CHAT_LEASE_MS, GATEWAY_CHAT_RUNNING_LEASE_MS, GATEWAY_RECONNECT_MAX,
+    GATEWAY_RECONNECT_MIN, GATEWAY_RECONNECT_STABLE_AFTER,
+    GATEWAY_RUNTIME_STATUS_REPUBLISH_MAX_AGE,
 };
 use crate::commands::settings::RemoteSettingsPayload;
 use serde_json::{json, Value};
@@ -517,6 +519,80 @@ fn set_disconnected_status_resets_runtime_fields_for_new_config() {
 }
 
 #[test]
+fn chat_runtime_wake_ping_uses_dedicated_request_prefix() {
+    assert!(is_chat_runtime_wake_request_id(
+        "chat-runtime-wake-request-1"
+    ));
+    assert!(is_chat_runtime_wake_request_id(
+        "  chat-runtime-wake-request-2  "
+    ));
+    assert!(!is_chat_runtime_wake_request_id("ping-request-1"));
+}
+
+#[test]
+fn gateway_connection_nudge_detects_offline_and_stale_sessions() {
+    let config = RemoteSettingsPayload {
+        enabled: true,
+        gateway_url: "https://gateway.example.com".to_string(),
+        grpc_port: 50051,
+        grpc_endpoint: String::new(),
+        token: "dev-token".to_string(),
+        agent_id: "agent".to_string(),
+        auto_reconnect: true,
+        heartbeat_interval: 30,
+        enable_web_terminal: false,
+        enable_web_ssh_terminal: false,
+        enable_web_git: false,
+        enable_web_tunnels: false,
+    };
+    assert_eq!(
+        gateway_connection_stale_after(&config),
+        Duration::from_secs(50)
+    );
+
+    let mut status = GatewayStatusSnapshot {
+        online: false,
+        enabled: true,
+        configured: true,
+        gateway_url: config.gateway_url.clone(),
+        agent_id: config.agent_id.clone(),
+        session_id: None,
+        connected_since: None,
+        last_heartbeat: None,
+        last_error: None,
+    };
+    assert!(gateway_connection_needs_restart(&status, &config, 1_000));
+
+    status.online = true;
+    status.last_heartbeat = Some(960);
+    assert!(!gateway_connection_needs_restart(&status, &config, 1_000));
+    status.last_heartbeat = Some(940);
+    assert!(gateway_connection_needs_restart(&status, &config, 1_000));
+
+    let mut disabled = config.clone();
+    disabled.enabled = false;
+    assert!(!gateway_connection_needs_restart(&status, &disabled, 1_000));
+}
+
+#[test]
+fn gateway_reconnect_backoff_is_fast_after_a_stable_session_and_bounded_on_failures() {
+    let (first_delay, next_delay) =
+        gateway_reconnect_backoff(GATEWAY_RECONNECT_MIN, Duration::from_secs(1));
+    assert_eq!(first_delay, GATEWAY_RECONNECT_MIN);
+    assert_eq!(next_delay, GATEWAY_RECONNECT_MIN * 2);
+
+    let (capped_delay, capped_next) =
+        gateway_reconnect_backoff(GATEWAY_RECONNECT_MAX, Duration::from_secs(1));
+    assert_eq!(capped_delay, GATEWAY_RECONNECT_MAX);
+    assert_eq!(capped_next, GATEWAY_RECONNECT_MAX);
+
+    let (stable_delay, stable_next) =
+        gateway_reconnect_backoff(GATEWAY_RECONNECT_MAX, GATEWAY_RECONNECT_STABLE_AFTER);
+    assert_eq!(stable_delay, GATEWAY_RECONNECT_MIN);
+    assert_eq!(stable_next, GATEWAY_RECONNECT_MIN * 2);
+}
+
+#[test]
 fn build_https_gateway_endpoint_initializes_tls_provider() {
     build_endpoint("https://agent.cnweb.org:443", Duration::from_secs(30))
         .expect("build https gateway endpoint");
@@ -801,10 +877,9 @@ fn runtime_status_envelope_carries_run_reports() {
 #[test]
 fn runtime_status_republish_record_tracks_last_webview_report() {
     let now = Instant::now();
-    let record = GatewayController::next_runtime_status_republish_record(
-        "worker-1", "busy", true, 2, now,
-    )
-    .expect("busy state must be recorded for republish");
+    let record =
+        GatewayController::next_runtime_status_republish_record("worker-1", "busy", true, 2, now)
+            .expect("busy state must be recorded for republish");
     assert_eq!(record.worker_id, "worker-1");
     assert_eq!(record.state, "busy");
     assert!(record.visible);
@@ -824,10 +899,9 @@ fn runtime_status_republish_record_tracks_last_webview_report() {
 #[test]
 fn runtime_status_republish_payload_expires_after_max_age() {
     let now = Instant::now();
-    let record = GatewayController::next_runtime_status_republish_record(
-        "worker-1", "ready", true, 0, now,
-    )
-    .expect("record");
+    let record =
+        GatewayController::next_runtime_status_republish_record("worker-1", "ready", true, 0, now)
+            .expect("record");
 
     let fresh = GatewayController::runtime_status_republish_payload(
         Some(&record),

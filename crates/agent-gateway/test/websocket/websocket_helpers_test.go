@@ -107,3 +107,24 @@ func readOutboundEnvelope(t *testing.T, agentSession *session.AgentSession) *gat
 		return nil
 	}
 }
+
+func answerChatRuntimeProbe(
+	t *testing.T,
+	sm *session.Manager,
+	agentSession *session.AgentSession,
+) string {
+	t.Helper()
+	envelope := readOutboundEnvelope(t, agentSession)
+	requestID := envelope.GetRequestId()
+	if !strings.HasPrefix(requestID, "chat-runtime-wake-") || envelope.GetPing() == nil {
+		t.Fatalf("chat runtime probe = %#v, want chat-runtime-wake-* Ping", envelope)
+	}
+	sm.DispatchFromAgent(&gatewayv1.AgentEnvelope{
+		RequestId: requestID,
+		Timestamp: time.Now().Unix(),
+		Payload: &gatewayv1.AgentEnvelope_Pong{
+			Pong: &gatewayv1.PongResponse{Timestamp: envelope.GetPing().GetTimestamp()},
+		},
+	})
+	return requestID
+}

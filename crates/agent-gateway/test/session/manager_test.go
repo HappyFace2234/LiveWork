@@ -18,7 +18,6 @@ func newTestSessionManager() *session.Manager {
 	return sm
 }
 
-
 func dispatchChatControl(
 	sm *session.Manager,
 	requestID string,
@@ -178,6 +177,49 @@ func TestChatRuntimeReadyRequiresFreshRuntimeHeartbeat(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusUpdateBroadcastsStatus(t *testing.T) {
+	t.Parallel()
+
+	sm := newTestSessionManager()
+	sess := session.NewAgentSession(sm.LatestAuthSnapshot())
+	sm.SetSession(sess)
+	updates, cleanup := sm.SubscribeStatus()
+	defer cleanup()
+
+	sm.UpdateRuntimeStatus(sess, &gatewayv1.RuntimeStatusEvent{
+		WorkerId:       "runtime-broadcast",
+		State:          "ready",
+		Visible:        true,
+		ActiveRunCount: 2,
+		Timestamp:      time.Now().Unix(),
+	})
+
+	select {
+	case status := <-updates:
+		if !status.Online || !status.ChatRuntimeReady ||
+			status.RuntimeWorkerID != "runtime-broadcast" ||
+			status.RuntimeActiveRunCount != 2 {
+			t.Fatalf("runtime status broadcast = %#v", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runtime status broadcast")
+	}
+
+	// A heartbeat with identical semantic state only refreshes the internal TTL
+	// and must not spam every subscribed WebSocket.
+	sm.UpdateRuntimeStatus(sess, &gatewayv1.RuntimeStatusEvent{
+		WorkerId:       "runtime-broadcast",
+		State:          "ready",
+		Visible:        true,
+		ActiveRunCount: 2,
+		Timestamp:      time.Now().Unix(),
+	})
+	select {
+	case duplicate := <-updates:
+		t.Fatalf("timestamp-only runtime heartbeat was broadcast: %#v", duplicate)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
 
 func TestDispatchFromStaleSessionIsIgnored(t *testing.T) {
 	t.Parallel()
@@ -325,7 +367,6 @@ func TestSendPingBypassesFullOutboundQueue(t *testing.T) {
 		t.Fatalf("SendPing after close = %v, want ErrAgentOffline", err)
 	}
 }
-
 
 func TestChatQueueEventsReplayLatestSnapshotToNewSubscribers(t *testing.T) {
 	t.Parallel()

@@ -1781,11 +1781,6 @@ export default function GatewayApp() {
       });
     }
 
-    // Keep-warm preflight: the command request itself is the reliable wake-up
-    // signal for a suspended desktop WebView; the status refresh stays in the
-    // background so a stale heartbeat cannot block it.
-    void prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS).catch(() => undefined);
-
     const runtimeControls = normalizeChatRuntimeControlsForProvider(
       options?.runtimeControls ?? settings.chatRuntimeControls,
       {
@@ -1812,8 +1807,17 @@ export default function GatewayApp() {
       message,
       attachments: uploadedFiles,
       isEditResend: Boolean(options?.editMessageRef),
+      baseMessageRef: options?.editMessageRef,
       optimistic: options?.optimisticEcho !== false,
-      submit: () => api.chatCommand(commandInput),
+      submit: async () => {
+        // Preserve the instant optimistic echo, then serialize the bounded
+        // runtime wake-up ahead of dispatch. A failed/old-gateway prepare is a
+        // soft degradation: chat.command remains the final wake signal.
+        await prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS).catch(
+          () => undefined,
+        );
+        return api.chatCommand(commandInput);
+      },
     });
 
     if (outcome.kind === "accepted") {
@@ -1940,6 +1944,9 @@ export default function GatewayApp() {
         // straight into the GUI queue. The pipeline slot (pre-first-token
         // spinner + watchdog) belongs to the first command; the queue panel
         // updates via command_update/run_queued and chat_queue events.
+        await prepareChatRuntime("send", api, CHAT_RUNTIME_PREPARE_TIMEOUT_MS).catch(
+          () => undefined,
+        );
         await api.chatCommand({
           type: "chat.submit",
           message: materialized.text,
@@ -2894,9 +2901,9 @@ export default function GatewayApp() {
       setPendingUploadsForConversation(activeConversationId, []);
 
       // Same pipeline path as a normal send, carrying the base message ref.
-      // The stream's seeded `rebased` event truncates the committed
-      // transcript at the edited message; the seeded `user_message` adopts
-      // the optimistic echo by client_request_id.
+      // The pipeline atomically truncates the visible suffix and inserts the
+      // optimistic replacement; the stream's seeded `rebased` event confirms
+      // it, and `user_message` adopts the bubble by client_request_id.
       try {
         await sendChatRef.current?.(normalized, {
           conversationId: activeConversationId,

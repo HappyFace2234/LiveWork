@@ -12,7 +12,7 @@ import { normalizeSubscribeResult, readEventConversationId, readEventSeq } from 
 // disconnects and are removed only by their cleanup function.
 
 type StreamTransport = {
-  request<T>(type: string, payload: unknown): Promise<T>;
+  request<T>(type: string, payload: unknown, options?: { timeoutMs?: number }): Promise<T>;
 };
 
 type Registration = {
@@ -24,16 +24,26 @@ type Registration = {
   syncing: boolean;
   resyncQueued: boolean;
   disposed: boolean;
+  retryAttempt: number;
+  retryTimer: ReturnType<typeof setTimeout> | null;
   // Live events that raced ahead of the chat.subscribe response; drained
   // after onSync (seq dedup drops the replay overlap).
   pendingEvents: ConversationStreamEvent[];
 };
 
 const MAX_PENDING_EVENTS = 512;
+const SUBSCRIBE_REQUEST_TIMEOUT_MS = 5_000;
+const SYNC_RETRY_INITIAL_DELAY_MS = 250;
+// Persistent failures (deleted conversation, permanent server-side rejects)
+// retry forever but back off far enough to stay negligible; transient
+// outages still recover within the first fast attempts.
+const SYNC_RETRY_MAX_DELAY_MS = 30_000;
+const SYNC_RETRY_MAX_EXPONENT = 7;
 
 export class ConversationStreamClient {
   private registrations = new Map<string, Registration>();
   private connected = false;
+  private connectionGeneration = 0;
 
   constructor(private readonly transport: StreamTransport) {}
 
@@ -49,6 +59,7 @@ export class ConversationStreamClient {
     const previous = this.registrations.get(normalized);
     if (previous) {
       previous.disposed = true;
+      this.clearRetry(previous);
     }
     const registration: Registration = {
       conversationId: normalized,
@@ -59,6 +70,8 @@ export class ConversationStreamClient {
       syncing: false,
       resyncQueued: false,
       disposed: false,
+      retryAttempt: 0,
+      retryTimer: null,
       pendingEvents: [],
     };
     this.registrations.set(normalized, registration);
@@ -67,6 +80,7 @@ export class ConversationStreamClient {
     }
     return () => {
       registration.disposed = true;
+      this.clearRetry(registration);
       if (this.registrations.get(normalized) === registration) {
         this.registrations.delete(normalized);
         if (this.connected) {
@@ -81,17 +95,28 @@ export class ConversationStreamClient {
   // The socket authenticated (first connect or reconnect): (re)issue
   // chat.subscribe for every registration with its resume cursor.
   handleConnected(): void {
+    if (this.connected) {
+      return;
+    }
     this.connected = true;
+    this.connectionGeneration += 1;
     for (const registration of this.registrations.values()) {
+      this.clearRetry(registration);
+      registration.retryAttempt = 0;
       registration.synced = false;
       void this.sync(registration);
     }
   }
 
   handleDisconnected(): void {
+    if (this.connected) {
+      this.connectionGeneration += 1;
+    }
     this.connected = false;
     for (const registration of this.registrations.values()) {
+      this.clearRetry(registration);
       registration.synced = false;
+      registration.resyncQueued = false;
       // Events buffered on the dead connection belong to its stream epoch;
       // the resume protocol re-fetches everything after lastSeq on
       // reconnect, so draining them later could only corrupt the transcript.
@@ -149,6 +174,7 @@ export class ConversationStreamClient {
     if (!registration || registration.disposed || !this.connected) {
       return;
     }
+    this.clearRetry(registration);
     void this.sync(registration);
   }
 
@@ -163,23 +189,45 @@ export class ConversationStreamClient {
         : "";
     const registration = conversationId ? this.registrations.get(conversationId) : undefined;
     if (registration && !registration.disposed) {
+      this.clearRetry(registration);
       void this.sync(registration);
     }
   }
 
   private async sync(registration: Registration): Promise<void> {
+    if (
+      !this.connected ||
+      registration.disposed ||
+      this.registrations.get(registration.conversationId) !== registration
+    ) {
+      return;
+    }
     if (registration.syncing) {
       registration.resyncQueued = true;
       return;
     }
+    this.clearRetry(registration);
     registration.syncing = true;
+    const connectionGeneration = this.connectionGeneration;
+    let shouldRetry = false;
     try {
-      const raw = await this.transport.request<unknown>("chat.subscribe", {
-        conversation_id: registration.conversationId,
-        after_seq: registration.lastSeq,
-        stream_epoch: registration.streamEpoch || undefined,
-      });
-      if (registration.disposed) {
+      const raw = await this.transport.request<unknown>(
+        "chat.subscribe",
+        {
+          conversation_id: registration.conversationId,
+          after_seq: registration.lastSeq,
+          stream_epoch: registration.streamEpoch || undefined,
+        },
+        {
+          timeoutMs: SUBSCRIBE_REQUEST_TIMEOUT_MS,
+        },
+      );
+      if (
+        registration.disposed ||
+        !this.connected ||
+        connectionGeneration !== this.connectionGeneration ||
+        this.registrations.get(registration.conversationId) !== registration
+      ) {
         return;
       }
       const result: ConversationSubscribeResult = normalizeSubscribeResult(
@@ -189,6 +237,7 @@ export class ConversationStreamClient {
       registration.streamEpoch = result.streamEpoch;
       registration.lastSeq = result.latestSeq;
       registration.synced = true;
+      registration.retryAttempt = 0;
       registration.handlers.onSync(result);
       const pending = registration.pendingEvents;
       registration.pendingEvents = [];
@@ -199,15 +248,65 @@ export class ConversationStreamClient {
         this.deliver(registration, event);
       }
     } catch {
-      // The transport reconnect loop will call handleConnected again; a
-      // failed subscribe leaves the registration unsynced until then.
-      registration.synced = false;
+      if (
+        !registration.disposed &&
+        this.connected &&
+        connectionGeneration === this.connectionGeneration &&
+        this.registrations.get(registration.conversationId) === registration
+      ) {
+        registration.synced = false;
+        shouldRetry = true;
+      }
     } finally {
       registration.syncing = false;
-      if (registration.resyncQueued && !registration.disposed) {
+      if (
+        registration.resyncQueued &&
+        !registration.disposed &&
+        this.connected &&
+        this.registrations.get(registration.conversationId) === registration
+      ) {
         registration.resyncQueued = false;
         void this.sync(registration);
+      } else if (shouldRetry) {
+        this.scheduleRetry(registration);
       }
     }
+  }
+
+  private scheduleRetry(registration: Registration): void {
+    if (
+      registration.retryTimer !== null ||
+      registration.disposed ||
+      !this.connected ||
+      this.registrations.get(registration.conversationId) !== registration
+    ) {
+      return;
+    }
+    const baseDelay = Math.min(
+      SYNC_RETRY_MAX_DELAY_MS,
+      SYNC_RETRY_INITIAL_DELAY_MS *
+        2 ** Math.min(registration.retryAttempt, SYNC_RETRY_MAX_EXPONENT),
+    );
+    registration.retryAttempt += 1;
+    const jitter = Math.floor(Math.random() * Math.min(250, Math.max(1, baseDelay / 2)));
+    registration.retryTimer = setTimeout(() => {
+      registration.retryTimer = null;
+      if (
+        registration.disposed ||
+        !this.connected ||
+        this.registrations.get(registration.conversationId) !== registration
+      ) {
+        return;
+      }
+      void this.sync(registration);
+    }, baseDelay + jitter);
+  }
+
+  private clearRetry(registration: Registration): void {
+    if (registration.retryTimer === null) {
+      return;
+    }
+    clearTimeout(registration.retryTimer);
+    registration.retryTimer = null;
   }
 }

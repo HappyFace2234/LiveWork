@@ -101,6 +101,7 @@ func TestWebsocketRequestHandlersCoverKnownProtocolTypes(t *testing.T) {
 		"workspace.subscribe",
 		"workspace.unsubscribe",
 		"chat.activities",
+		"chat.prepare",
 		"chat.command",
 		"chat.cancel",
 		"chat_queue.get",

@@ -15,8 +15,8 @@ function createTransport() {
     setResponder(fn) {
       responder = fn;
     },
-    request(type, payload) {
-      calls.push({ type, payload });
+    request(type, payload, options) {
+      calls.push({ type, payload, options });
       return Promise.resolve(responder(type, payload));
     },
   };
@@ -56,6 +56,24 @@ async function flushMicrotasks() {
   }
 }
 
+function waitFor(predicate, label, timeoutMs = 1_000) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const tick = () => {
+      if (predicate()) {
+        resolve();
+        return;
+      }
+      if (Date.now() - startedAt > timeoutMs) {
+        reject(new Error(`timed out waiting for ${label}`));
+        return;
+      }
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
+
 test("subscribes with resume cursor and re-subscribes after reconnect", async () => {
   const transport = createTransport();
   const client = new ConversationStreamClient(transport);
@@ -69,6 +87,7 @@ test("subscribes with resume cursor and re-subscribes after reconnect", async ()
   assert.equal(transport.calls.length, 1);
   assert.equal(transport.calls[0].type, "chat.subscribe");
   assert.equal(transport.calls[0].payload.after_seq, 0);
+  assert.equal(transport.calls[0].options.timeoutMs, 5_000);
   assert.equal(seen.syncs.length, 1);
 
   // Live events advance the cursor.
@@ -217,7 +236,76 @@ test("disconnect clears events buffered before the subscribe response", async ()
   await flushMicrotasks();
 
   assert.equal(seen.events.length, 0, "stale buffered events were dropped");
-  assert.ok(seen.syncs.length >= 1);
-  assert.equal(seen.syncs.at(-1).latestSeq, 3);
+  assert.equal(seen.syncs.length, 1, "the stale pre-disconnect response was ignored");
+  assert.equal(seen.syncs[0].latestSeq, 3);
 });
 
+test("handleConnected is idempotent for the same authenticated connection", async () => {
+  const transport = createTransport();
+  const client = new ConversationStreamClient(transport);
+  const { handlers } = collectHandlers();
+
+  transport.setResponder(() => subscribeResponse({ latest_seq: 1 }));
+  client.subscribe("conv-1", handlers);
+  client.handleConnected();
+  client.handleConnected();
+  await flushMicrotasks();
+
+  assert.equal(
+    transport.calls.filter((call) => call.type === "chat.subscribe").length,
+    1,
+  );
+});
+
+test("failed subscribe retries on the current connection and drains buffered pushes", async () => {
+  const transport = createTransport();
+  const client = new ConversationStreamClient(transport);
+  const { seen, handlers } = collectHandlers();
+  let attempt = 0;
+
+  transport.setResponder(() => {
+    attempt += 1;
+    if (attempt === 1) {
+      throw new Error("temporary subscribe failure");
+    }
+    return subscribeResponse({ latest_seq: 1 });
+  });
+  client.subscribe("conv-1", handlers);
+  client.handleConnected();
+  await flushMicrotasks();
+
+  client.handleChatEvent({
+    type: "token",
+    conversation_id: "conv-1",
+    run_id: "run-1",
+    seq: 2,
+    text: "recovered",
+  });
+  await waitFor(
+    () => transport.calls.filter((call) => call.type === "chat.subscribe").length === 2,
+    "subscribe retry",
+  );
+  await flushMicrotasks();
+
+  assert.equal(seen.syncs.length, 1);
+  assert.deepEqual(seen.events.map((event) => event.text), ["recovered"]);
+});
+
+test("disconnect and cleanup cancel scheduled subscribe retries", async () => {
+  const transport = createTransport();
+  const client = new ConversationStreamClient(transport);
+  const { handlers } = collectHandlers();
+
+  transport.setResponder(() => {
+    throw new Error("temporary subscribe failure");
+  });
+  const cleanup = client.subscribe("conv-1", handlers);
+  client.handleConnected();
+  await flushMicrotasks();
+  assert.equal(transport.calls.length, 1);
+
+  client.handleDisconnected();
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(transport.calls.length, 1, "no retry fires after disconnect/cleanup");
+});

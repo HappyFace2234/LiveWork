@@ -252,7 +252,7 @@ docker run -p 8080:8080 -p 50051:50051 \
 
 - **桌面端是真相源** — 工具执行、持久化、秘钥全部留在本地
 - **Gateway 不越权** — 不访问文件系统、不存 API Key，只做中继
-- **长对话可恢复** — Segment + Summary + SQLite Event Log
+- **长对话可恢复** — 桌面 Segment + Summary 持久化，Gateway 有界 seq window 补齐短时断线
 - **功能域清晰** — Chat / Tools / Memory / Skills / MCP / Cron 各自独立
 - **渐进式复杂度** — Skills 按需加载，MCP 按需桥接，SubAgent 按需委派
 

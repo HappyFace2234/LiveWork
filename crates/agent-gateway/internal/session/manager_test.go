@@ -2,9 +2,40 @@ package session
 
 import (
 	"testing"
+	"time"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
+
+func TestChatRuntimeProbeFreshnessIsBoundToSessionEpoch(t *testing.T) {
+	manager := NewManager()
+	first := NewAgentSession(AuthSnapshot{SessionID: "session-1"})
+	manager.SetSession(first)
+
+	firstEpoch, online := manager.ChatRuntimeProbeEpoch()
+	if !online || firstEpoch == 0 {
+		t.Fatalf("first probe epoch = %d online=%v", firstEpoch, online)
+	}
+	if !manager.RecordChatRuntimeProbe(firstEpoch) ||
+		!manager.ChatRuntimeProbeFresh(time.Second) {
+		t.Fatal("recorded probe should be fresh for the current session")
+	}
+
+	second := NewAgentSession(AuthSnapshot{SessionID: "session-2"})
+	manager.SetSession(second)
+	t.Cleanup(func() { manager.ClearSession(second) })
+	if manager.ChatRuntimeProbeFresh(time.Second) {
+		t.Fatal("replacing the agent session must invalidate probe freshness")
+	}
+	if manager.RecordChatRuntimeProbe(firstEpoch) {
+		t.Fatal("an old session epoch must not mark the replacement session fresh")
+	}
+
+	secondEpoch, online := manager.ChatRuntimeProbeEpoch()
+	if !online || secondEpoch == firstEpoch || !manager.RecordChatRuntimeProbe(secondEpoch) {
+		t.Fatalf("replacement probe epoch = %d online=%v", secondEpoch, online)
+	}
+}
 
 func TestApplySettingsJSONPreservingRemoteKeepsDesktopTerminalSetting(t *testing.T) {
 	manager := NewManager()

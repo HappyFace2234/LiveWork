@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Once};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -23,8 +23,8 @@ use crate::commands::settings::RemoteSettingsPayload;
 use crate::runtime::managed_process::ManagedProcessRegistry;
 use crate::runtime::sftp::SftpSessionRegistry;
 use crate::runtime::terminal::TerminalSessionRegistry;
-use crate::services::chat_run_ledger::ChatRunLedger;
 use crate::services::automation::AutomationStore;
+use crate::services::chat_run_ledger::ChatRunLedger;
 use crate::services::memory::MemoryStore;
 use crate::services::tunnel::{TunnelProxy, TunnelStore};
 use crate::services::workspace_watch::WorkspaceWatchService;
@@ -68,7 +68,15 @@ pub(crate) const UI_ONLY_SETTINGS_SYNC_FIELDS: &[&str] = &[
     "locale",
 ];
 pub(crate) const GATEWAY_GRPC_MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
-pub(crate) const GATEWAY_RECONNECT_DELAY: Duration = Duration::from_secs(5);
+// Small dedicated lane for latency-sensitive control replies (Pongs). It is
+// merged into the same gRPC outbound stream but never sits behind thousands
+// of queued data envelopes, so wake probes stay answerable while a reply is
+// streaming tokens through the saturated data queue.
+pub(crate) const GATEWAY_OUTBOUND_CONTROL_QUEUE_DEPTH: usize = 64;
+pub(crate) const GATEWAY_RECONNECT_MIN: Duration = Duration::from_millis(250);
+pub(crate) const GATEWAY_RECONNECT_MAX: Duration = Duration::from_secs(5);
+pub(crate) const GATEWAY_RECONNECT_STABLE_AFTER: Duration = Duration::from_secs(30);
+pub(crate) const GATEWAY_POST_CONNECT_REPLAY_DELAY: Duration = Duration::from_millis(200);
 pub(crate) const GATEWAY_TERMINAL_STREAM_RECONNECT_MIN: Duration = Duration::from_millis(250);
 pub(crate) const GATEWAY_TERMINAL_STREAM_RECONNECT_MAX: Duration = Duration::from_secs(5);
 pub(crate) const GATEWAY_TERMINAL_STREAM_STABLE_AFTER: Duration = Duration::from_secs(30);
@@ -85,6 +93,9 @@ pub(crate) const GATEWAY_CHAT_LEASE_SWEEP_INTERVAL: Duration = Duration::from_se
 // throttled) or has said "suspended".
 pub(crate) const GATEWAY_RUNTIME_STATUS_REPUBLISH_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) const GATEWAY_RUNTIME_STATUS_REPUBLISH_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+pub(crate) const GATEWAY_CHAT_RUNTIME_WAKE_REQUEST_PREFIX: &str = "chat-runtime-wake-";
+pub(crate) const GATEWAY_CHAT_RUNTIME_WAKE_EVENT: &str = "gateway:chat-runtime-wake";
+pub(crate) const GATEWAY_CONNECTION_NUDGE_COOLDOWN: Duration = Duration::from_secs(1);
 
 pub struct GatewayController {
     app_handle: tauri::AppHandle,
@@ -97,11 +108,13 @@ pub struct GatewayController {
     runner_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     status: Mutex<GatewayStatusSnapshot>,
     outbound_tx: Mutex<Option<mpsc::Sender<proto::AgentEnvelope>>>,
+    outbound_control_tx: Mutex<Option<mpsc::Sender<proto::AgentEnvelope>>>,
     terminal_stream_tx: Mutex<Option<mpsc::Sender<proto::TerminalStreamFrame>>>,
     settings_snapshot: Mutex<Option<Value>>,
     remote_chat_inbox: Mutex<HashMap<String, RemoteChatInboxRecord>>,
     chat_run_ledger: Mutex<ChatRunLedger>,
     runtime_status_republish: Mutex<Option<RuntimeStatusRepublishRecord>>,
+    last_connection_nudge: Mutex<Option<Instant>>,
     pub(crate) tunnel_store: TunnelStore,
     pub(crate) tunnel_proxy: TunnelProxy,
     pub(crate) workspace_watch: Arc<WorkspaceWatchService>,

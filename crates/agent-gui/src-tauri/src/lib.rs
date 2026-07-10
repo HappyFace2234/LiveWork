@@ -225,6 +225,7 @@ macro_rules! app_invoke_handler {
             commands::gateway::gateway_connect,
             commands::gateway::gateway_disconnect,
             commands::gateway::gateway_status,
+            commands::gateway::gateway_nudge_connection,
             commands::gateway::gateway_send_chat_event,
             commands::gateway::gateway_chat_claim_next,
             commands::gateway::gateway_chat_mark_started,
@@ -392,7 +393,8 @@ pub fn run() {
         services::memory::MemoryStore::open().expect("failed to initialize LiveAgent memory store"),
     );
     let power_activity = Arc::new(services::power_activity::PowerActivityManager::default());
-    let managed_process_registry = Arc::new(runtime::managed_process::ManagedProcessRegistry::open());
+    let managed_process_registry =
+        Arc::new(runtime::managed_process::ManagedProcessRegistry::open());
     let terminal_registry = Arc::new(runtime::terminal::TerminalSessionRegistry::default());
     let sftp_registry = Arc::new(runtime::sftp::SftpSessionRegistry::new(Arc::clone(
         &terminal_registry,
@@ -488,6 +490,15 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(move |_app, event| match event {
+        tauri::RunEvent::Resumed => {
+            if let Some(gateway_controller) =
+                _app.try_state::<Arc<services::gateway::GatewayController>>()
+            {
+                if let Err(error) = gateway_controller.nudge_connection("app_resumed", true) {
+                    eprintln!("failed to nudge gateway connection after app resume: {error}");
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Reopen { .. } => {
             if let Err(error) = show_main_window(_app) {

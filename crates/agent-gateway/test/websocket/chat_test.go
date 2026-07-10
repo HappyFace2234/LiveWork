@@ -184,6 +184,7 @@ func TestChatCommandSubmitSeedsUserMessageAndDeliversEnvelope(t *testing.T) {
 			"client_request_id": "client-1",
 		},
 	})
+	answerChatRuntimeProbe(t, sm, agentSession)
 
 	resp := decodePayload(t, receiveEnvelopeWithID(t, conn, "cmd-1"))
 	runID, _ := resp["run_id"].(string)
@@ -192,6 +193,9 @@ func TestChatCommandSubmitSeedsUserMessageAndDeliversEnvelope(t *testing.T) {
 	}
 	if seq, ok := resp["accepted_seq"].(float64); !ok || seq <= 0 {
 		t.Fatalf("accepted_seq = %#v, want > 0", resp["accepted_seq"])
+	}
+	if resp["deduped"] != false {
+		t.Fatalf("first command deduped = %#v, want false", resp["deduped"])
 	}
 
 	seeded := receiveEventOfType(t, conn, "chat.event")
@@ -210,6 +214,39 @@ func TestChatCommandSubmitSeedsUserMessageAndDeliversEnvelope(t *testing.T) {
 	if command.GetRequest().GetMessage() != "hello agent" ||
 		command.GetRequest().GetClientRequestId() != "client-1" {
 		t.Fatalf("chat command request = %#v", command.GetRequest())
+	}
+
+	// A retry with the same client_request_id returns the canonical run through
+	// the priority response path. It must neither probe nor dispatch nor seed a
+	// second user message.
+	sendEnvelope(t, conn, "cmd-2", "chat.command", map[string]any{
+		"type": "chat.submit",
+		"payload": map[string]any{
+			"message":           "hello agent",
+			"conversation_id":   "conversation-1",
+			"client_request_id": "client-1",
+		},
+	})
+	retry := decodePayload(t, receiveEnvelopeWithID(t, conn, "cmd-2"))
+	if retry["run_id"] != runID || retry["deduped"] != true {
+		t.Fatalf("deduplicated command response = %#v, want run %q", retry, runID)
+	}
+	select {
+	case duplicate := <-agentSession.Outbound():
+		duplicate.Ack(nil)
+		t.Fatalf("deduplicated command dispatched another envelope: %#v", duplicate.GatewayEnvelope)
+	case <-time.After(50 * time.Millisecond):
+	}
+	replay := sm.SubscribeConversationStream("conversation-1", 0, "")
+	userMessages := 0
+	for _, event := range replay.Events {
+		if event.Type == "user_message" {
+			userMessages++
+		}
+	}
+	replay.Cleanup()
+	if userMessages != 1 {
+		t.Fatalf("deduplicated command seeded %d user messages, want 1", userMessages)
 	}
 
 	// The agent's user_message echo is swallowed: the next stream event after
@@ -234,6 +271,46 @@ func TestChatCommandSubmitSeedsUserMessageAndDeliversEnvelope(t *testing.T) {
 	next := receiveEventOfType(t, conn, "chat.event")
 	if next["type"] != "token" || next["text"] != "reply" {
 		t.Fatalf("expected token after swallowed echo, got %#v", next)
+	}
+}
+
+func TestChatPrepareProbesAgentAndReturnsStatus(t *testing.T) {
+	t.Parallel()
+
+	sm, agentSession, conn, cleanup := newChatWebSocketTest(t)
+	defer cleanup()
+
+	sendEnvelope(t, conn, "prepare-1", "chat.prepare", map[string]any{
+		"reason": "foreground",
+	})
+	answerChatRuntimeProbe(t, sm, agentSession)
+
+	status := decodePayload(t, receiveEnvelopeWithID(t, conn, "prepare-1"))
+	if status["online"] != true || status["agent_ready"] != true {
+		t.Fatalf("chat.prepare status = %#v", status)
+	}
+	if status["chat_runtime_ready"] != false {
+		t.Fatalf("chat.prepare runtime readiness = %#v, want false without heartbeat", status)
+	}
+
+	// The immediately following command reuses the session-bound successful
+	// prepare result. Its next native envelope must be the command itself, not a
+	// second Ping that adds another round trip to the normal send path.
+	sendEnvelope(t, conn, "cmd-after-prepare", "chat.command", map[string]any{
+		"type": "chat.submit",
+		"payload": map[string]any{
+			"message":           "hello after prepare",
+			"conversation_id":   "conversation-prepare",
+			"client_request_id": "client-prepare",
+		},
+	})
+	accepted := decodePayload(t, receiveEnvelopeWithID(t, conn, "cmd-after-prepare"))
+	if runID, ok := accepted["run_id"].(string); !ok || runID == "" {
+		t.Fatalf("command after prepare response = %#v", accepted)
+	}
+	command := readOutboundEnvelope(t, agentSession)
+	if command.GetChatCommand() == nil || command.GetPing() != nil {
+		t.Fatalf("command after fresh prepare = %#v, want ChatCommand without another Ping", command)
 	}
 }
 

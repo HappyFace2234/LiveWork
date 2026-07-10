@@ -140,10 +140,10 @@ func (s *GRPCServer) AgentConnect(stream gatewayv1.AgentGateway_AgentConnectServ
 		// Any inbound envelope proves the agent is alive; a streaming agent
 		// must never be declared heartbeat-stale.
 		s.sm.TouchHeartbeat(sess)
-		if env.GetPong() != nil {
-			continue
-		}
-
+		// Pongs flow through the same dispatch as every other envelope:
+		// correlated probes registered a request stream before sending their
+		// Ping and match by request_id, while periodic heartbeat Pongs have
+		// no registered stream and are harmlessly ignored there.
 		s.sm.DispatchFromAgentForSession(sess, env)
 	}
 }

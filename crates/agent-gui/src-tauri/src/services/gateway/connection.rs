@@ -1,12 +1,13 @@
 use std::future::Future;
 use std::sync::{Arc, Once};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::Url;
 use serde_json::Value;
 use tauri::Emitter;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt as _;
 use tonic::metadata::MetadataValue;
 use tonic::transport::{ClientTlsConfig, Endpoint};
 
@@ -16,15 +17,26 @@ use crate::services::gateway_bridge;
 
 use super::*;
 
+struct AbortTaskOnDrop(tauri::async_runtime::JoinHandle<()>);
+
+impl Drop for AbortTaskOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 impl GatewayController {
     pub(crate) async fn run(
         self: Arc<Self>,
         mut config_rx: watch::Receiver<RemoteSettingsPayload>,
     ) {
+        let mut reconnect_delay = GATEWAY_RECONNECT_MIN;
         loop {
             let config = config_rx.borrow().clone();
             if !config.enabled || !is_remote_configured(&config) {
+                reconnect_delay = GATEWAY_RECONNECT_MIN;
                 self.set_outbound_sender(None);
+                self.set_outbound_control_sender(None);
                 self.set_terminal_stream_sender(None);
                 self.publish_disconnected_status(&config, None);
                 if config_rx.changed().await.is_err() {
@@ -34,6 +46,7 @@ impl GatewayController {
             }
 
             let current_config = config.clone();
+            let attempt_started = Instant::now();
             let connect_result = self
                 .connect_and_serve(current_config.clone(), &mut config_rx)
                 .await;
@@ -41,24 +54,34 @@ impl GatewayController {
             let reconfigured = latest_config != current_config;
 
             self.set_outbound_sender(None);
+            self.set_outbound_control_sender(None);
             self.set_terminal_stream_sender(None);
             if reconfigured {
+                reconnect_delay = GATEWAY_RECONNECT_MIN;
                 self.publish_disconnected_status(&latest_config, None);
                 continue;
             }
 
-            self.publish_disconnected_status(&current_config, connect_result.as_ref().err().cloned());
+            self.publish_disconnected_status(
+                &current_config,
+                connect_result.as_ref().err().cloned(),
+            );
 
             if config_rx.has_changed().unwrap_or(false) {
                 continue;
             }
 
             if !current_config.auto_reconnect {
+                reconnect_delay = GATEWAY_RECONNECT_MIN;
                 if config_rx.changed().await.is_err() {
                     break;
                 }
                 continue;
             }
+
+            let (delay, next_delay) =
+                gateway_reconnect_backoff(reconnect_delay, attempt_started.elapsed());
+            reconnect_delay = next_delay;
 
             tokio::select! {
                 changed = config_rx.changed() => {
@@ -66,7 +89,7 @@ impl GatewayController {
                         break;
                     }
                 }
-                _ = tokio::time::sleep(GATEWAY_RECONNECT_DELAY) => {}
+                _ = tokio::time::sleep(delay) => {}
             }
         }
     }
@@ -118,12 +141,20 @@ impl GatewayController {
 
         let (outbound_tx, outbound_rx) = mpsc::channel::<proto::AgentEnvelope>(4096);
         self.set_outbound_sender(Some(outbound_tx));
+        // Control lane: Pong replies must not queue behind streamed data
+        // envelopes, or wake probes time out precisely when a reply is
+        // saturating the data queue. Merged fairly into the same stream below.
+        let (outbound_control_tx, outbound_control_rx) =
+            mpsc::channel::<proto::AgentEnvelope>(GATEWAY_OUTBOUND_CONTROL_QUEUE_DEPTH);
+        self.set_outbound_control_sender(Some(outbound_control_tx));
         let (terminal_stop_tx, terminal_stop_rx) = watch::channel(false);
         let terminal_task =
             self.spawn_terminal_stream(terminal_client, config.clone(), terminal_stop_rx);
 
         let serve_result = async {
-            let mut connect_request = tonic::Request::new(ReceiverStream::new(outbound_rx));
+            let mut connect_request = tonic::Request::new(
+                ReceiverStream::new(outbound_control_rx).merge(ReceiverStream::new(outbound_rx)),
+            );
             insert_bearer_metadata(connect_request.metadata_mut(), &config.token)?;
 
             let connect_call = client.agent_connect(connect_request);
@@ -153,48 +184,36 @@ impl GatewayController {
                 status.last_error = None;
             });
 
-            if let Err(error) = self.publish_current_settings_sync().await {
-                eprintln!("publish gateway settings sync failed: {error}");
-            }
-            if let Err(error) = self.publish_current_terminal_sessions().await {
-                eprintln!("publish gateway terminal sessions failed: {error}");
-            }
-            if let Err(error) = self.publish_desired_tunnels().await {
-                eprintln!("publish gateway tunnel desired state failed: {error}");
-            }
-            if let Err(error) = self.publish_current_managed_processes().await {
-                eprintln!("publish gateway managed processes failed: {error}");
-            }
-            if let Err(error) = self.republish_chat_run_states().await {
-                eprintln!("republish gateway chat run states failed: {error}");
-            }
-            self.spawn_tunnel_probes(None, false);
+            let _reconcile_task = AbortTaskOnDrop(self.spawn_post_connect_reconciliation());
 
             // Dead links are detected by the transport-level HTTP/2 keepalive
             // configured on the endpoint and surface as receive errors here.
-            loop {
+            let receive_result = loop {
                 tokio::select! {
                     changed = config_rx.changed() => {
                         if changed.is_err() {
-                            return Ok(());
+                            break Ok(());
                         }
                         let next = config_rx.borrow().clone();
                         if next != config {
-                            return Ok(());
+                            break Ok(());
                         }
                     }
                     message = inbound.message() => {
                         match message {
-                            Err(err) => return Err(format!("gateway stream receive failed: {err}")),
-                            Ok(None) => return Err("gateway stream closed".to_string()),
+                            Err(err) => break Err(format!("gateway stream receive failed: {err}")),
+                            Ok(None) => break Err("gateway stream closed".to_string()),
                             Ok(Some(envelope)) => {
                                 self.touch_heartbeat();
-                                self.handle_gateway_envelope(envelope).await?;
+                                if let Err(error) = self.handle_gateway_envelope(envelope).await {
+                                    break Err(error);
+                                }
                             }
                         }
                     }
                 }
-            }
+            };
+            receive_result
         }
         .await;
 
@@ -202,6 +221,54 @@ impl GatewayController {
         terminal_task.abort();
         self.set_terminal_stream_sender(None);
         serve_result
+    }
+
+    pub(crate) fn spawn_post_connect_reconciliation(
+        self: &Arc<Self>,
+    ) -> tauri::async_runtime::JoinHandle<()> {
+        let controller = Arc::clone(self);
+        tauri::async_runtime::spawn(async move {
+            // Runtime readiness is control-plane state: restore it immediately
+            // on the fresh stream before low-priority snapshots begin replaying.
+            if let Some((worker_id, state, visible, active_run_count)) =
+                controller.runtime_status_republish_snapshot()
+            {
+                if let Err(error) = controller
+                    .send_chat_runtime_status_envelope(worker_id, state, visible, active_run_count)
+                    .await
+                {
+                    eprintln!(
+                        "republish gateway chat runtime status after connect failed: {error}"
+                    );
+                }
+            }
+
+            // Give Ping/chat control traffic a short uncontended window. The
+            // snapshots below are reconciliation data and must never delay the
+            // first command received after wake or reconnect.
+            tokio::time::sleep(GATEWAY_POST_CONNECT_REPLAY_DELAY).await;
+
+            if let Err(error) = controller.publish_current_settings_sync().await {
+                eprintln!("publish gateway settings sync failed: {error}");
+            }
+            tokio::task::yield_now().await;
+            if let Err(error) = controller.publish_current_terminal_sessions().await {
+                eprintln!("publish gateway terminal sessions failed: {error}");
+            }
+            tokio::task::yield_now().await;
+            if let Err(error) = controller.publish_desired_tunnels().await {
+                eprintln!("publish gateway tunnel desired state failed: {error}");
+            }
+            tokio::task::yield_now().await;
+            if let Err(error) = controller.publish_current_managed_processes().await {
+                eprintln!("publish gateway managed processes failed: {error}");
+            }
+            tokio::task::yield_now().await;
+            if let Err(error) = controller.republish_chat_run_states().await {
+                eprintln!("republish gateway chat run states failed: {error}");
+            }
+            controller.spawn_tunnel_probes(None, false);
+        })
     }
 
     pub(crate) async fn send_agent_envelope(
@@ -220,6 +287,16 @@ impl GatewayController {
             .map_err(|_| "gateway outbound sender lock poisoned".to_string())?
             .clone()
             .ok_or_else(|| "gateway outbound stream is offline".to_string())
+    }
+
+    pub(crate) fn current_outbound_control_sender(
+        &self,
+    ) -> Result<mpsc::Sender<proto::AgentEnvelope>, String> {
+        self.outbound_control_tx
+            .lock()
+            .map_err(|_| "gateway outbound control sender lock poisoned".to_string())?
+            .clone()
+            .ok_or_else(|| "gateway outbound control lane is offline".to_string())
     }
 
     pub(crate) fn current_terminal_stream_sender(
@@ -268,6 +345,15 @@ impl GatewayController {
 
     pub(crate) fn set_outbound_sender(&self, sender: Option<mpsc::Sender<proto::AgentEnvelope>>) {
         if let Ok(mut slot) = self.outbound_tx.lock() {
+            *slot = sender;
+        }
+    }
+
+    pub(crate) fn set_outbound_control_sender(
+        &self,
+        sender: Option<mpsc::Sender<proto::AgentEnvelope>>,
+    ) {
+        if let Ok(mut slot) = self.outbound_control_tx.lock() {
             *slot = sender;
         }
     }
@@ -344,6 +430,7 @@ impl GatewayController {
                 ssh_tabs: None,
             }))
             .await?;
+            tokio::task::yield_now().await;
         }
         Ok(())
     }

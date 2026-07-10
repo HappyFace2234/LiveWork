@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::sync::watch;
 
@@ -12,8 +12,8 @@ use crate::commands::settings::{
 use crate::runtime::managed_process::ManagedProcessRegistry;
 use crate::runtime::sftp::SftpSessionRegistry;
 use crate::runtime::terminal::TerminalSessionRegistry;
-use crate::services::chat_run_ledger::{ChatRunLedger, ChatRunLedgerState};
 use crate::services::automation::AutomationStore;
+use crate::services::chat_run_ledger::{ChatRunLedger, ChatRunLedgerState};
 use crate::services::memory::MemoryStore;
 use crate::services::tunnel::{TunnelProxy, TunnelStore};
 use crate::services::workspace_watch::WorkspaceWatchService;
@@ -54,11 +54,13 @@ impl GatewayController {
                 last_error: None,
             }),
             outbound_tx: Mutex::new(None),
+            outbound_control_tx: Mutex::new(None),
             terminal_stream_tx: Mutex::new(None),
             settings_snapshot: Mutex::new(None),
             remote_chat_inbox: Mutex::new(HashMap::new()),
             chat_run_ledger: Mutex::new(ChatRunLedger::new()),
             runtime_status_republish: Mutex::new(None),
+            last_connection_nudge: Mutex::new(None),
             tunnel_store,
             tunnel_proxy: TunnelProxy::new(),
             workspace_watch,
@@ -172,7 +174,12 @@ impl GatewayController {
                         continue;
                     };
                     if let Err(error) = controller
-                        .send_chat_runtime_status_envelope(worker_id, state, visible, active_run_count)
+                        .send_chat_runtime_status_envelope(
+                            worker_id,
+                            state,
+                            visible,
+                            active_run_count,
+                        )
                         .await
                     {
                         eprintln!("republish gateway chat runtime status failed: {error}");
@@ -212,6 +219,7 @@ impl GatewayController {
 
     pub(crate) fn restart_runner(self: &Arc<Self>) -> Result<(), String> {
         self.set_outbound_sender(None);
+        self.set_outbound_control_sender(None);
         self.set_terminal_stream_sender(None);
         let mut runner_task = self
             .runner_task
@@ -222,6 +230,57 @@ impl GatewayController {
         }
         self.spawn_runner(&mut runner_task);
         Ok(())
+    }
+
+    pub fn wake_chat_runtime(&self, reason: &str) -> Result<(), String> {
+        self.app_handle
+            .emit(
+                GATEWAY_CHAT_RUNTIME_WAKE_EVENT,
+                json!({ "reason": reason.trim() }),
+            )
+            .map_err(|error| format!("emit gateway chat runtime wake failed: {error}"))
+    }
+
+    pub fn nudge_connection(
+        self: &Arc<Self>,
+        reason: &str,
+        force_reconnect: bool,
+    ) -> Result<bool, String> {
+        let config = self.config_tx.borrow().clone();
+        if !config.enabled || !is_remote_configured(&config) {
+            return Ok(false);
+        }
+
+        if let Err(error) = self.wake_chat_runtime(reason) {
+            eprintln!("wake gateway chat runtime during connection nudge failed: {error}");
+        }
+
+        let status = self.status();
+        if !force_reconnect
+            && !gateway_connection_needs_restart(&status, &config, now_unix_seconds())
+        {
+            return Ok(false);
+        }
+
+        let now = Instant::now();
+        {
+            let mut last_nudge = self
+                .last_connection_nudge
+                .lock()
+                .map_err(|_| "gateway connection nudge lock poisoned".to_string())?;
+            if last_nudge
+                .map(|previous| {
+                    now.saturating_duration_since(previous) < GATEWAY_CONNECTION_NUDGE_COOLDOWN
+                })
+                .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+            *last_nudge = Some(now);
+        }
+
+        self.restart_runner()?;
+        Ok(true)
     }
 
     pub async fn reload_from_db(self: &Arc<Self>) -> Result<(), String> {

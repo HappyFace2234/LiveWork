@@ -345,8 +345,17 @@ func (s *conversationStreamStore) bindPendingRunLocked(
 	record := s.runRecordLocked(pending.runID, conversationID)
 	record.clientRequestID = pending.clientRequestID
 	s.markRunQueuedLocked(stream, pending.runID, pending.clientRequestID, now)
-	s.appendSeededPayloadsLocked(stream, pending.runID, pending.clientRequestID, pending.seeded, now)
+	acceptedSeq := s.appendSeededPayloadsLocked(
+		stream, pending.runID, pending.clientRequestID, pending.seeded, now,
+	)
 	record.userMessageSeeded = seededPayloadsIncludeUserMessage(pending.seeded)
+	s.updateChatCommandDedupeLocked(
+		pending.clientRequestID,
+		pending.runID,
+		conversationID,
+		acceptedSeq,
+		now,
+	)
 	s.fireCommandUpdateLocked(ChatCommandUpdate{
 		RunID:           pending.runID,
 		ClientRequestID: pending.clientRequestID,

@@ -89,6 +89,25 @@ func TestWriteEnvelopeRoutesControlTypesToControlQueue(t *testing.T) {
 	}
 }
 
+func TestWritePriorityResponseUsesControlQueue(t *testing.T) {
+	t.Parallel()
+
+	c := newEnqueueTestConnection(1, 50*time.Millisecond)
+	c.outbox <- websocketEnvelope{Type: "chat.event"}
+
+	if err := c.writePriorityResponse("cmd-1", map[string]any{"run_id": "run-1"}); err != nil {
+		t.Fatalf("writePriorityResponse: %v", err)
+	}
+	select {
+	case envelope := <-c.ctrlOutbox:
+		if envelope.ID != "cmd-1" || envelope.Type != "response" || !envelope.priority {
+			t.Fatalf("priority response envelope = %#v", envelope)
+		}
+	default:
+		t.Fatal("priority response was not routed to the control queue")
+	}
+}
+
 func TestWriteEnvelopeQueueFullDoesNotCloseConnection(t *testing.T) {
 	t.Parallel()
 

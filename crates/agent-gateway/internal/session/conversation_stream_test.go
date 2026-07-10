@@ -395,6 +395,98 @@ func TestFailChatCommandPendingAndBound(t *testing.T) {
 	}
 }
 
+func TestStartChatCommandDeduplicatesAtomically(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager()
+	results := make(chan ChatCommandStart, 2)
+	start := func(runID string, message string) {
+		results <- m.StartChatCommand(runID, "conv-1", "/workspace", "client-shared", []map[string]any{
+			{"type": "user_message", "message": message},
+		})
+	}
+	go start("run-a", "first")
+	go start("run-b", "second")
+	first := <-results
+	second := <-results
+
+	if first.RunID != second.RunID {
+		t.Fatalf("concurrent canonical runs = %q and %q", first.RunID, second.RunID)
+	}
+	if first.Deduped == second.Deduped {
+		t.Fatalf("dedupe flags = %v and %v, want exactly one canonical creator", first.Deduped, second.Deduped)
+	}
+	canonical, ok := m.LookupChatCommand("client-shared")
+	if !ok || canonical.RunID != first.RunID || !canonical.Deduped {
+		t.Fatalf("canonical lookup = %#v, ok=%v", canonical, ok)
+	}
+
+	sub := m.SubscribeConversationStream("conv-1", 0, "")
+	defer sub.Cleanup()
+	userMessages := 0
+	for _, event := range sub.Events {
+		if event.Type == "user_message" {
+			userMessages++
+		}
+	}
+	if userMessages != 1 {
+		t.Fatalf("concurrent dedupe seeded %d user messages, want 1", userMessages)
+	}
+}
+
+func TestDeduplicatedPendingCommandReplaysBoundUpdate(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager()
+	start := m.StartChatCommand("run-original", "", "/workspace", "client-bound", []map[string]any{
+		{"type": "user_message", "message": "hello"},
+	})
+	if start.Deduped {
+		t.Fatalf("initial command unexpectedly deduped: %#v", start)
+	}
+	m.ingestChatControl("run-original", startedControl("run-original", "conv-bound"))
+
+	retry := m.StartChatCommand("run-retry", "", "/other", "client-bound", []map[string]any{
+		{"type": "user_message", "message": "duplicate"},
+	})
+	if !retry.Deduped || retry.RunID != "run-original" || retry.ConversationID != "conv-bound" || retry.AcceptedSeq <= 0 {
+		t.Fatalf("deduplicated bound command = %#v", retry)
+	}
+	updates, cleanup := m.WatchChatCommand(retry.RunID)
+	defer cleanup()
+	select {
+	case update := <-updates:
+		if update.Phase != "bound" || update.ConversationID != "conv-bound" {
+			t.Fatalf("replayed bound update = %#v", update)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replayed bound update")
+	}
+}
+
+func TestDeduplicatedPendingCommandReplaysFailedUpdate(t *testing.T) {
+	t.Parallel()
+
+	m := NewManager()
+	m.StartChatCommand("run-failed", "", "", "client-failed", nil)
+	m.FailChatCommand("run-failed", "desktop_runtime_unavailable", "delivery timed out")
+
+	retry := m.StartChatCommand("run-retry", "", "", "client-failed", nil)
+	if !retry.Deduped || retry.RunID != "run-failed" {
+		t.Fatalf("deduplicated failed command = %#v", retry)
+	}
+	updates, cleanup := m.WatchChatCommand(retry.RunID)
+	defer cleanup()
+	select {
+	case update := <-updates:
+		if update.Phase != "failed" || update.ErrorCode != "desktop_runtime_unavailable" {
+			t.Fatalf("replayed failed update = %#v", update)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replayed failed update")
+	}
+}
+
 func TestActivityHubCarriesRunIDs(t *testing.T) {
 	m := NewManager()
 	activity, cleanup := m.SubscribeChatActivity()

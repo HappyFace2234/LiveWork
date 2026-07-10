@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import type { HistoryMessageRef } from "../../../lib/chat/conversation/conversationState";
 import { normalizeChatRuntimeControls, normalizeSystemToolSelection } from "../../../lib/settings";
@@ -136,28 +136,24 @@ function normalizeGatewayBaseMessageRef(value: unknown): HistoryMessageRef | und
 }
 
 export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParams) {
-  const {
-    currentConversationIdRef,
-    conversationRuntimeCacheRef,
-    ensureGatewayBridgeConversationReadyRef,
-    sendActionRef,
-    queueGatewayBridgeEventForRequest,
-    shouldQueueGatewayChatRequest,
-    enqueueGatewayChatRequest,
-    isConversationRunning,
-    getConversationAbortController,
-  } = params;
+  const latestParamsRef = useRef(params);
+  latestParamsRef.current = params;
+  const workerIdRef = useRef("");
+  if (!workerIdRef.current) {
+    workerIdRef.current =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? `gateway-chat-runtime-${crypto.randomUUID()}`
+        : `gateway-chat-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 
   useEffect(() => {
     let disposed = false;
     let unlistenChatRequestReady: (() => void) | null = null;
+    let unlistenChatRuntimeWake: (() => void) | null = null;
     let unlistenChatCancel: (() => void) | null = null;
     let unlistenGatewayStatus: (() => void) | null = null;
     let drainInFlight = false;
-    const workerId =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? `gateway-chat-runtime-${crypto.randomUUID()}`
-        : `gateway-chat-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const workerId = workerIdRef.current;
     const heartbeatTimers = new Map<string, number>();
 
     const activeRuntimeRequestCount = () =>
@@ -335,7 +331,10 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
     const markQueuedInGui = async (claimed: GatewayChatClaimedRequest, conversationId: string) => {
       const requestId = claimed.requestId.trim();
       if (!requestId) return false;
-      const queued = await enqueueGatewayChatRequest(claimed, conversationId);
+      const queued = await latestParamsRef.current.enqueueGatewayChatRequest(
+        claimed,
+        conversationId,
+      );
       if (!queued) return false;
       await invoke("gateway_chat_mark_queued_in_gui", {
         request_id: requestId,
@@ -363,7 +362,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
       }
       startHeartbeat(requestId);
       if (!message && uploadedFiles.length === 0) {
-        queueGatewayBridgeEventForRequest(
+        latestParamsRef.current.queueGatewayBridgeEventForRequest(
           requestId,
           {
             type: "error",
@@ -432,7 +431,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
             : undefined;
         if (payload.rebased === true && !baseMessageRef) {
           const message = "Remote edit_resend command is missing base_message_ref.";
-          queueGatewayBridgeEventForRequest(
+          latestParamsRef.current.queueGatewayBridgeEventForRequest(
             requestId,
             {
               type: "error",
@@ -450,9 +449,12 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         if (
           targetConversationId &&
           payload.rebased !== true &&
-          (shouldQueueGatewayChatRequest(targetConversationId, queuePolicy) ||
-            isConversationRunning(targetConversationId) ||
-            getConversationAbortController(targetConversationId))
+          (latestParamsRef.current.shouldQueueGatewayChatRequest(
+            targetConversationId,
+            queuePolicy,
+          ) ||
+            latestParamsRef.current.isConversationRunning(targetConversationId) ||
+            latestParamsRef.current.getConversationAbortController(targetConversationId))
         ) {
           if (await markQueuedInGui(claimed, targetConversationId)) {
             return;
@@ -460,13 +462,14 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
           return;
         }
 
-        resolvedConversationId = await ensureGatewayBridgeConversationReadyRef.current(
-          targetConversationId,
-          {
-            rebased: payload.rebased === true,
-            baseMessageRef,
-          },
-        );
+        resolvedConversationId =
+          await latestParamsRef.current.ensureGatewayBridgeConversationReadyRef.current(
+            targetConversationId,
+            {
+              rebased: payload.rebased === true,
+              baseMessageRef,
+            },
+          );
 
         const runningRequest =
           getActiveGatewayBridgeRequestByConversationId(resolvedConversationId) ||
@@ -474,10 +477,13 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
             ? getActiveGatewayBridgeRequestByClientRequestId(clientRequestId)
             : null);
         if (
-          shouldQueueGatewayChatRequest(resolvedConversationId, queuePolicy) ||
+          latestParamsRef.current.shouldQueueGatewayChatRequest(
+            resolvedConversationId,
+            queuePolicy,
+          ) ||
           runningRequest ||
-          isConversationRunning(resolvedConversationId) ||
-          getConversationAbortController(resolvedConversationId)
+          latestParamsRef.current.isConversationRunning(resolvedConversationId) ||
+          latestParamsRef.current.getConversationAbortController(resolvedConversationId)
         ) {
           if (
             await markQueuedInGui(claimed, runningRequest?.conversationId || resolvedConversationId)
@@ -508,7 +514,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
             worker_id: workerId,
           } as any);
         };
-        const accepted = await sendActionRef.current({
+        const accepted = await latestParamsRef.current.sendActionRef.current({
           textOverride: message,
           uploadedFilesOverride: uploadedFiles,
           conversationIdOverride: resolvedConversationId,
@@ -541,13 +547,15 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         );
         const conversationBusy = isConversationAlreadyRunningError(rawMessage);
         const message = conversationBusy ? GATEWAY_CHAT_CONVERSATION_BUSY_MESSAGE : rawMessage;
-        queueGatewayBridgeEventForRequest(
+        latestParamsRef.current.queueGatewayBridgeEventForRequest(
           requestId,
           {
             type: "error",
             message,
             conversation_id:
-              resolvedConversationId || targetConversationId || currentConversationIdRef.current,
+              resolvedConversationId ||
+              targetConversationId ||
+              latestParamsRef.current.currentConversationIdRef.current,
           },
           {
             workerId,
@@ -555,7 +563,9 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
         );
         failClaimedRequest(
           requestId,
-          resolvedConversationId || targetConversationId || currentConversationIdRef.current,
+          resolvedConversationId ||
+            targetConversationId ||
+            latestParamsRef.current.currentConversationIdRef.current,
           conversationBusy ? "conversation_busy" : "desktop_runtime_error",
           message,
         );
@@ -603,18 +613,69 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
       }
     };
 
-    void listen<GatewayChatRequestReadyEvent>("gateway:chat-request-ready", () => {
+    const handleRuntimeWake = () => {
       publishRuntimeHeartbeat("draining");
       void drainGatewayChatInbox();
-    }).then((dispose) => {
-      if (disposed) {
-        dispose();
+    };
+
+    const nudgeGatewayConnection = (reason: string, forceReconnect = false) => {
+      void invoke("gateway_nudge_connection", {
+        reason,
+        force_reconnect: forceReconnect,
+      }).catch((error) => {
+        console.warn("gateway_nudge_connection failed", error);
+      });
+    };
+
+    const handleNetworkOnline = () => {
+      // Not forced: browsers fire spurious `online` events (VPN toggle,
+      // interface re-priority) while the gRPC stream is healthy and possibly
+      // mid-run — force-aborting the runner would discard every queued
+      // outbound envelope. If the network really dropped, the offline/stale-
+      // heartbeat check inside the nudge (or the transport keepalive)
+      // restarts the runner anyway.
+      nudgeGatewayConnection("network_online");
+      handleRuntimeWake();
+    };
+
+    const handleLifecycleWake = () => {
+      nudgeGatewayConnection("webview_wake");
+      handleRuntimeWake();
+    };
+
+    const handleVisibilityWake = () => {
+      if (document.visibilityState === "hidden") {
         return;
       }
-      unlistenChatRequestReady = dispose;
-      publishRuntimeHeartbeat("ready");
-      void drainGatewayChatInbox();
-    });
+      handleLifecycleWake();
+    };
+
+    void listen<GatewayChatRequestReadyEvent>("gateway:chat-request-ready", handleRuntimeWake).then(
+      (dispose) => {
+        if (disposed) {
+          dispose();
+          return;
+        }
+        unlistenChatRequestReady = dispose;
+        publishRuntimeHeartbeat("ready");
+        void drainGatewayChatInbox();
+      },
+    );
+
+    void listen<Record<string, unknown>>("gateway:chat-runtime-wake", handleRuntimeWake).then(
+      (dispose) => {
+        if (disposed) {
+          dispose();
+          return;
+        }
+        unlistenChatRuntimeWake = dispose;
+      },
+    );
+
+    // Listener registration is asynchronous. Drain immediately as well so a
+    // request queued during startup/remount cannot wait for the listen promise.
+    publishRuntimeHeartbeat("draining");
+    void drainGatewayChatInbox();
 
     const idlePollId = window.setInterval(() => {
       publishRuntimeHeartbeat();
@@ -625,16 +686,11 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
       publishRuntimeHeartbeat();
     }, GATEWAY_CHAT_RUNTIME_STATUS_HEARTBEAT_MS);
 
-    const handleRuntimeWake = () => {
-      publishRuntimeHeartbeat("draining");
-      void drainGatewayChatInbox();
-    };
-
-    window.addEventListener("online", handleRuntimeWake);
-    window.addEventListener("focus", handleRuntimeWake);
-    window.addEventListener("pageshow", handleRuntimeWake);
-    document.addEventListener("visibilitychange", handleRuntimeWake);
-    document.addEventListener("resume", handleRuntimeWake);
+    window.addEventListener("online", handleNetworkOnline);
+    window.addEventListener("focus", handleLifecycleWake);
+    window.addEventListener("pageshow", handleLifecycleWake);
+    document.addEventListener("visibilitychange", handleVisibilityWake);
+    document.addEventListener("resume", handleLifecycleWake);
 
     void listen<Record<string, unknown>>("gateway:status", (event) => {
       if (event.payload?.online === true) {
@@ -657,7 +713,7 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
       if (!conversationId) {
         return;
       }
-      const controller = getConversationAbortController(conversationId);
+      const controller = latestParamsRef.current.getConversationAbortController(conversationId);
       controller?.abort();
     }).then((dispose) => {
       if (disposed) {
@@ -671,28 +727,19 @@ export function useGatewayBridgeListeners(params: UseGatewayBridgeListenersParam
       disposed = true;
       window.clearInterval(idlePollId);
       window.clearInterval(runtimeHeartbeatId);
-      window.removeEventListener("online", handleRuntimeWake);
-      window.removeEventListener("focus", handleRuntimeWake);
-      window.removeEventListener("pageshow", handleRuntimeWake);
-      document.removeEventListener("visibilitychange", handleRuntimeWake);
-      document.removeEventListener("resume", handleRuntimeWake);
+      window.removeEventListener("online", handleNetworkOnline);
+      window.removeEventListener("focus", handleLifecycleWake);
+      window.removeEventListener("pageshow", handleLifecycleWake);
+      document.removeEventListener("visibilitychange", handleVisibilityWake);
+      document.removeEventListener("resume", handleLifecycleWake);
       publishRuntimeHeartbeat("suspended");
       for (const requestId of heartbeatTimers.keys()) {
         stopHeartbeat(requestId);
       }
       unlistenChatRequestReady?.();
+      unlistenChatRuntimeWake?.();
       unlistenChatCancel?.();
       unlistenGatewayStatus?.();
     };
-  }, [
-    conversationRuntimeCacheRef,
-    currentConversationIdRef,
-    ensureGatewayBridgeConversationReadyRef,
-    getConversationAbortController,
-    isConversationRunning,
-    shouldQueueGatewayChatRequest,
-    enqueueGatewayChatRequest,
-    queueGatewayBridgeEventForRequest,
-    sendActionRef,
-  ]);
+  }, []);
 }

@@ -1,3 +1,4 @@
+import type { HistoryMessageRef } from "@/lib/chat/conversationState";
 import type {
   ConversationStreamEvent,
   ConversationSubscribeResult,
@@ -54,8 +55,17 @@ export type TranscriptStore = {
     clientRequestId: string;
     text: string;
     attachments?: UserChatEntry["attachments"];
+    // For edit-resend, truncate the visible transcript before inserting the
+    // optimistic bubble so it appears at the edited turn immediately. The
+    // later stream `rebased` event is an idempotent confirmation.
+    baseMessageRef?: HistoryMessageRef;
   }): void;
   removeOptimisticUserEntry(clientRequestId: string): void;
+  // edit_resend failure/parked compensation: restore the pre-truncation
+  // transcript stashed by addOptimisticUserEntry. Returns false once
+  // authoritative data (event/sync/snapshot) invalidated the stash. Optional
+  // so lightweight test doubles need not implement it.
+  restoreEditResendTranscript?(clientRequestId: string): boolean;
   // Failure surfaced outside the stream (command never bound).
   appendLocalError(message: string): void;
   // History application: "replace" for full (re)loads, "enrich" for the
@@ -119,6 +129,16 @@ export function createTranscriptStore(options?: {
 }): TranscriptStore {
   let historyEntries: ChatEntry[] = [];
   let turns: Turn[] = [];
+  // edit_resend optimistic-truncation stash: the pre-truncation transcript
+  // captured at submit time so a failed/parked command can restore it locally
+  // — the offline case where the compensating history refresh cannot run.
+  // Any authoritative apply (stream event, sync, history snapshot) clears it:
+  // restoring stale arrays over newer data would corrupt the transcript.
+  let editResendStash: {
+    clientRequestId: string;
+    historyEntries: ChatEntry[];
+    turns: Turn[];
+  } | null = null;
   let activeRun: StreamRunActivity | null = null;
   let toolStatus: string | null = null;
   let toolStatusIsCompaction = false;
@@ -529,19 +549,20 @@ export function createTranscriptStore(options?: {
     schedule(true);
   };
 
-  // edit_resend: truncate the transcript at the edited user message. The new
-  // user_message (binding the optimistic turn) follows in the stream.
-  const applyRebased = (event: ConversationStreamEvent) => {
-    const ref = (event as { base_message_ref?: unknown }).base_message_ref;
+  // edit_resend: truncate the transcript at the edited user message. This is
+  // shared by the synchronous optimistic path and the authoritative stream
+  // event so the latter remains idempotent when it arrives.
+  const rebaseFromMessageRef = (ref: unknown): boolean => {
     if (!ref || typeof ref !== "object") {
-      return;
+      return false;
     }
     const refValue = ref as Record<string, unknown>;
-    const messageId = typeof refValue.message_id === "string" ? refValue.message_id.trim() : "";
-    const contentHash =
-      typeof refValue.content_hash === "string" ? refValue.content_hash.trim() : "";
+    const rawMessageId = refValue.message_id ?? refValue.messageId;
+    const messageId = typeof rawMessageId === "string" ? rawMessageId.trim() : "";
+    const rawContentHash = refValue.content_hash ?? refValue.contentHash;
+    const contentHash = typeof rawContentHash === "string" ? rawContentHash.trim() : "";
     if (!messageId && !contentHash) {
-      return;
+      return false;
     }
     // Prefer the exact message id; the content hash is only a fallback for
     // refs without one — matching on it eagerly would truncate at the FIRST
@@ -562,22 +583,29 @@ export function createTranscriptStore(options?: {
         ...turns.slice(0, turnIndex),
         ...turns.slice(turnIndex).filter((turn) => turn.phase === "pending"),
       ];
-      schedule(true);
-      return;
+      return true;
     }
 
     const entryIndex = historyEntries.findIndex(
       (entry) => entry.kind === "user" && matchesRef(entry),
     );
     if (entryIndex < 0) {
-      return;
+      return false;
     }
     historyEntries = historyEntries.slice(0, entryIndex);
     turns = turns.filter((turn) => turn.phase === "pending");
-    schedule(true);
+    return true;
+  };
+
+  const applyRebased = (event: ConversationStreamEvent) => {
+    const ref = (event as { base_message_ref?: unknown }).base_message_ref;
+    if (rebaseFromMessageRef(ref)) {
+      schedule(true);
+    }
   };
 
   function applyOne(event: ConversationStreamEvent) {
+    editResendStash = null;
     const seq = readEventSeq(event);
     if (seq > 0) {
       if (seq <= lastSeq) {
@@ -812,6 +840,7 @@ export function createTranscriptStore(options?: {
     // intermediate render at the snapshot's older state is exactly the
     // backwards flicker the progress guards exist to prevent.
     applySync: (result) => {
+      editResendStash = null;
       batchDepth += 1;
       try {
         applySyncLocked(result);
@@ -825,8 +854,23 @@ export function createTranscriptStore(options?: {
       applyOne(event);
     },
 
-    addOptimisticUserEntry: ({ clientRequestId, text, attachments }) => {
+    addOptimisticUserEntry: ({ clientRequestId, text, attachments, baseMessageRef }) => {
+      const preRebaseHistoryEntries = historyEntries;
+      const preRebaseTurns = turns;
+      const rebased = baseMessageRef ? rebaseFromMessageRef(baseMessageRef) : false;
+      if (rebased) {
+        // Both arrays are replaced (never mutated) by the truncation, so the
+        // captured references are the intact pre-truncation transcript.
+        editResendStash = {
+          clientRequestId,
+          historyEntries: preRebaseHistoryEntries,
+          turns: preRebaseTurns,
+        };
+      }
       if (findTurnByCri(clientRequestId)) {
+        if (rebased) {
+          schedule(true);
+        }
         return;
       }
       turns = [
@@ -842,6 +886,20 @@ export function createTranscriptStore(options?: {
         },
       ];
       schedule(true);
+    },
+
+    // edit_resend compensation: put back the transcript captured at submit
+    // time. Returns false when authoritative data has superseded the stash —
+    // the caller then relies on the network history refresh instead.
+    restoreEditResendTranscript: (clientRequestId) => {
+      if (!editResendStash || editResendStash.clientRequestId !== clientRequestId) {
+        return false;
+      }
+      historyEntries = editResendStash.historyEntries;
+      turns = editResendStash.turns;
+      editResendStash = null;
+      schedule(true);
+      return true;
     },
 
     removeOptimisticUserEntry: (clientRequestId) => {
@@ -889,6 +947,7 @@ export function createTranscriptStore(options?: {
     },
 
     applyHistorySnapshot: (entries, options) => {
+      editResendStash = null;
       const result = alignHistory({
         historyEntries,
         turns,

@@ -22,17 +22,33 @@ impl GatewayController {
 
         match envelope.payload {
             Some(proto::gateway_envelope::Payload::Ping(ping)) => {
-                // Never block the receive loop on outbound saturation: the
-                // gateway counts any inbound envelope as liveness, so a pong
-                // dropped under load is harmless.
+                let pong = proto::AgentEnvelope {
+                    request_id: request_id.clone(),
+                    timestamp: now_unix_seconds(),
+                    payload: Some(proto::agent_envelope::Payload::Pong(proto::PongResponse {
+                        timestamp: ping.timestamp,
+                    })),
+                };
+                if is_chat_runtime_wake_request_id(&request_id) {
+                    if let Err(error) = self.wake_chat_runtime("gateway_ping") {
+                        eprintln!("emit gateway chat runtime wake ping failed: {error}");
+                    }
+                }
+                // Never block the receive loop on outbound saturation, and
+                // never let a pong failure tear down the connection. Pongs
+                // ride the dedicated control lane so chat.prepare probes are
+                // answered even while streamed tokens saturate the data
+                // queue; the data queue is only a best-effort fallback while
+                // the lanes are being swapped mid-reconnect.
+                let pong = match self.current_outbound_control_sender() {
+                    Ok(sender) => match sender.try_send(pong) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => error.into_inner(),
+                    },
+                    Err(_) => pong,
+                };
                 if let Ok(sender) = self.current_outbound_sender() {
-                    let _ = sender.try_send(proto::AgentEnvelope {
-                        request_id,
-                        timestamp: now_unix_seconds(),
-                        payload: Some(proto::agent_envelope::Payload::Pong(proto::PongResponse {
-                            timestamp: ping.timestamp,
-                        })),
-                    });
+                    let _ = sender.try_send(pong);
                 }
                 Ok(())
             }
@@ -61,16 +77,17 @@ impl GatewayController {
             Some(proto::gateway_envelope::Payload::CronManage(request)) => {
                 // Successful apply actions broadcast their own snapshot via the
                 // AutomationStore notifier; no extra refresh is needed here.
-                match gateway_bridge::handle_cron_manage(Arc::clone(&self.automation_store), request)
-                    .await
+                match gateway_bridge::handle_cron_manage(
+                    Arc::clone(&self.automation_store),
+                    request,
+                )
+                .await
                 {
                     Ok(response) => {
                         self.send_agent_envelope(proto::AgentEnvelope {
                             request_id,
                             timestamp: now_unix_seconds(),
-                            payload: Some(proto::agent_envelope::Payload::CronManageResp(
-                                response,
-                            )),
+                            payload: Some(proto::agent_envelope::Payload::CronManageResp(response)),
                         })
                         .await
                     }

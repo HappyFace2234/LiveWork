@@ -26,6 +26,11 @@ type chatCommandMessageRef struct {
 	ContentHash  string `json:"content_hash"`
 }
 
+const (
+	chatRuntimeWakeRequestPrefix = "chat-runtime-wake-"
+	chatRuntimeProbeReuseWindow  = 2 * time.Second
+)
+
 func newChatTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
@@ -98,10 +103,7 @@ func dispatchAcceptedChatCommand(
 	if cleanupWatch != nil {
 		defer cleanupWatch()
 	}
-	timeout := 2 * time.Minute
-	if cfg != nil && cfg.RequestTimeout > 0 {
-		timeout = cfg.RequestTimeout
-	}
+	timeout := chatDeliveryTimeout(cfg)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
@@ -119,6 +121,48 @@ func dispatchAcceptedChatCommand(
 	}
 	logChatCommandSpan(traceID, "command_delivered", start.RunID, start.ConversationID, body.ClientRequestID, commandType)
 	watchAcceptedChatCommandStartup(parent, cfg, sm, start.RunID)
+}
+
+// probeChatRuntime verifies that the current desktop AgentConnect stream can
+// complete a real round trip. The special request-id prefix is also the native
+// desktop's signal to nudge the Chat WebView runtime before a command is
+// accepted.
+func probeChatRuntime(
+	ctx context.Context,
+	sm *session.Manager,
+) error {
+	if sm == nil {
+		return session.ErrAgentOffline
+	}
+	sessionEpoch, online := sm.ChatRuntimeProbeEpoch()
+	if !online {
+		return session.ErrAgentOffline
+	}
+	requestID := chatRuntimeWakeRequestPrefix + uuid.NewString()
+	response, err := awaitAgentUnaryResponse(ctx, sm, requestID, &gatewayv1.GatewayEnvelope{
+		RequestId: requestID,
+		Timestamp: time.Now().Unix(),
+		Payload: &gatewayv1.GatewayEnvelope_Ping{
+			Ping: &gatewayv1.PingRequest{Timestamp: time.Now().Unix()},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if response == nil || response.GetPong() == nil {
+		return errors.New("desktop agent returned an invalid chat runtime probe response")
+	}
+	if !sm.RecordChatRuntimeProbe(sessionEpoch) {
+		return session.ErrAgentOffline
+	}
+	return nil
+}
+
+func probeChatRuntimeForCommand(ctx context.Context, sm *session.Manager) error {
+	if sm != nil && sm.ChatRuntimeProbeFresh(chatRuntimeProbeReuseWindow) {
+		return nil
+	}
+	return probeChatRuntime(ctx, sm)
 }
 
 // watchAcceptedChatCommandStartup fails a command whose run never settled
@@ -167,14 +211,28 @@ func chatStartTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ChatStartTimeout > 0 {
 		return cfg.ChatStartTimeout
 	}
-	return 15 * time.Second
+	return 5 * time.Second
 }
 
 func chatRenderStartTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ChatRenderStartTimeout > 0 {
 		return cfg.ChatRenderStartTimeout
 	}
-	return 45 * time.Second
+	return 10 * time.Second
+}
+
+func chatPrepareTimeout(cfg *config.Config) time.Duration {
+	if cfg != nil && cfg.ChatPrepareTimeout > 0 {
+		return cfg.ChatPrepareTimeout
+	}
+	return 2 * time.Second
+}
+
+func chatDeliveryTimeout(cfg *config.Config) time.Duration {
+	if cfg != nil && cfg.ChatDeliveryTimeout > 0 {
+		return cfg.ChatDeliveryTimeout
+	}
+	return 5 * time.Second
 }
 
 func buildAcceptedChatCommandPayloads(

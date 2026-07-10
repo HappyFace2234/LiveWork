@@ -174,6 +174,121 @@ test("GatewayWebSocketClient authenticates once and sends status requests over /
   resetGatewayWebSocketClient();
 });
 
+test("GatewayWebSocketClient bounds the complete WebSocket connection attempt", async () => {
+  const timers = createManualTimers();
+  installBrowser({ ...timers });
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } =
+    loader.loadModule("src/lib/gatewaySocket.ts");
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const statusResult = assert.rejects(
+    client.getStatus(),
+    /Gateway WebSocket connection timed out/,
+  );
+  await waitFor(() => FakeWebSocket.instances.length === 1, "connecting websocket");
+  const socket = FakeWebSocket.instances[0];
+  assert.equal(socket.readyState, FakeWebSocket.CONNECTING);
+
+  timers.fire((timer) => timer.ms === 10_000);
+  await statusResult;
+  assert.equal(socket.readyState, FakeWebSocket.CLOSED, "timed-out attempt was abandoned");
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient sends chat.prepare with the caller reason", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } =
+    loader.loadModule("src/lib/gatewaySocket.ts");
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const preparePromise = client.prepareChatRuntime("composer-focus");
+  const socket = await connectAndAuth();
+  await waitFor(
+    () => socket.sent.some((item) => item.type === "chat.prepare"),
+    "chat.prepare envelope",
+  );
+  const prepareRequest = socket.sent.find((item) => item.type === "chat.prepare");
+  assert.deepEqual(prepareRequest.payload, { reason: "composer-focus" });
+  socket.receive({
+    id: prepareRequest.id,
+    type: "response",
+    payload: { online: true, chat_runtime_ready: true, runtime_state: "ready" },
+  });
+
+  assert.deepEqual(await preparePromise, {
+    online: true,
+    chat_runtime_ready: true,
+    runtime_state: "ready",
+  });
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient falls back to status.get when chat.prepare is unsupported", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } =
+    loader.loadModule("src/lib/gatewaySocket.ts");
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const preparePromise = client.prepareChatRuntime("foreground");
+  const socket = await connectAndAuth();
+  await waitFor(
+    () => socket.sent.some((item) => item.type === "chat.prepare"),
+    "chat.prepare envelope",
+  );
+  const prepareRequest = socket.sent.find((item) => item.type === "chat.prepare");
+  socket.receive({ id: prepareRequest.id, type: "error", error: "unsupported request type" });
+  await waitFor(
+    () => socket.sent.some((item) => item.type === "status.get"),
+    "fallback status.get envelope",
+  );
+  const statusRequest = socket.sent.find((item) => item.type === "status.get");
+  socket.receive({ id: statusRequest.id, type: "response", payload: { online: true } });
+
+  assert.deepEqual(await preparePromise, { online: true });
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient clears a timed-out prepare so the next wake can retry", async () => {
+  const timers = createManualTimers();
+  installBrowser({ ...timers });
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } =
+    loader.loadModule("src/lib/gatewaySocket.ts");
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const firstResult = assert.rejects(client.prepareChatRuntime("foreground"), /Gateway/);
+  const firstSocket = await connectAndAuth(0);
+  await waitFor(
+    () => firstSocket.sent.some((item) => item.type === "chat.prepare"),
+    "first chat.prepare envelope",
+  );
+  timers.fire((timer) => timer.ms === 2_500);
+  await firstResult;
+
+  const secondPrepare = client.prepareChatRuntime("send");
+  const secondSocket = await connectAndAuth(1);
+  await waitFor(
+    () => secondSocket.sent.some((item) => item.type === "chat.prepare"),
+    "second chat.prepare envelope",
+  );
+  const secondRequest = secondSocket.sent.find((item) => item.type === "chat.prepare");
+  assert.deepEqual(secondRequest.payload, { reason: "send" });
+  secondSocket.receive({
+    id: secondRequest.id,
+    type: "response",
+    payload: { online: true, chat_runtime_ready: true },
+  });
+  assert.equal((await secondPrepare).chat_runtime_ready, true);
+  resetGatewayWebSocketClient();
+});
+
 test("BrowserGatewayTerminalStreamClient connects to /ws/terminal and attaches with binary frames", async () => {
   installBrowser();
   const loader = createWebModuleLoader();
@@ -1044,6 +1159,139 @@ test("GatewayWebSocketClient chatCommand sends the command envelope and parses t
   resetGatewayWebSocketClient();
 });
 
+test("GatewayWebSocketClient reconnects once and retries chatCommand with the same payload", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const commandPromise = client.chatCommand({
+    type: "chat.submit",
+    message: "retry me",
+    conversationId: "conversation-1",
+    clientRequestId: "client-retry-1",
+  });
+  const firstSocket = await connectAndAuth(0);
+  await waitFor(
+    () => firstSocket.sent.some((item) => item.type === "chat.command"),
+    "first chat.command envelope",
+  );
+  const firstCommand = firstSocket.sent.find((item) => item.type === "chat.command");
+  firstSocket.close({ code: 1006, wasClean: false });
+
+  const secondSocket = await connectAndAuth(1);
+  await waitFor(
+    () => secondSocket.sent.some((item) => item.type === "chat.command"),
+    "retried chat.command envelope",
+  );
+  const retriedCommand = secondSocket.sent.find((item) => item.type === "chat.command");
+  assert.deepEqual(retriedCommand.payload, firstCommand.payload);
+  assert.equal(
+    retriedCommand.payload.payload.client_request_id,
+    "client-retry-1",
+    "retry preserves the idempotency key",
+  );
+  secondSocket.receive({
+    id: retriedCommand.id,
+    type: "response",
+    payload: { run_id: "run-canonical", conversation_id: "conversation-1", accepted_seq: 3 },
+  });
+
+  assert.equal((await commandPromise).runId, "run-canonical");
+  assert.equal(FakeWebSocket.instances.length, 2, "only one transparent retry is attempted");
+  resetGatewayWebSocketClient();
+});
+
+test("GatewayWebSocketClient uses a short ACK timeout and preserves a generated client id", async () => {
+  const timers = createManualTimers();
+  installBrowser({ ...timers });
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const commandPromise = client.chatCommand({
+    type: "chat.submit",
+    message: "timeout retry",
+    conversationId: "conversation-1",
+  });
+  const firstSocket = await connectAndAuth(0);
+  await waitFor(
+    () => firstSocket.sent.some((item) => item.type === "chat.command"),
+    "first chat.command envelope",
+  );
+  const firstCommand = firstSocket.sent.find((item) => item.type === "chat.command");
+  const generatedClientRequestId = firstCommand.payload.payload.client_request_id;
+  assert.match(generatedClientRequestId, /^webui-chat\.submit-/);
+
+  timers.fire((timer) => timer.ms === 4_000);
+  const secondSocket = await connectAndAuth(1);
+  await waitFor(
+    () => secondSocket.sent.some((item) => item.type === "chat.command"),
+    "ACK-timeout retry envelope",
+  );
+  const retriedCommand = secondSocket.sent.find((item) => item.type === "chat.command");
+  assert.equal(retriedCommand.payload.payload.client_request_id, generatedClientRequestId);
+  assert.deepEqual(retriedCommand.payload, firstCommand.payload);
+  secondSocket.receive({
+    id: retriedCommand.id,
+    type: "response",
+    payload: { run_id: "run-timeout", conversation_id: "conversation-1", accepted_seq: 1 },
+  });
+
+  assert.equal((await commandPromise).runId, "run-timeout");
+  resetGatewayWebSocketClient();
+});
+
+test("a detached socket's late close cannot tear down its replacement", async () => {
+  installBrowser();
+  const loader = createWebModuleLoader();
+  const { getGatewayWebSocketClient, resetGatewayWebSocketClient } = loader.loadModule(
+    "src/lib/gatewaySocket.ts",
+  );
+  resetGatewayWebSocketClient();
+
+  const client = getGatewayWebSocketClient("token");
+  const firstStatus = client.getStatus();
+  const firstSocket = await connectAndAuth(0);
+  await waitFor(
+    () => firstSocket.sent.some((item) => item.type === "status.get"),
+    "first status request",
+  );
+  const firstStatusRequest = firstSocket.sent.find((item) => item.type === "status.get");
+  firstSocket.receive({
+    id: firstStatusRequest.id,
+    type: "response",
+    payload: { online: true },
+  });
+  await firstStatus;
+
+  const lateClose = firstSocket.onclose;
+  firstSocket.close({ code: 1006, wasClean: false });
+  const secondStatus = client.getStatus();
+  const secondSocket = await connectAndAuth(1);
+  await waitFor(
+    () => secondSocket.sent.some((item) => item.type === "status.get"),
+    "replacement status request",
+  );
+  lateClose?.({ code: 1006, reason: "late old close", wasClean: false });
+  const secondStatusRequest = secondSocket.sent.find((item) => item.type === "status.get");
+  secondSocket.receive({
+    id: secondStatusRequest.id,
+    type: "response",
+    payload: { online: true, session_id: "replacement" },
+  });
+
+  assert.equal((await secondStatus).session_id, "replacement");
+  assert.equal(FakeWebSocket.instances.length, 2);
+  resetGatewayWebSocketClient();
+});
+
 test("GatewayWebSocketClient cancelChat sends chat.cancel with conversation and run ids", async () => {
   installBrowser();
   const loader = createWebModuleLoader();
@@ -1081,9 +1329,8 @@ test("GatewayWebSocketClient conversation subscriptions subscribe after auth, ro
     onEvent: (event) => seen.events.push(event),
   });
 
-  // The transport may legitimately re-issue chat.subscribe (connect + eager
-  // ensureConnected both call handleConnected); answer every request with the
-  // caller's cursor plus any replay events staged below.
+  // Authentication is the only connection notification point. Answer each
+  // subscribe request with the caller's cursor plus any staged replay events.
   const answeredSubscribes = new Set();
   let replayEvents = [];
   const subscribeCalls = [];
@@ -1127,6 +1374,7 @@ test("GatewayWebSocketClient conversation subscriptions subscribe after auth, ro
   assert.equal(subscribeCalls.length, 0);
   await settle(socket);
   assert.ok(seen.syncs.length >= 1, "subscribe sync delivered");
+  assert.equal(subscribeCalls.length, 1, "initial auth issues exactly one subscribe");
   assert.equal(subscribeCalls[0].conversation_id, "conversation-1");
   assert.equal(subscribeCalls[0].after_seq, 0);
 
@@ -1182,6 +1430,11 @@ test("GatewayWebSocketClient conversation subscriptions subscribe after auth, ro
   const reconnectSocket = await connectAndAuth(1);
   await settle(reconnectSocket);
   assert.ok(seen.syncs.length > syncsBeforeReconnect, "resume sync delivered");
+  assert.equal(
+    subscribeCalls.length,
+    subscribesBeforeReconnect + 1,
+    "each reconnect issues exactly one resume subscribe",
+  );
   const resumePayload = subscribeCalls[subscribesBeforeReconnect];
   assert.equal(resumePayload.after_seq, 4, "resume cursor from last delivered seq");
   assert.equal(resumePayload.stream_epoch, "epoch-1");

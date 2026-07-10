@@ -39,7 +39,7 @@
 | 记忆注入 | 每轮根据 workdir 读取 memory overview，并附加到 system prompt。 | `lib/chat/memory/memoryPrompt.ts`、`src-tauri/src/services/memory.rs` |
 | Skills 注入 | 根据 Settings Skills 选择与 always-on builtin skills 生成 skills prompt。 | `lib/skills/index.ts`、`pages/chat/useChatSkills.ts` |
 | 上传 | GUI 直接调用 Tauri import readable files/image preview，文件落入 workspace uploads。 | `pages/chat/usePendingUploads.ts`、`src-tauri/src/commands/system.rs` |
-| Gateway bridge | 本地运行时把 token/thinking/tool/done/error 等事件发布给 Gateway。 | `pages/chat/useGatewayBridgeListeners.ts`、`lib/chat/conversation/run/gatewayBridgeEvents.ts` |
+| Gateway bridge | 本地运行时接收远程 command，把 token/thinking/tool/done/error 等事件发布给 Gateway；listener 与 worker id 在组件生命周期内保持稳定。 | `pages/chat/gateway/useGatewayBridgeListeners.ts`、`lib/chat/conversation/run/gatewayBridgeEvents.ts` |
 
 ## Tauri Invoke Surface
 
@@ -57,14 +57,14 @@
 | Hooks/Cron | `hook_run_script/run_http_requests`、`cron_validate_expression/list_logs/clear_logs/take_pending_prompt_runs/complete_prompt_run` |
 | Shell/process | `shell_run/cancel`、`managed_process_start/status/stop/read_log` |
 | System | folder/file picker、uploads、skill metadata/text/manage、debug jsonl、power activity、cron task manage |
-| Gateway | `gateway_connect/disconnect/status/send_chat_event/publish_conversation_activity/publish_settings_sync` |
+| Gateway | `gateway_connect/disconnect/status/nudge_connection/send_chat_event/publish_conversation_activity/publish_settings_sync` |
 | Proxy | `proxy_get_server_info` |
 
 ## Rust Services 与 Runtime
 
 | 路径 | 作用 |
 |---|---|
-| `src-tauri/src/services/gateway.rs` | GatewayController，维护桌面端到 Gateway 的连接与状态。 |
+| `src-tauri/src/services/gateway/*` | GatewayController，维护桌面端到 Gateway 的连接、原生唤醒、inbox、状态同步与重连。 |
 | `src-tauri/src/services/gateway_bridge.rs` | 将 Gateway 请求转成前端/Tauri 能处理的操作，处理 settings/history/chat 等桥接。 |
 | `src-tauri/src/services/memory.rs` | MemoryStore，负责 Markdown 记忆文件、SQLite FTS 索引、quota、daily、organizer。 |
 | `src-tauri/src/services/skills.rs` | Skills root、builtin seed、install/create/validate/package、ClawHub。 |
@@ -73,6 +73,17 @@
 | `src-tauri/src/runtime/shell_runner.rs` | Shell 脚本执行抽象。 |
 | `src-tauri/src/runtime/managed_process.rs` | 长任务/后台进程管理。 |
 | `src-tauri/src/runtime/task_runner.rs` | 通用异步任务运行辅助。 |
+
+## Gateway 连接与 Runtime 唤醒
+
+| 机制 | 当前实现 |
+|---|---|
+| 稳定 WebView listener | `useGatewayBridgeListeners` 用 ref 保存 worker id 和最新回调，effect 只在组件挂载/卸载时注册或销毁；普通 React render 不再重建 listener、制造接收空窗或重复上报 `suspended`。 |
+| 原生往返唤醒 | Rust 收到 `chat-runtime-wake-` 前缀的关联 Ping 后 emit `gateway:chat-runtime-wake`；所有 Pong（唤醒与心跳）经专用出站控制通道（64 深，与数据队列 merge 进同一 gRPC stream）`try_send` 返回，token 流打满数据队列时探测仍可被应答，且绝不阻塞 inbound receive loop。 |
+| 生命周期 nudge | `online`、`focus`、`pageshow`、`visibilitychange`、WebView `resume` 与 Tauri `RunEvent::Resumed` 会唤醒 runtime；`online`/focus 类事件经 `gateway_nudge_connection` 走 offline/stale-heartbeat 健康检查后才重建连接（不强制），仅 `RunEvent::Resumed` 保留强制重连。 |
+| 快速重连 | gRPC 自动重连从 250ms 指数退避到 5s，稳定连接 30s 后重置；stale 判断使用 heartbeat interval 加 20s（最多 60s）。 |
+| inbound 优先 | `AgentConnect` 建立后立即进入 inbound receive loop。Runtime status 先恢复，settings、terminal、tunnel、process 与 run ledger 延迟 200ms 后在可中止后台任务中低优先级 replay，并在批次间 yield。 |
+| 启动空窗消除 | WebView 在 Tauri listener 异步注册完成前就先 heartbeat + drain 一次；native wake、request-ready 与 Gateway online 事件都会继续触发 drain。 |
 
 ## 本地持久化模型
 
@@ -93,3 +104,4 @@
 | 高权限能力放 Rust | 文件系统、Shell、MCP 进程、SQLite、Gateway gRPC、Cron 更适合在 Tauri 后端做权限与生命周期控制。 |
 | GUI 与 WebUI 复制部分 UI | 两端运行环境不同，WebUI 不能直接调用 Tauri，但需要维持体验 parity，因此复制 settings/hub/chat 组件并接入 shims。 |
 | Settings 按域保存 | provider secret、remote、cron、memory 等域有不同验证和同步策略，分域保存便于限制泄露与减少误覆盖。 |
+| Gateway 控制面优先 | 远程首条 Chat command 与 Ping/Pong 必须先于大体积状态 reconciliation；后台 snapshot replay 只负责最终一致性，不阻塞 inbound。 |

@@ -45,6 +45,18 @@ pub fn gateway_status(
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub fn gateway_nudge_connection(
+    reason: Option<String>,
+    force_reconnect: Option<bool>,
+    gateway_controller: tauri::State<'_, Arc<GatewayController>>,
+) -> Result<bool, String> {
+    gateway_controller.nudge_connection(
+        reason.as_deref().unwrap_or("runtime_wake"),
+        force_reconnect.unwrap_or(false),
+    )
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn gateway_send_chat_event(
     request_id: String,
     event: Value,

@@ -715,7 +715,8 @@ impl GatewayController {
         now: Instant,
     ) -> Option<(String, String, bool, u32)> {
         let record = record?;
-        if now.saturating_duration_since(record.updated_at) > GATEWAY_RUNTIME_STATUS_REPUBLISH_MAX_AGE
+        if now.saturating_duration_since(record.updated_at)
+            > GATEWAY_RUNTIME_STATUS_REPUBLISH_MAX_AGE
         {
             return None;
         }
@@ -727,9 +728,7 @@ impl GatewayController {
         ))
     }
 
-    pub(crate) fn runtime_status_republish_snapshot(
-        &self,
-    ) -> Option<(String, String, bool, u32)> {
+    pub(crate) fn runtime_status_republish_snapshot(&self) -> Option<(String, String, bool, u32)> {
         let slot = self.runtime_status_republish.lock().ok()?;
         Self::runtime_status_republish_payload(slot.as_ref(), Instant::now())
     }
@@ -1001,6 +1000,7 @@ impl GatewayController {
                     entry.run_id
                 );
             }
+            tokio::task::yield_now().await;
         }
         // Replay all recent terminals, sent or not: a gateway restart can lose
         // them, and the control events are idempotent server-side. Unsent
@@ -1027,6 +1027,7 @@ impl GatewayController {
             } else {
                 self.ledger_mark_run_terminal_sent(&entry.run_id)?;
             }
+            tokio::task::yield_now().await;
         }
         Ok(())
     }

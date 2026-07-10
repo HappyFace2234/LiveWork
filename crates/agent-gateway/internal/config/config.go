@@ -17,6 +17,8 @@ type Config struct {
 	TLSCert                  string
 	TLSKey                   string
 	RequestTimeout           time.Duration
+	ChatPrepareTimeout       time.Duration
+	ChatDeliveryTimeout      time.Duration
 	ChatStartTimeout         time.Duration
 	ChatRenderStartTimeout   time.Duration
 	HeartbeatPeriod          time.Duration
@@ -38,8 +40,10 @@ func Load() *Config {
 	flag.StringVar(&cfg.TLSCert, "tls-cert", getenv("LIVEAGENT_GATEWAY_TLS_CERT", ""), "TLS certificate path")
 	flag.StringVar(&cfg.TLSKey, "tls-key", getenv("LIVEAGENT_GATEWAY_TLS_KEY", ""), "TLS private key path")
 	flag.DurationVar(&cfg.RequestTimeout, "request-timeout", getenvDuration("LIVEAGENT_GATEWAY_REQUEST_TIMEOUT", 2*time.Minute), "request timeout for non-streaming API calls")
-	flag.DurationVar(&cfg.ChatStartTimeout, "chat-start-timeout", getenvDuration("LIVEAGENT_GATEWAY_CHAT_START_TIMEOUT", 15*time.Second), "timeout waiting for the desktop backend to accept a remote chat request")
-	flag.DurationVar(&cfg.ChatRenderStartTimeout, "chat-render-start-timeout", getenvDuration("LIVEAGENT_GATEWAY_CHAT_RENDER_START_TIMEOUT", 45*time.Second), "timeout waiting for the desktop app to start an accepted remote chat request")
+	flag.DurationVar(&cfg.ChatPrepareTimeout, "chat-prepare-timeout", getenvDuration("LIVEAGENT_GATEWAY_CHAT_PREPARE_TIMEOUT", 2*time.Second), "timeout for the pre-submit desktop agent liveness probe")
+	flag.DurationVar(&cfg.ChatDeliveryTimeout, "chat-delivery-timeout", getenvDuration("LIVEAGENT_GATEWAY_CHAT_DELIVERY_TIMEOUT", 5*time.Second), "timeout delivering an accepted chat command to the desktop agent stream")
+	flag.DurationVar(&cfg.ChatStartTimeout, "chat-start-timeout", getenvDuration("LIVEAGENT_GATEWAY_CHAT_START_TIMEOUT", 5*time.Second), "initial timeout waiting for a delivered remote chat request to start")
+	flag.DurationVar(&cfg.ChatRenderStartTimeout, "chat-render-start-timeout", getenvDuration("LIVEAGENT_GATEWAY_CHAT_RENDER_START_TIMEOUT", 10*time.Second), "additional timeout waiting for the desktop app to start a delivered remote chat request")
 	flag.DurationVar(&cfg.HeartbeatPeriod, "heartbeat-period", getenvDuration("LIVEAGENT_GATEWAY_HEARTBEAT_PERIOD", 30*time.Second), "ping interval for agent connection")
 	flag.DurationVar(&cfg.WebSocketHeartbeatPeriod, "websocket-heartbeat-period", getenvDuration("LIVEAGENT_GATEWAY_WS_HEARTBEAT_PERIOD", 15*time.Second), "ping interval for browser WebSocket connections")
 	flag.DurationVar(&cfg.WebSocketHeartbeatGrace, "websocket-heartbeat-grace", getenvDuration("LIVEAGENT_GATEWAY_WS_HEARTBEAT_GRACE", 5*time.Second), "extra slack added to the browser WebSocket idle timeout (idle = 3x period + grace)")
@@ -61,11 +65,17 @@ func Load() *Config {
 	if cfg.GRPCMaxMessageBytes <= 0 {
 		cfg.GRPCMaxMessageBytes = DefaultGRPCMaxMessageBytes
 	}
+	if cfg.ChatPrepareTimeout <= 0 {
+		cfg.ChatPrepareTimeout = 2 * time.Second
+	}
+	if cfg.ChatDeliveryTimeout <= 0 {
+		cfg.ChatDeliveryTimeout = 5 * time.Second
+	}
 	if cfg.ChatStartTimeout <= 0 {
-		cfg.ChatStartTimeout = 15 * time.Second
+		cfg.ChatStartTimeout = 5 * time.Second
 	}
 	if cfg.ChatRenderStartTimeout <= 0 {
-		cfg.ChatRenderStartTimeout = 45 * time.Second
+		cfg.ChatRenderStartTimeout = 10 * time.Second
 	}
 	if cfg.WebSocketHeartbeatPeriod <= 0 {
 		cfg.WebSocketHeartbeatPeriod = 15 * time.Second

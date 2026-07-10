@@ -9,8 +9,8 @@ WebUI 是 Gateway 承载的浏览器端操作台。它复用/复制了大量 GUI
 | 模块 | 路径 | 职责 |
 |---|---|---|
 | App shell | `crates/agent-gateway/web/src/App.tsx` | 登录、socket 生命周期、settings/history/chat 状态、页面切换、composer/transcript。 |
-| Socket client | `web/src/lib/gatewaySocket.ts` | WebSocket 请求/响应、广播监听、Chat command 与会话流订阅、恢复与错误处理。 |
-| Conversation stream | `web/src/lib/chat/stream/conversationStreamClient.ts` | 按会话持久订阅注册表：维护 `after_seq`/`stream_epoch` 游标、重连自动重订阅、gap resync。 |
+| Socket client | `web/src/lib/gatewaySocket.ts` | WebSocket 请求/响应、广播监听、连接超时、原生 Chat Runtime 唤醒、Chat command ACK 恢复与错误处理。 |
+| Conversation stream | `web/src/lib/chat/stream/conversationStreamClient.ts` | 按会话持久订阅注册表：维护 `after_seq`/`stream_epoch` 游标、重连自动重订阅、gap resync 与有界退避重试。 |
 | Gateway types | `web/src/lib/gatewayTypes.ts` | WebUI 侧协议类型。 |
 | Settings storage | `web/src/lib/webSettings.ts`、`web/src/lib/settings/*` | 浏览器本地设置缓存、脱敏 provider snapshot、settings sync payload。 |
 | History sync | `web/src/lib/historySync.ts`、`web/src/lib/historyParser.ts` | 历史列表/详情同步，大历史 worker 解析。 |
@@ -23,11 +23,12 @@ WebUI 是 Gateway 承载的浏览器端操作台。它复用/复制了大量 GUI
 | 阶段 | 行为 |
 |---|---|
 | token 读取 | WebUI 从浏览器存储读取 token，或通过 LoginPage 输入。 |
-| socket 创建 | `getGatewayWebSocketClient(token)` 建立 `/ws` 连接。 |
+| socket 创建 | `getGatewayWebSocketClient(token)` 建立 `/ws` 连接；连接建立总超时为 10 秒，认证另有 15 秒超时，旧连接迟到的 close 不会误伤新连接。 |
 | 状态订阅 | 订阅 Gateway status，展示 Desktop Agent online/offline。 |
 | 请求响应 | 所有 request 带 id，Gateway 用同 id 返回 payload 或 error。 |
-| Chat 流 | 提交/编辑/取消走 WebSocket `chat.command`；流式输出走按会话持久订阅 `chat.subscribe`（`chat.event` 推送，seq 续传）。 |
-| 断线恢复 | WebSocket client 处理普通同步重连；Chat 订阅在 history snapshot hydrate 后重发 `chat.subscribe`，按同 conversation 单调递增的 `after_seq`（配合 `stream_epoch`）跨 run 补齐缺失事件；观察正在运行的远程会话时优先使用 `history.list.running_conversations[].first_seq - 1` 作为当前 run 的订阅起点。 |
+| Chat 唤醒 | 用户消息先即时 optimistic echo，再串行发送 `chat.prepare`；Gateway 通过关联原生 Ping/Pong 真正唤醒桌面 Chat Runtime，并让紧随其后的 command 复用同一 Agent session 上 2 秒内的新鲜探测，避免正常路径重复一个原生 RTT。准备请求最多等待 2.5 秒，旧 Gateway 不支持该方法时回退到 `status.get`，最终仍由 `chat.command` 作为兜底唤醒信号。 |
+| Chat 流 | 提交/编辑/取消走 WebSocket `chat.command`；ACK 最多等待 4 秒，连接中断或 ACK 丢失时只重试一次，并复用完全相同的 payload 与 `client_request_id`。流式输出走按会话持久订阅 `chat.subscribe`（`chat.event` 推送，seq 续传）。 |
+| 断线恢复 | WebSocket client 处理普通同步重连；Chat 订阅在 history snapshot hydrate 后重发 `chat.subscribe`，按同 conversation 单调递增的 `after_seq`（配合 `stream_epoch`）跨 run 补齐内存窗口内的缺失事件；单次订阅 5 秒超时，失败后以 250ms、500ms、1s、2s、5s 上限加 jitter 自恢复。观察正在运行的远程会话时优先使用 `history.list.running_conversations[].first_seq - 1` 作为当前 run 的订阅起点。 |
 
 ## WebUI 本地状态
 
@@ -56,7 +57,7 @@ WebUI 是 Gateway 承载的浏览器端操作台。它复用/复制了大量 GUI
 | 方法族 | 示例 |
 |---|---|
 | Auth/status | `status.get`、socket auth/unauthorized handling |
-| Chat | WS `chat.command`（`chat.submit`/`chat.edit_resend`/`chat.cancel`）、`chat.subscribe`/`chat.unsubscribe`、`chat.activities`；事件经 `chat.event`/`chat.command_update` 推送 |
+| Chat | WS `chat.prepare`、`chat.command`（`chat.submit`/`chat.edit_resend`/`chat.cancel`）、`chat.subscribe`/`chat.unsubscribe`、`chat.activities`；事件经 `chat.event`/`chat.command_update` 推送 |
 | History | `history.list`、`history.get`、`history.rename`、`history.pin`、`history.share.get`、`history.share.set`、`history.delete` |
 | Settings | `settings.get`、`settings.update` |
 | Providers | `providers.list`、provider model scan related request |
@@ -84,3 +85,4 @@ WebUI 是 Gateway 承载的浏览器端操作台。它复用/复制了大量 GUI
 | 依赖 Gateway 在线 | Gateway 或 Desktop offline 时，Chat/Settings/History 能力受限。 |
 | 复制维护成本 | 列入 `scripts/mirror-manifest.json` 的文件由 CI 逐字节校验，改动必须双端同 PR 落地；未列入清单的镜像组件仍需双端一起检查。 |
 | 浏览器存储不是权威 | Settings 和 history 的真实来源仍是桌面端 SQLite 与 Gateway sync。 |
+| Gateway relay 不是持久历史 | `chat.subscribe` 的 seq replay 来自 Gateway 进程内的有界事件窗口；Gateway 重启或窗口 reset 时，WebUI 以桌面历史 snapshot 重新 hydrate。 |

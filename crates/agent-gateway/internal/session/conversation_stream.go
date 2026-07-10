@@ -35,6 +35,7 @@ const (
 	conversationFinishedRunMemory = 8
 	conversationSubscriberBuffer  = 256
 	pendingChatRunRetention       = 5 * time.Minute
+	chatCommandDedupeRetention    = 24 * time.Hour
 	// conversationRunReportLostTimeout is the grace window before a run absent
 	// from the desktop's run reports is finalized as lost.
 	conversationRunReportLostTimeout = 15 * time.Second
@@ -181,6 +182,27 @@ type chatRunRecord struct {
 	rebaseSeeded bool
 }
 
+// chatCommandDedupeRecord is the process-local idempotency key for WebUI chat
+// submissions. It is created atomically with the canonical run and retained
+// long enough to cover WebSocket reconnect/retry windows without keeping full
+// transcript state alive.
+type chatCommandDedupeRecord struct {
+	runID          string
+	conversationID string
+	acceptedSeq    int64
+	createdAt      time.Time
+}
+
+// chatCommandUpdateRecord carries the latest pre-stream update for a run with
+// its own timestamp: updates can be fired for runs that never had a dedupe
+// record in this process (desktop replays after a gateway restart, parked
+// runs older than the dedupe retention), so they are reaped independently
+// instead of relying on a paired dedupe record.
+type chatCommandUpdateRecord struct {
+	update ChatCommandUpdate
+	at     time.Time
+}
+
 type pendingChatRun struct {
 	runID           string
 	clientRequestID string
@@ -194,7 +216,9 @@ type conversationStreamStore struct {
 	streams         map[string]*conversationStream
 	pendingRuns     map[string]*pendingChatRun
 	runs            map[string]*chatRunRecord
+	commandDedup    map[string]*chatCommandDedupeRecord
 	commandWatchers map[string][]chan ChatCommandUpdate
+	commandUpdates  map[string]chatCommandUpdateRecord
 	nextSubID       int
 
 	activityHub *chatActivityHub
@@ -218,7 +242,9 @@ func newConversationStreamStore(isOnline func() bool) *conversationStreamStore {
 		streams:              make(map[string]*conversationStream),
 		pendingRuns:          make(map[string]*pendingChatRun),
 		runs:                 make(map[string]*chatRunRecord),
+		commandDedup:         make(map[string]*chatCommandDedupeRecord),
 		commandWatchers:      make(map[string][]chan ChatCommandUpdate),
+		commandUpdates:       make(map[string]chatCommandUpdateRecord),
 		activityHub:          newChatActivityHub(),
 		isOnline:             isOnline,
 		eventRetention:       conversationEventRetention,
@@ -701,7 +727,8 @@ func (s *conversationStreamStore) publishActivityLocked(stream *conversationStre
 // --- command lifecycle -----------------------------------------------------
 
 // WatchChatCommand registers a watcher for pre-stream command outcomes
-// (bound / queued_in_gui / failed). Call before StartChatCommand.
+// (bound / queued_in_gui / failed). The latest update is replayed immediately
+// so a reconnecting deduplicated submit cannot miss an earlier transition.
 func (m *Manager) WatchChatCommand(runID string) (<-chan ChatCommandUpdate, func()) {
 	s := m.convStreams
 	runID = strings.TrimSpace(runID)
@@ -709,6 +736,9 @@ func (m *Manager) WatchChatCommand(runID string) (<-chan ChatCommandUpdate, func
 
 	s.mu.Lock()
 	s.commandWatchers[runID] = append(s.commandWatchers[runID], ch)
+	if record, ok := s.commandUpdates[runID]; ok {
+		ch <- record.update
+	}
 	s.mu.Unlock()
 
 	cleanup := func() {
@@ -732,6 +762,10 @@ func (m *Manager) WatchChatCommand(runID string) (<-chan ChatCommandUpdate, func
 }
 
 func (s *conversationStreamStore) fireCommandUpdateLocked(update ChatCommandUpdate) {
+	if strings.TrimSpace(update.RunID) == "" {
+		return
+	}
+	s.commandUpdates[update.RunID] = chatCommandUpdateRecord{update: update, at: time.Now()}
 	for _, watcher := range s.commandWatchers[update.RunID] {
 		select {
 		case watcher <- update:
@@ -745,6 +779,67 @@ type ChatCommandStart struct {
 	RunID          string
 	ConversationID string
 	AcceptedSeq    int64
+	Deduped        bool
+}
+
+// LookupChatCommand returns the canonical run already assigned to a
+// client_request_id. The lookup and StartChatCommand share the same store mutex;
+// callers may use this as a fast path, while StartChatCommand remains the
+// authoritative atomic check for concurrent submissions.
+func (m *Manager) LookupChatCommand(clientRequestID string) (ChatCommandStart, bool) {
+	s := m.convStreams
+	clientRequestID = strings.TrimSpace(clientRequestID)
+	if clientRequestID == "" {
+		return ChatCommandStart{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lookupChatCommandLocked(clientRequestID)
+}
+
+func (s *conversationStreamStore) lookupChatCommandLocked(
+	clientRequestID string,
+) (ChatCommandStart, bool) {
+	record := s.commandDedup[clientRequestID]
+	if record == nil || strings.TrimSpace(record.runID) == "" {
+		return ChatCommandStart{}, false
+	}
+	return ChatCommandStart{
+		RunID:          record.runID,
+		ConversationID: record.conversationID,
+		AcceptedSeq:    record.acceptedSeq,
+		Deduped:        true,
+	}, true
+}
+
+func (s *conversationStreamStore) updateChatCommandDedupeLocked(
+	clientRequestID string,
+	runID string,
+	conversationID string,
+	acceptedSeq int64,
+	now time.Time,
+) {
+	clientRequestID = strings.TrimSpace(clientRequestID)
+	if clientRequestID == "" || strings.TrimSpace(runID) == "" {
+		return
+	}
+	record := s.commandDedup[clientRequestID]
+	if record == nil {
+		record = &chatCommandDedupeRecord{
+			runID:     strings.TrimSpace(runID),
+			createdAt: now,
+		}
+		s.commandDedup[clientRequestID] = record
+	}
+	if record.runID != strings.TrimSpace(runID) {
+		return
+	}
+	if conversationID = strings.TrimSpace(conversationID); conversationID != "" {
+		record.conversationID = conversationID
+	}
+	if acceptedSeq > record.acceptedSeq {
+		record.acceptedSeq = acceptedSeq
+	}
 }
 
 // StartChatCommand registers a webui-issued chat command. For a known
@@ -767,6 +862,11 @@ func (m *Manager) StartChatCommand(
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.lookupChatCommandLocked(clientRequestID); ok {
+		return existing
+	}
+	s.updateChatCommandDedupeLocked(clientRequestID, runID, conversationID, 0, now)
+	s.startReaper()
 
 	if conversationID == "" {
 		s.pendingRuns[runID] = &pendingChatRun{
@@ -776,7 +876,6 @@ func (m *Manager) StartChatCommand(
 			seeded:          seededPayloads,
 			createdAt:       now,
 		}
-		s.startReaper()
 		return ChatCommandStart{RunID: runID}
 	}
 
@@ -795,11 +894,15 @@ func (m *Manager) StartChatCommand(
 		// starts (or fails); if it parks in the GUI queue they are dropped
 		// and the agent's own echo becomes authoritative.
 		record.deferredSeeds = seededPayloads
-		return ChatCommandStart{
+		start := ChatCommandStart{
 			RunID:          runID,
 			ConversationID: conversationID,
 			AcceptedSeq:    stream.lastSeq,
 		}
+		s.updateChatCommandDedupeLocked(
+			clientRequestID, start.RunID, start.ConversationID, start.AcceptedSeq, now,
+		)
+		return start
 	}
 
 	// Mark queued before seeding so the activity's StartedSeq covers the
@@ -807,11 +910,15 @@ func (m *Manager) StartChatCommand(
 	s.markRunQueuedLocked(stream, runID, clientRequestID, now)
 	acceptedSeq := s.appendSeededPayloadsLocked(stream, runID, clientRequestID, seededPayloads, now)
 	record.userMessageSeeded = seededPayloadsIncludeUserMessage(seededPayloads)
-	return ChatCommandStart{
+	start := ChatCommandStart{
 		RunID:          runID,
 		ConversationID: conversationID,
 		AcceptedSeq:    acceptedSeq,
 	}
+	s.updateChatCommandDedupeLocked(
+		clientRequestID, start.RunID, start.ConversationID, start.AcceptedSeq, now,
+	)
+	return start
 }
 
 // flushDeferredSeedsLocked appends seeds that were deferred because another
@@ -1100,6 +1207,21 @@ func (s *conversationStreamStore) reap(now time.Time) {
 	for runID, pending := range s.pendingRuns {
 		if now.Sub(pending.createdAt) > pendingChatRunRetention {
 			delete(s.pendingRuns, runID)
+		}
+	}
+
+	for clientRequestID, record := range s.commandDedup {
+		if record == nil || now.Sub(record.createdAt) > chatCommandDedupeRetention {
+			delete(s.commandDedup, clientRequestID)
+		}
+	}
+
+	// Swept by their own timestamp: update entries exist for runs without a
+	// dedupe record in this process (post-restart replays, parked runs), so
+	// pairing deletion to dedupe records would leak them.
+	for runID, record := range s.commandUpdates {
+		if now.Sub(record.at) > chatCommandDedupeRetention {
+			delete(s.commandUpdates, runID)
 		}
 	}
 }

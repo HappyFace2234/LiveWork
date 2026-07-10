@@ -9,6 +9,7 @@
 | gRPC stream | `AgentGateway.AgentTerminalConnect` | Desktop <-> Gateway | 终端专用字节流，承载 `TerminalStreamFrame`，避免 terminal IO 与 chat/settings/history 队头阻塞。 |
 | WebSocket | `GET /ws` | WebUI <-> Gateway | WebUI 非 Chat 请求/响应、状态广播、history/settings 等同步。 |
 | WebSocket | `GET /ws/terminal` | WebUI <-> Gateway | WebUI 终端专用二进制流；JSON 控制帧只用于 auth/error，热路径为 bytes frame。 |
+| WS Chat Prepare | WebSocket `chat.prepare` | WebUI -> Gateway <-> Desktop | 提交前发送带关联 request id 的原生 Ping/Pong，验证当前 gRPC stream 可往返并唤醒桌面 Chat Runtime。 |
 | WS Chat Command | WebSocket `chat.command` | WebUI -> Gateway -> Desktop | Chat 提交、编辑重发、取消；命令先被 Gateway accepted，再异步下发桌面端；pre-stream 结果经 `chat.command_update` 推送。 |
 | WS Chat Stream | WebSocket `chat.subscribe` / `chat.event` | Gateway -> WebUI | 按 conversation 持久订阅（跨 run）；订阅响应按 `after_seq`/`stream_epoch` 补发缺失事件，之后 `chat.event` 实时推送，`chat.unsubscribe` 结束。 |
 | HTTP API | `/api/status` | WebUI -> Gateway | 查询 Agent 在线状态。 |
@@ -21,22 +22,25 @@
 
 | Envelope | 方向 | payload 示例 |
 |---|---|---|
-| `GatewayEnvelope` | Gateway -> Desktop | `ChatCommandRequest`、`CronManageRequest`、`History*Request`、`ProviderListRequest`、`Settings*Request`、`Skill*Request`、`FileMentionListRequest`、`UploadReadableFilesRequest`、`MemoryManageRequest`。 |
-| `AgentEnvelope` | Desktop -> Gateway | `ChatEvent`、`ChatControlEvent`、`CronManageResponse`、`History*Response`、`HistorySyncEvent`、`ProviderListResponse`、`Settings*Response`、`SettingsSyncEvent`、`Skill*Response`、`UploadReadableFilesResponse`、`MemoryManageResponse`、`ErrorResponse`。 |
+| `GatewayEnvelope` | Gateway -> Desktop | `PingRequest`、`ChatCommandRequest`、`CronManageRequest`、`History*Request`、`ProviderListRequest`、`Settings*Request`、`Skill*Request`、`FileMentionListRequest`、`UploadReadableFilesRequest`、`MemoryManageRequest`。 |
+| `AgentEnvelope` | Desktop -> Gateway | `PongResponse`、`ChatEvent`、`ChatControlEvent`、`CronManageResponse`、`History*Response`、`HistorySyncEvent`、`ProviderListResponse`、`Settings*Response`、`SettingsSyncEvent`、`Skill*Response`、`UploadReadableFilesResponse`、`MemoryManageResponse`、`ErrorResponse`。 |
 
 ## Chat 协议
 
 | 阶段 | WebUI -> Gateway | Gateway -> Desktop | Desktop -> Gateway -> WebUI |
 |---|---|---|---|
+| 唤醒 | WS `chat.prepare` | `PingRequest{request_id=chat-runtime-wake-*}` | Rust emit WebView wake，可靠返回关联 `PongResponse`；Gateway 完成真实原生往返后响应当前 status。 |
 | 提交 | WS `chat.command`，`type=chat.submit` | `ChatCommandRequest{type=chat.submit}` | 响应携带 `run_id`/`accepted_seq`；用户消息与 token 事件经会话订阅 `chat.event` 推送。 |
 | 编辑重发 | WS `chat.command`，`type=chat.edit_resend` | `ChatCommandRequest{type=chat.edit_resend, base_message_ref}` | Gateway 先发布 `rebased` 与新用户消息事件，桌面端随后原子截断并运行新 turn。 |
-| 恢复 | WS `chat.subscribe`，`{conversation_id, after_seq, stream_epoch}` | 无 | WebUI 先用 history snapshot/projection hydrate，订阅响应由 Gateway 从 SQLite `chat_events` 按 conversation seq 跨 run 补发缺失事件（`events`/`latest_seq`/`reset`）；内存缓存同样按 conversation 汇总最近 run 事件并负责实时 fan-out；订阅缓冲溢出时 Gateway 发 `chat.subscription_reset`，客户端按游标重新订阅补齐。 |
+| 恢复 | WS `chat.subscribe`，`{conversation_id, after_seq, stream_epoch}` | 无 | WebUI 先用 history snapshot/projection hydrate，订阅响应由 Gateway 进程内事件窗口按 conversation seq 跨 run 补发缺失事件（`events`/`latest_seq`/`reset`）；epoch 改变或窗口不足时返回 reset。订阅缓冲溢出时 Gateway 发 `chat.subscription_reset`，客户端按游标重新订阅。 |
 | 取消 | WS `chat.command`，`type=chat.cancel` | `ChatCommandRequest{type=chat.cancel}` | Gateway 置 `cancelling` 状态，桌面端真实终态优先，超时由 watchdog 兜底 `run_finished(cancelled)`。 |
 | 完成 | 无 | 无 | `ChatEvent.type=DONE` 映射为 `run.completed` 终态。 |
 
 桌面端仍通过 `ChatEvent` 表达 `TOKEN`、`THINKING`、`TOOL_CALL`、`TOOL_RESULT`、`DONE`、`ERROR`、`TOOL_STATUS`、`HOSTED_SEARCH` 等低层事件。Gateway 对外统一附加同 conversation 内单调递增的 `seq`，并把控制事件规范化为 `run.accepted`、`user.message.appended`、`conversation.rebased`、`projection.updated`、`run.completed`、`run.failed`、`run.cancelled` 等 WebUI 事件。旧 HTTP SSE Chat 路由（`GET /api/chat/events`）已下线。
 
 Chat command（WS `chat.command`）只接受 `{ type, payload }` envelope；`command`、顶层裸 payload、`request_id` 别名都不再作为兼容输入。
+
+WebUI 对 command ACK 使用 4 秒上限。连接中断或 ACK 丢失时仅重试一次，并复用完全相同的 payload 与 `client_request_id`；Gateway 在同一进程内原子返回 canonical run，因此不会重复 seed 或 dispatch。成功 prepare 的探测新鲜度绑定 Agent session epoch 并保留 2 秒，紧随 command 可直接复用，避免正常路径重复原生 RTT；旧客户端或过期结果仍在 accepted 前现场 probe。accepted ACK 与 `chat.prepare` response 走 WebSocket 控制优先队列，避免被 token 数据帧队头阻塞。
 
 ## Settings 同步
 
@@ -126,9 +130,9 @@ Git 面板与文件树不再轮询：桌面端 `workspace_watch` 服务（notify
 
 | 机制 | 位置 | 目的 |
 |---|---|---|
-| `clientRequestId` | WebUI Chat Command -> Gateway session manager | 避免重复提交导致两个真实 chat run。 |
+| `clientRequestId` | WebUI Chat Command -> Gateway session manager | 进程级 24 小时幂等键；并发或单次 ACK 恢复重试返回同一 canonical run。Gateway 重启后不保留。 |
 | `conversationId` -> run index | Gateway session manager | 当前会话刷新/切换后可定位正在运行的事件流。 |
-| `Seq` | Gateway SQLite `chat_events` / `chat.event` payload | 同 conversation 内单调递增；断线后 `chat.subscribe` 携带 `after_seq` 游标补发缺失事件。 |
+| `Seq` | Gateway 进程内 conversation event window / `chat.event` payload | 同 conversation 内单调递增；断线后 `chat.subscribe` 携带 `after_seq` 游标补发窗口内缺失事件，窗口不足时 reset + history hydrate。 |
 | done retention | Gateway session manager | 已结束 run 短时间保留，支持刷新后看到终态。 |
 | local running ids | WebUI App | 避免正在运行会话被错误切换或误删。 |
 
