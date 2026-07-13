@@ -8,7 +8,6 @@ export { CompactingText, VibingText } from "./assistant-bubble/StatusText";
 
 export function AssistantBubble(props: {
   rounds: (UiRound & {
-    key?: string;
     runningToolCallIds?: string[];
     thinkingOpen?: boolean;
   })[];
@@ -27,7 +26,7 @@ export function AssistantBubble(props: {
       <div className="min-w-0 flex-1 space-y-3 pt-0.5">
         {rounds.map((round, idx) => (
           <RoundContent
-            key={"key" in round && round.key ? round.key : `round-${round.round}`}
+            key={round.key}
             round={round}
             showLabel={showLabels}
             showUsage={showUsage}

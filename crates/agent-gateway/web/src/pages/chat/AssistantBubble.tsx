@@ -937,10 +937,10 @@ function groupRoundBlocks(blocks: UiRound["blocks"]): GroupedRoundBlock[] {
     }
     flushPendingSearches();
     if (block.kind === "thinking") {
-      groupedBlocks.push({ kind: "thinking", key: `thinking-${index}`, text: block.text });
+      groupedBlocks.push({ kind: "thinking", key: block.id, text: block.text });
       return;
     }
-    groupedBlocks.push({ kind: "text", key: `text-${index}`, text: block.text });
+    groupedBlocks.push({ kind: "text", key: block.id, text: block.text });
   });
 
   flushPendingTools();

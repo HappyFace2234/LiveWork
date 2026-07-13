@@ -114,7 +114,7 @@ export function buildAbortedMessagesFromSnapshot(params: {
   if (params.executionMode === "text" && !params.liveRounds.some(hasRoundContent)) {
     const assistant = buildAssistantMessage({
       model: params.model,
-      blocks: [{ kind: "text", text: params.draftAssistantText }],
+      blocks: [{ kind: "text", id: "text-1", text: params.draftAssistantText }],
       stopReason: "aborted",
       timestamp,
     });

@@ -9,7 +9,12 @@ import { type ChatEntry, normalizeLiveUploadedFiles } from "@/lib/chatUi";
 import type { ChatEvent } from "@/lib/gatewayTypes";
 
 import { alignHistory } from "./historyAlignment";
-import { buildRowsFromEntries, buildTurnRows, dedupeRowKeys } from "./rows";
+import {
+  buildRowsFromEntries,
+  buildTurnRows,
+  dedupeRowKeys,
+  normalizeSettledRowRounds,
+} from "./rows";
 import {
   applyEventToTurn,
   createTurn,
@@ -176,7 +181,7 @@ export function createTranscriptStore(options?: {
     if (historyRowsCache?.entries !== historyEntries) {
       historyRowsCache = {
         entries: historyEntries,
-        rows: buildRowsFromEntries(historyEntries, "history"),
+        rows: normalizeSettledRowRounds(buildRowsFromEntries(historyEntries, "history")),
       };
     }
     return historyRowsCache.rows;

@@ -117,17 +117,6 @@ function resolveNearestScrollViewport(element: HTMLElement | null) {
   return element?.closest("[data-radix-scroll-area-viewport]") as HTMLDivElement | null;
 }
 
-function normalizeRoundsForRender(rounds: GatewayTranscriptRound[], isLive: boolean) {
-  if (isLive) {
-    return rounds;
-  }
-  return rounds.map((round) => ({
-    ...round,
-    runningToolCallIds: [],
-    thinkingOpen: undefined,
-  }));
-}
-
 function TypingDots() {
   return (
     <div className="flex items-center gap-2 py-1">
@@ -1208,7 +1197,7 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
             >
               <div className="group/assistant min-w-0 w-full max-w-full space-y-1">
                 <AssistantBubble
-                  rounds={normalizeRoundsForRender(row.rounds, false)}
+                  rounds={row.rounds}
                   showUsage={showUsage}
                   usageContextWindow={usageContextWindow}
                   isLive={false}
@@ -1399,7 +1388,7 @@ const GatewayTranscriptLiveRegion = memo(function GatewayTranscriptLiveRegion(pr
             <article key={row.key} className="gateway-transcript-row">
               <div className="group/assistant min-w-0 w-full max-w-full space-y-1">
                 <AssistantBubble
-                  rounds={normalizeRoundsForRender(row.rounds, isLatestLiveAssistant)}
+                  rounds={row.rounds}
                   showUsage={showUsage}
                   usageContextWindow={usageContextWindow}
                   isLive={isLatestLiveAssistant}

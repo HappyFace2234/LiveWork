@@ -822,10 +822,16 @@ export function appendMessagesToConversation(
 
 function shiftUiRounds(rounds: UiRound[], offset: number): UiRound[] {
   if (offset <= 0) return rounds;
-  return rounds.map((round) => ({
-    ...round,
-    round: round.round + offset,
-  }));
+  return rounds.map((round) => {
+    const ordinalKey = /^r(\d+)$/.exec(round.key);
+    return {
+      ...round,
+      round: round.round + offset,
+      // `r<n>` keys are ordinal-derived and would collide with the merge
+      // target's own rounds; shift them in lockstep. Foreign keys stay put.
+      key: ordinalKey ? `r${Number(ordinalKey[1]) + offset}` : round.key,
+    };
+  });
 }
 
 function getLastRoundNumber(rounds: UiRound[]) {
