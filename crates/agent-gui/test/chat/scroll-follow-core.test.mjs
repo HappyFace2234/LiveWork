@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createTsModuleLoader } from "../helpers/load-ts-module.mjs";
 
 const rootDir = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const modulePath = path.join(rootDir, "src/pages/chat/utils/scrollFollowCore.ts");
+const modulePath = path.join(rootDir, "src/lib/chat-scroll/scrollFollowCore.ts");
 const {
   BOTTOM_ATTACH_THRESHOLD_PX,
   BOTTOM_REATTACH_ZONE_PX,

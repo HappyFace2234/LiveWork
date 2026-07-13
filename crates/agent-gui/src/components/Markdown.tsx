@@ -22,7 +22,16 @@ import { Button } from "./ui/button";
 type MarkdownProps = {
   content: string;
   className?: string;
-  isAnimating?: boolean;
+  // Fixed render mode: content born from a live stream renders in Streamdown
+  // streaming mode forever; history-born content renders static. The mode of
+  // a given block never flips, so the streaming→static re-render (and its
+  // full re-parse) cannot happen. Shiki themes are always active, so code
+  // highlights identically in both modes and nothing re-highlights at settle.
+  renderMode?: "streaming" | "static";
+  // Caret visibility while tokens are arriving. Toggled via a className so
+  // the flip never invalidates Streamdown's memoized blocks; the caret slot
+  // itself stays mounted for the whole life of a streaming-mode block.
+  showCaret?: boolean;
   readOnly?: boolean;
   // Extra component overrides merged over the built-in map. Used by the
   // workspace file preview to render images and links against workspace
@@ -236,27 +245,23 @@ export function ExternalLinkModal({ isOpen, onClose, onConfirm, url }: LinkSafet
     try {
       await openUrl(url);
     } catch (error) {
-      console.error("Failed to open external link via Tauri opener", error);
+      console.error("Failed to open external link via opener", error);
       onConfirm();
     } finally {
       onClose();
     }
   };
 
-  return createPortal(
+  const modal = (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center px-4 py-6"
+      className="external-link-modal-overlay fixed inset-0 z-[100] flex items-center justify-center bg-black/18 px-4 py-6 backdrop-blur-sm"
+      data-state="open"
+      onClick={onClose}
       role="presentation"
     >
-      <button
-        type="button"
-        tabIndex={-1}
-        className="absolute inset-0 cursor-default bg-black/18 backdrop-blur-sm"
-        onClick={onClose}
-        aria-label={streamdownTranslations.close}
-      />
       <div
-        className="relative z-10 w-full max-w-[34rem] rounded-[22px] border border-border/70 bg-background/98 shadow-[0_24px_80px_-28px_rgba(15,23,42,0.38)]"
+        className="external-link-modal-panel w-full max-w-[34rem] rounded-[22px] border border-border/70 bg-background/98 shadow-[0_24px_80px_-28px_rgba(15,23,42,0.38)]"
+        onClick={(event) => event.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-label={streamdownTranslations.openExternalLink}
@@ -305,21 +310,24 @@ export function ExternalLinkModal({ isOpen, onClose, onConfirm, url }: LinkSafet
           </div>
         </div>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
+
+  return createPortal(modal, document.body);
 }
 
 export const Markdown = memo(function Markdown(props: MarkdownProps) {
   const {
     content,
     className,
-    isAnimating = false,
+    renderMode = "static",
+    showCaret = false,
     readOnly = false,
     componentOverrides,
     preserveRelativeUrls = false,
   } = props;
-  const codeCopyRootRef = useEnabledCodeCopyButtons(!readOnly && isAnimating);
+  const streaming = renderMode === "streaming";
+  const codeCopyRootRef = useEnabledCodeCopyButtons(!readOnly && showCaret);
   const baseComponents = readOnly ? markdownReadOnlyComponents : markdownComponents;
   const components = useMemo(
     () => (componentOverrides ? { ...baseComponents, ...componentOverrides } : baseComponents),
@@ -331,25 +339,30 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
       <Streamdown
         className={cn(
           "chat-markdown max-w-none break-words",
-          isAnimating ? "chat-markdown--streaming" : "chat-markdown--static",
+          streaming ? "chat-markdown--streaming" : "chat-markdown--static",
+          // Streamdown's memo equality does not include `caret` in its check,
+          // so toggling the caret prop alone does not invalidate the render.
+          // Mirror the visibility into a className modifier to force a re-render
+          // that recomputes the inline `--streamdown-caret` style.
+          showCaret ? "chat-markdown--caret-on" : "chat-markdown--caret-off",
           className,
         )}
         plugins={streamdownPlugins}
         remarkPlugins={remarkPlugins}
         {...(preserveRelativeUrls ? { rehypePlugins: relativeUrlRehypePlugins } : {})}
         components={components}
-        mode={isAnimating ? "streaming" : "static"}
+        mode={streaming ? "streaming" : "static"}
         dir="auto"
         parseIncompleteMarkdown
         normalizeHtmlIndentation
-        isAnimating={isAnimating}
-        caret={isAnimating ? "block" : undefined}
+        isAnimating={showCaret}
+        caret={streaming ? "block" : undefined}
         animated={false}
         linkSafety={{
           enabled: !readOnly,
           renderModal: (modalProps) => <ExternalLinkModal {...modalProps} />,
         }}
-        {...(isAnimating ? {} : { shikiTheme: ["github-light", "github-dark"] as const })}
+        shikiTheme={["github-light", "github-dark"] as const}
         controls={{
           code: { copy: !readOnly, download: false },
           mermaid: { copy: !readOnly, download: false, fullscreen: !readOnly, panZoom: !readOnly },
@@ -361,8 +374,4 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
       </Streamdown>
     </div>
   );
-});
-
-export const LiveMarkdown = memo(function LiveMarkdown(props: MarkdownProps) {
-  return <Markdown {...props} />;
 });

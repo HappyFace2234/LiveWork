@@ -64,8 +64,8 @@ export function createTranscriptStoreRegistry(hooks?: {
 }
 
 const EMPTY_TRANSCRIPT: TranscriptSnapshot = {
-  foldedRows: [],
-  liveRows: [],
+  rows: [],
+  liveStartIndex: -1,
   activeTurnKey: null,
   entryCount: 0,
   activeRun: null,

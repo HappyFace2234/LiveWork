@@ -35,6 +35,12 @@ import {
 } from "@/lib/chat/userMessageContent";
 import type { GitClient } from "@/lib/git/types";
 import { cn } from "@/lib/shared/utils";
+import { extractLiveRange } from "@/lib/transcript-virtual/liveRangeExtractor";
+import {
+  CHECKPOINT_ROW_ESTIMATE_PX,
+  estimateAssistantRowHeight,
+  estimateUserRowHeight,
+} from "@/lib/transcript-virtual/rowEstimates";
 import {
   AssistantAvatar,
   AssistantBubble,
@@ -62,11 +68,13 @@ import { ConfirmActionPopover } from "./ui/confirm-action-popover";
 
 type GatewayTranscriptProps = {
   conversationId?: string;
-  // The transcript rows: the folded region renders in the virtualizer, the
-  // live region in the plain flow below it. Both come from one store
-  // assembly, so a row can never render twice.
-  foldedRows: readonly TranscriptRow[];
-  liveRows?: readonly TranscriptRow[];
+  // The whole transcript as one row list, rendered by one virtualizer. Rows
+  // come from one store assembly, so a row can never render twice.
+  rows: readonly TranscriptRow[];
+  // Index of the first unfolded-turn row (-1 when everything is folded);
+  // rows at or after it are force-mounted so a streaming reply never
+  // unmounts mid-run.
+  liveStartIndex?: number;
   // Key of the actively streaming turn (caret / live structural state).
   activeTurnKey?: string | null;
   error?: string | null;
@@ -98,9 +106,9 @@ type GatewayTranscriptProps = {
 };
 
 // Stream-born rows keep Streamdown's streaming render mode forever — even
-// after their turn folds into the virtualized region — so the
-// streaming→static mode flip (and its full re-highlight reflow) can never
-// happen. History-born rows render static from the start.
+// after their turn folds — so the streaming→static mode flip (and its full
+// re-parse) can never happen. History-born rows render static from the
+// start.
 function rowRenderMode(row: Extract<TranscriptRow, { kind: "assistant" }>) {
   return row.origin === "stream" ? ("streaming" as const) : ("static" as const);
 }
@@ -111,21 +119,11 @@ const TRANSCRIPT_ROW_OVERSCAN_COUNT = 5;
 
 type GatewayTranscriptVirtualItem =
   | { key: string; kind: "loadRemoteHistory" }
-  | { key: string; kind: "row"; row: TranscriptRow };
+  | { key: string; kind: "row"; row: TranscriptRow }
+  | { key: string; kind: "pendingBubble" };
 
 function resolveNearestScrollViewport(element: HTMLElement | null) {
   return element?.closest("[data-radix-scroll-area-viewport]") as HTMLDivElement | null;
-}
-
-function normalizeRoundsForRender(rounds: GatewayTranscriptRound[], isLive: boolean) {
-  if (isLive) {
-    return rounds;
-  }
-  return rounds.map((round) => ({
-    ...round,
-    runningToolCallIds: [],
-    thinkingOpen: undefined,
-  }));
 }
 
 function TypingDots() {
@@ -938,15 +936,10 @@ function GatewayUserMessageRowBody(props: {
 }
 
 // Maps each assistant row to the nearest preceding user row — the prompt a
-// retry re-sends. `seed` carries the folded region's trailing user row into
-// the live region's map (a live assistant row's prompt can sit across the
-// fold boundary for foreign turns without a user slot).
-function buildRetryTargetMap(
-  rows: readonly TranscriptRow[],
-  seed?: Extract<TranscriptRow, { kind: "user" }>,
-) {
+// retry re-sends.
+function buildRetryTargetMap(rows: readonly TranscriptRow[]) {
   const map = new Map<string, Extract<TranscriptRow, { kind: "user" }>>();
-  let lastUser: Extract<TranscriptRow, { kind: "user" }> | null = seed ?? null;
+  let lastUser: Extract<TranscriptRow, { kind: "user" }> | null = null;
   for (const row of rows) {
     if (row.kind === "user") {
       lastUser = row;
@@ -1044,14 +1037,62 @@ function GatewayAssistantMessageActions(props: {
   );
 }
 
-const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegion(props: {
+const rowEstimateCache = new WeakMap<TranscriptRow, number>();
+
+// Content-shaped height estimates: only ever used for rows the virtualizer
+// has never measured (the measurement cache is keyed by row key and survives
+// folding), but a shaped guess keeps scroll corrections small while reading
+// unmeasured history.
+function estimateRowHeight(row: TranscriptRow): number {
+  const cached = rowEstimateCache.get(row);
+  if (cached !== undefined) {
+    return cached;
+  }
+  let estimate: number;
+  if (row.kind === "user") {
+    estimate = estimateUserRowHeight(row.text.length);
+  } else if (row.kind === "assistant") {
+    let textChars = 0;
+    let toolCount = 0;
+    let thinkingCount = 0;
+    for (const round of row.rounds) {
+      for (const block of round.blocks) {
+        if (block.kind === "text") {
+          textChars += block.text.length;
+        } else if (block.kind === "thinking") {
+          thinkingCount += 1;
+        } else {
+          toolCount += 1;
+        }
+      }
+    }
+    estimate = estimateAssistantRowHeight({ textChars, toolCount, thinkingCount });
+  } else if (row.kind === "checkpoint") {
+    estimate = CHECKPOINT_ROW_ESTIMATE_PX;
+  } else {
+    estimate = 120;
+  }
+  rowEstimateCache.set(row, estimate);
+  return estimate;
+}
+
+function estimateVirtualItemHeight(item: GatewayTranscriptVirtualItem): number {
+  if (item.kind === "loadRemoteHistory") return 44;
+  if (item.kind === "pendingBubble") return 56;
+  return estimateRowHeight(item.row);
+}
+
+const GatewayTranscriptListRegion = memo(function GatewayTranscriptListRegion(props: {
   conversationId?: string;
   rows: readonly TranscriptRow[];
+  liveStartIndex: number;
+  activeTurnKey?: string | null;
   scrollViewport: HTMLDivElement | null;
   hasMoreHistory?: boolean;
   isLoadingMoreHistory?: boolean;
   onLoadFullHistory?: () => void;
   isStreaming: boolean;
+  isAgentMode: boolean;
   showUsage: boolean;
   usageContextWindow?: number;
   workspaceRoot?: string;
@@ -1062,23 +1103,30 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
     text: string,
     uploadedFiles: PendingUploadedFile[],
   ) => void;
+  toolStatus?: string | null;
+  toolStatusIsCompaction: boolean;
   readOnly?: boolean;
   redactToolContent?: boolean;
 }) {
   const {
     conversationId,
     rows,
+    liveStartIndex,
+    activeTurnKey,
     scrollViewport,
     hasMoreHistory,
     isLoadingMoreHistory,
     onLoadFullHistory,
     isStreaming,
+    isAgentMode,
     showUsage,
     usageContextWindow,
     workspaceRoot,
     gitClient,
     onLoadUploadedImagePreview,
     onResendFromEdit,
+    toolStatus,
+    toolStatusIsCompaction,
     readOnly = false,
     redactToolContent = false,
   } = props;
@@ -1106,6 +1154,43 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
     }
   }, [editingMessageId, rows]);
 
+  const displayedToolStatus = useMemo(
+    () => normalizeLiveToolStatus(toolStatus ?? null),
+    [toolStatus],
+  );
+  const displayedToolStatusIsCompaction = toolStatusIsCompaction;
+
+  // The live article: the streaming turn's trailing assistant row while a
+  // run is active, else the trailing assistant row. It keeps its in-flight
+  // structural state regardless of `isStreaming` (folding happens at the
+  // next run_started); the caret tracks `isStreaming` separately so it hides
+  // cleanly once the stream actually ends.
+  const liveAssistantIndex = useMemo(() => {
+    if (activeTurnKey) {
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (row?.kind === "assistant" && row.turnKey === activeTurnKey) {
+          return index;
+        }
+      }
+      return -1;
+    }
+    return rows.length > 0 && rows[rows.length - 1]?.kind === "assistant" ? rows.length - 1 : -1;
+  }, [activeTurnKey, rows]);
+
+  // The pending bubble (typing dots / vibing / compacting) shows while busy
+  // and the transcript has no assistant output for the active exchange yet.
+  const shouldShowPendingLiveBubble = useMemo(() => {
+    if (readOnly || !isStreaming) {
+      return false;
+    }
+    if (displayedToolStatusIsCompaction) {
+      return true;
+    }
+    const lastRowKind = rows[rows.length - 1]?.kind;
+    return !lastRowKind || lastRowKind === "user" || lastRowKind === "checkpoint";
+  }, [displayedToolStatusIsCompaction, isStreaming, readOnly, rows]);
+
   // Row keys are unique by construction (the row builder's single canonical
   // pass) and feed both React reconciliation and the virtualizer's
   // measurement cache directly.
@@ -1117,8 +1202,24 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
     for (const row of rows) {
       next.push({ key: row.key, kind: "row", row });
     }
+    if (shouldShowPendingLiveBubble) {
+      next.push({ key: "live-pending-bubble", kind: "pendingBubble" });
+    }
     return next;
-  }, [hasMoreHistory, rows, readOnly]);
+  }, [hasMoreHistory, rows, readOnly, shouldShowPendingLiveBubble]);
+
+  const leadingOffset = !readOnly && hasMoreHistory ? 1 : 0;
+  // Everything at or after the live boundary (including the pending bubble)
+  // is force-mounted: a streaming reply must never unmount mid-run.
+  const forceMountStart =
+    liveStartIndex >= 0
+      ? liveStartIndex + leadingOffset
+      : shouldShowPendingLiveBubble
+        ? virtualItems.length - 1
+        : -1;
+  const forceMountStartRef = useRef(forceMountStart);
+  forceMountStartRef.current = forceMountStart;
+
   const retryTargetByAssistantKey = useMemo(() => buildRetryTargetMap(rows), [rows]);
   const getTranscriptItemKey = useCallback(
     // The index branch is unreachable (count === virtualItems.length); it
@@ -1129,13 +1230,45 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
   const transcriptVirtualizer = useVirtualizer({
     count: virtualItems.length,
     getScrollElement: () => scrollViewport,
-    estimateSize: () => TRANSCRIPT_ROW_ESTIMATED_HEIGHT,
+    estimateSize: (index) => {
+      const item = virtualItems[index];
+      return item ? estimateVirtualItemHeight(item) : TRANSCRIPT_ROW_ESTIMATED_HEIGHT;
+    },
     getItemKey: getTranscriptItemKey,
     gap: TRANSCRIPT_ROW_GAP,
     overscan: TRANSCRIPT_ROW_OVERSCAN_COUNT,
     enabled: scrollViewport !== null,
+    rangeExtractor: (range) => extractLiveRange(range, forceMountStartRef.current),
   });
   const virtualRows = transcriptVirtualizer.getVirtualItems();
+
+  // Prepend anchor: when loading earlier history inserts rows above the
+  // viewport, shift scrollTop by the inserted height so the visible content
+  // does not jump. Skipped while bottom-attached (the follow engine pins).
+  // getOffsetForIndex(_, "start") is the public offset accessor; the anchor
+  // and the restore read through the same function, so the delta is exact.
+  const prependAnchorRef = useRef<{ key: string; start: number } | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs per commit by design
+  useLayoutEffect(() => {
+    const firstRowKey = virtualItems[leadingOffset]?.key ?? null;
+    const startOf = (index: number) => transcriptVirtualizer.getOffsetForIndex(index, "start")?.[0];
+    const anchor = prependAnchorRef.current;
+    if (anchor && firstRowKey && anchor.key !== firstRowKey && scrollViewport) {
+      const anchorIndex = virtualItems.findIndex((item) => item.key === anchor.key);
+      const anchorStart = anchorIndex >= 0 ? startOf(anchorIndex) : undefined;
+      if (anchorStart !== undefined) {
+        const bottomGap =
+          scrollViewport.scrollHeight - scrollViewport.scrollTop - scrollViewport.clientHeight;
+        const delta = anchorStart - anchor.start;
+        if (delta > 0 && bottomGap > 8) {
+          scrollViewport.scrollTop += delta;
+        }
+      }
+    }
+    const firstStart = firstRowKey ? startOf(leadingOffset) : undefined;
+    prependAnchorRef.current =
+      firstRowKey && firstStart !== undefined ? { key: firstRowKey, start: firstStart } : null;
+  });
 
   return (
     <div className="relative" style={{ height: transcriptVirtualizer.getTotalSize() }}>
@@ -1170,6 +1303,49 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
           );
         }
 
+        if (virtualItem.kind === "pendingBubble") {
+          return (
+            <article
+              key={virtualRow.key}
+              data-index={virtualRow.index}
+              ref={transcriptVirtualizer.measureElement}
+              className="gateway-transcript-row absolute left-0 right-0 top-0"
+              style={{ transform: `translateY(${virtualRow.start}px)` }}
+            >
+              <div className="flex w-full max-w-full items-start gap-3">
+                <AssistantAvatar />
+                <div className="min-w-0 flex-1 pt-1">
+                  {displayedToolStatusIsCompaction ? (
+                    <div className="flex items-center py-1">
+                      <CompactingText className="text-sm font-medium text-muted-foreground" />
+                    </div>
+                  ) : isAgentMode ? (
+                    displayedToolStatus === VIBING_STATUS ? (
+                      <div className="flex items-center py-1">
+                        <VibingText className="text-sm font-medium text-muted-foreground" />
+                      </div>
+                    ) : displayedToolStatus ? (
+                      <div className="py-1 text-sm text-muted-foreground">
+                        {displayedToolStatus}
+                      </div>
+                    ) : (
+                      <TypingDots />
+                    )
+                  ) : displayedToolStatus === VIBING_STATUS ? (
+                    <div className="flex items-center py-1">
+                      <VibingText className="text-sm font-medium text-muted-foreground" />
+                    </div>
+                  ) : displayedToolStatus ? (
+                    <div className="py-1 text-sm text-muted-foreground">{displayedToolStatus}</div>
+                  ) : (
+                    <TypingDots />
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        }
+
         const row = virtualItem.row;
         if (row.kind === "user") {
           return (
@@ -1198,6 +1374,15 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
         }
 
         if (row.kind === "assistant") {
+          const rowIndex = virtualRow.index - leadingOffset;
+          const isLatestLiveAssistant = rowIndex === liveAssistantIndex;
+          const isLatestLiveStreaming = isStreaming && isLatestLiveAssistant;
+          const shouldShowLiveStatus =
+            isLatestLiveStreaming &&
+            Boolean(displayedToolStatus) &&
+            !displayedToolStatusIsCompaction &&
+            shouldShowLiveStatusForRounds(row.rounds);
+          const liveStatusText = shouldShowLiveStatus ? (displayedToolStatus ?? "") : "";
           return (
             <article
               key={virtualRow.key}
@@ -1208,15 +1393,17 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
             >
               <div className="group/assistant min-w-0 w-full max-w-full space-y-1">
                 <AssistantBubble
-                  rounds={normalizeRoundsForRender(row.rounds, false)}
+                  rounds={row.rounds}
                   showUsage={showUsage}
                   usageContextWindow={usageContextWindow}
-                  isLive={false}
+                  isLive={isLatestLiveAssistant}
+                  isStreaming={isLatestLiveStreaming}
                   renderMode={rowRenderMode(row)}
                   readOnly={readOnly}
                   redactToolContent={redactToolContent}
                 />
-                {!readOnly ? (
+                {shouldShowLiveStatus ? <LiveStatusFooter status={liveStatusText} /> : null}
+                {!readOnly && !isLatestLiveStreaming ? (
                   <GatewayAssistantMessageActions
                     row={row}
                     retryTarget={retryTargetByAssistantKey.get(row.key) ?? null}
@@ -1266,226 +1453,10 @@ const GatewayTranscriptFoldedRegion = memo(function GatewayTranscriptFoldedRegio
   );
 });
 
-const GatewayTranscriptLiveRegion = memo(function GatewayTranscriptLiveRegion(props: {
-  // The flow rows past the fold boundary (settled + streaming turns).
-  rows: readonly TranscriptRow[];
-  lastFoldedRowKind?: TranscriptRow["kind"];
-  // Trailing user row of the folded region — retry-target seed for assistant
-  // rows whose prompt sits across the fold boundary.
-  lastFoldedUserRow?: Extract<TranscriptRow, { kind: "user" }>;
-  activeTurnKey?: string | null;
-  isStreaming: boolean;
-  isAgentMode: boolean;
-  showUsage: boolean;
-  usageContextWindow?: number;
-  workspaceRoot?: string;
-  gitClient?: GitClient | null;
-  onLoadUploadedImagePreview?: UploadedImagePreviewLoader;
-  onResendFromEdit?: (
-    messageRef: HistoryMessageRef,
-    text: string,
-    uploadedFiles: PendingUploadedFile[],
-  ) => void;
-  toolStatus?: string | null;
-  toolStatusIsCompaction: boolean;
-}) {
-  const {
-    rows,
-    lastFoldedRowKind,
-    lastFoldedUserRow,
-    activeTurnKey,
-    isStreaming,
-    isAgentMode,
-    showUsage,
-    usageContextWindow,
-    workspaceRoot,
-    gitClient,
-    onLoadUploadedImagePreview,
-    onResendFromEdit,
-    toolStatus,
-    toolStatusIsCompaction,
-  } = props;
-  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const loadCommitDetails = useGatewayCommitDetailsLoader(workspaceRoot, gitClient);
-  const retryTargetByAssistantKey = useMemo(
-    () => buildRetryTargetMap(rows, lastFoldedUserRow),
-    [rows, lastFoldedUserRow],
-  );
-
-  useEffect(() => {
-    if (!editingMessageId) {
-      return;
-    }
-    const hasEditingRow = rows.some((row) => row.kind === "user" && row.key === editingMessageId);
-    if (!hasEditingRow) {
-      setEditingMessageId(null);
-    }
-  }, [editingMessageId, rows]);
-  // The live article: the streaming turn's trailing assistant row while a
-  // run is active, else the trailing assistant row of the flow. It keeps its
-  // in-flight structural state regardless of `isStreaming`: it stays in the
-  // flow on purpose after the run ends (folding happens at the next
-  // run_started), and gating the structure on `isStreaming` would re-render
-  // the article in one frame (thinking collapses, tool indicators clear) and
-  // produce a visible flash. The caret tracks `isStreaming` separately so it
-  // hides cleanly once the stream actually ends.
-  const liveAssistantIndex = useMemo(() => {
-    if (activeTurnKey) {
-      for (let index = rows.length - 1; index >= 0; index -= 1) {
-        const row = rows[index];
-        if (row?.kind === "assistant" && row.turnKey === activeTurnKey) {
-          return index;
-        }
-      }
-      return -1;
-    }
-    return rows.length > 0 && rows[rows.length - 1]?.kind === "assistant" ? rows.length - 1 : -1;
-  }, [activeTurnKey, rows]);
-  const displayedToolStatus = useMemo(
-    () => normalizeLiveToolStatus(toolStatus ?? null),
-    [toolStatus],
-  );
-  const displayedToolStatusIsCompaction = toolStatusIsCompaction;
-  // The pending bubble (typing dots / vibing / compacting) shows while busy
-  // and the transcript has no assistant output for the active exchange yet.
-  const shouldShowPendingLiveBubble = useMemo(() => {
-    if (!isStreaming) {
-      return false;
-    }
-    if (displayedToolStatusIsCompaction) {
-      return true;
-    }
-    const lastRowKind = rows[rows.length - 1]?.kind ?? lastFoldedRowKind;
-    return !lastRowKind || lastRowKind === "user" || lastRowKind === "checkpoint";
-  }, [displayedToolStatusIsCompaction, isStreaming, lastFoldedRowKind, rows]);
-
-  if (rows.length === 0 && !shouldShowPendingLiveBubble) {
-    return null;
-  }
-
-  return (
-    <>
-      {rows.map((row, index) => {
-        if (row.kind === "user") {
-          return (
-            <article key={row.key} className="gateway-transcript-row gateway-transcript-row-user">
-              <GatewayUserMessageRowBody
-                row={row}
-                isStreaming={isStreaming}
-                copiedMessageId={copiedMessageId}
-                editingMessageId={editingMessageId}
-                setCopiedMessageId={setCopiedMessageId}
-                setEditingMessageId={setEditingMessageId}
-                workspaceRoot={workspaceRoot}
-                onLoadUploadedImagePreview={onLoadUploadedImagePreview}
-                loadCommitDetails={loadCommitDetails}
-                onResendFromEdit={onResendFromEdit}
-              />
-            </article>
-          );
-        }
-
-        if (row.kind === "assistant") {
-          const isLatestLiveAssistant = index === liveAssistantIndex;
-          const isLatestLiveStreaming = isStreaming && isLatestLiveAssistant;
-          const shouldShowLiveStatus =
-            isLatestLiveStreaming &&
-            Boolean(displayedToolStatus) &&
-            !displayedToolStatusIsCompaction &&
-            shouldShowLiveStatusForRounds(row.rounds);
-          const liveStatusText = shouldShowLiveStatus ? (displayedToolStatus ?? "") : "";
-          return (
-            <article key={row.key} className="gateway-transcript-row">
-              <div className="group/assistant min-w-0 w-full max-w-full space-y-1">
-                <AssistantBubble
-                  rounds={normalizeRoundsForRender(row.rounds, isLatestLiveAssistant)}
-                  showUsage={showUsage}
-                  usageContextWindow={usageContextWindow}
-                  isLive={isLatestLiveAssistant}
-                  isStreaming={isLatestLiveStreaming}
-                  renderMode="streaming"
-                />
-                {shouldShowLiveStatus ? <LiveStatusFooter status={liveStatusText} /> : null}
-                {!isLatestLiveStreaming ? (
-                  <GatewayAssistantMessageActions
-                    row={row}
-                    retryTarget={retryTargetByAssistantKey.get(row.key) ?? null}
-                    isStreaming={isStreaming}
-                    copiedMessageId={copiedMessageId}
-                    setCopiedMessageId={setCopiedMessageId}
-                    onResendFromEdit={onResendFromEdit}
-                  />
-                ) : null}
-              </div>
-            </article>
-          );
-        }
-
-        if (row.kind === "checkpoint") {
-          return (
-            <article
-              key={row.key}
-              className="gateway-transcript-row gateway-transcript-row-checkpoint"
-            >
-              <CheckpointCard item={row} />
-            </article>
-          );
-        }
-
-        return (
-          <article key={row.key} className="gateway-transcript-row">
-            <div className="gateway-bubble gateway-bubble-error">
-              <div className="gateway-bubble-label">Error</div>
-              <div className="gateway-bubble-content">
-                <pre>{row.text}</pre>
-              </div>
-            </div>
-          </article>
-        );
-      })}
-      {shouldShowPendingLiveBubble ? (
-        <article className="gateway-transcript-row">
-          <div className="flex w-full max-w-full items-start gap-3">
-            <AssistantAvatar />
-            <div className="min-w-0 flex-1 pt-1">
-              {displayedToolStatusIsCompaction ? (
-                <div className="flex items-center py-1">
-                  <CompactingText className="text-sm font-medium text-muted-foreground" />
-                </div>
-              ) : isAgentMode ? (
-                displayedToolStatus === VIBING_STATUS ? (
-                  <div className="flex items-center py-1">
-                    <VibingText className="text-sm font-medium text-muted-foreground" />
-                  </div>
-                ) : displayedToolStatus ? (
-                  <div className="py-1 text-sm text-muted-foreground">{displayedToolStatus}</div>
-                ) : (
-                  <TypingDots />
-                )
-              ) : displayedToolStatus === VIBING_STATUS ? (
-                <div className="flex items-center py-1">
-                  <VibingText className="text-sm font-medium text-muted-foreground" />
-                </div>
-              ) : displayedToolStatus ? (
-                <div className="py-1 text-sm text-muted-foreground">{displayedToolStatus}</div>
-              ) : (
-                <TypingDots />
-              )}
-            </div>
-          </div>
-        </article>
-      ) : null}
-    </>
-  );
-});
-
-const EMPTY_LIVE_ROWS: readonly TranscriptRow[] = [];
-
 export function GatewayTranscript({
   conversationId,
-  foldedRows,
-  liveRows = EMPTY_LIVE_ROWS,
+  rows,
+  liveStartIndex = -1,
   activeTurnKey = null,
   error,
   toolStatus,
@@ -1514,28 +1485,14 @@ export function GatewayTranscript({
   const [transcriptScrollViewport, setTranscriptScrollViewport] = useState<HTMLDivElement | null>(
     null,
   );
-  const rowCount = foldedRows.length + liveRows.length;
-  const lastFoldedRowKind = foldedRows[foldedRows.length - 1]?.kind;
-  // foldedRows is identity-stable while a reply streams, so this memo (and
-  // the live region prop it feeds) only changes when turns fold.
-  const lastFoldedUserRow = useMemo(() => {
-    for (let index = foldedRows.length - 1; index >= 0; index -= 1) {
-      const row = foldedRows[index];
-      if (row?.kind === "user") {
-        return row;
-      }
-    }
-    return undefined;
-  }, [foldedRows]);
+  const rowCount = rows.length;
   const inlineErrorText = error?.trim() ?? "";
   const shouldShowInlineError = useMemo(() => {
     if (inlineErrorText.length === 0) {
       return false;
     }
-    const matches = (row: TranscriptRow) =>
-      row.kind === "error" && row.text.trim() === inlineErrorText;
-    return !foldedRows.some(matches) && !liveRows.some(matches);
-  }, [foldedRows, liveRows, inlineErrorText]);
+    return !rows.some((row) => row.kind === "error" && row.text.trim() === inlineErrorText);
+  }, [rows, inlineErrorText]);
 
   useLayoutEffect(() => {
     const nextViewport = resolveNearestScrollViewport(transcriptListRef.current);
@@ -1568,41 +1525,28 @@ export function GatewayTranscript({
         ref={transcriptListRef}
         className="gateway-chat-column gateway-transcript-list select-text"
       >
-        <GatewayTranscriptFoldedRegion
+        <GatewayTranscriptListRegion
           conversationId={conversationId}
-          rows={foldedRows}
+          rows={rows}
+          liveStartIndex={liveStartIndex}
+          activeTurnKey={activeTurnKey}
           scrollViewport={transcriptScrollViewport}
           hasMoreHistory={hasMoreHistory}
           isLoadingMoreHistory={isLoadingMoreHistory}
           onLoadFullHistory={onLoadFullHistory}
           isStreaming={isStreaming}
+          isAgentMode={isAgentMode}
           showUsage={showUsage}
           usageContextWindow={usageContextWindow}
           workspaceRoot={workspaceRoot}
           gitClient={gitClient}
           onLoadUploadedImagePreview={onLoadUploadedImagePreview}
           onResendFromEdit={onResendFromEdit}
+          toolStatus={toolStatus}
+          toolStatusIsCompaction={toolStatusIsCompaction}
           readOnly={readOnly}
           redactToolContent={redactToolContent}
         />
-        {!readOnly ? (
-          <GatewayTranscriptLiveRegion
-            rows={liveRows}
-            lastFoldedRowKind={lastFoldedRowKind}
-            lastFoldedUserRow={lastFoldedUserRow}
-            activeTurnKey={activeTurnKey}
-            isStreaming={isStreaming}
-            isAgentMode={isAgentMode}
-            showUsage={showUsage}
-            usageContextWindow={usageContextWindow}
-            workspaceRoot={workspaceRoot}
-            gitClient={gitClient}
-            onLoadUploadedImagePreview={onLoadUploadedImagePreview}
-            onResendFromEdit={onResendFromEdit}
-            toolStatus={toolStatus}
-            toolStatusIsCompaction={toolStatusIsCompaction}
-          />
-        ) : null}
         {shouldShowInlineError ? (
           <div className="gateway-inline-error">{inlineErrorText}</div>
         ) : null}

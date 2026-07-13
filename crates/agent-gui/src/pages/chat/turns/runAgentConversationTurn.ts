@@ -517,7 +517,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
         : [
             ...prev,
             {
-              key: `${Date.now()}-${round}`,
+              key: `r${round}`,
               round,
               blocks: [],
               runningToolCallIds: [],
@@ -630,7 +630,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
             (prev) => [
               ...prev,
               {
-                key: `${Date.now()}-${round}`,
+                key: `r${round}`,
                 round,
                 blocks: [],
                 runningToolCallIds: [],
@@ -946,7 +946,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           (prev) => [
             ...prev,
             {
-              key: `${Date.now()}-${round}`,
+              key: `r${round}`,
               round,
               blocks: [],
               runningToolCallIds: [],

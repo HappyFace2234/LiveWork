@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChevronRight, Loader2, Sparkles } from "../../../../components/icons";
-import { LiveMarkdown, Markdown } from "../../../../components/Markdown";
+import { Markdown } from "../../../../components/Markdown";
 import { useLocale } from "../../../../i18n";
 import type { UiRound } from "../../../../lib/chat/messages/uiMessages";
 import { normalizeLiveToolStatus, VIBING_STATUS } from "../../../../lib/chat/page/chatPageHelpers";
-import { useScrollFollow } from "../../hooks/useScrollFollow";
+import { useScrollFollow } from "../../../../lib/chat-scroll/useScrollFollow";
 import { groupRoundBlocks } from "./assistantBubbleUtils";
 import { HostedSearchGroupView } from "./HostedSearchGroupView";
 import { CompactingText, VibingText } from "./StatusText";
@@ -74,13 +74,16 @@ function ThinkingBlock({ text, open }: { text: string; open?: boolean }) {
   );
 }
 
-export function RoundContent(props: {
+export const RoundContent = memo(function RoundContent(props: {
   round: UiRound;
   showLabel: boolean;
   showUsage?: boolean;
   usageContextWindow?: number;
   isLive?: boolean;
   isActive?: boolean;
+  // Pinned per row (see AssistantBubble); falls back to the live flag for
+  // callers that render outside the transcript row model.
+  renderMode?: "streaming" | "static";
   toolStatus?: string | null;
   toolStatusVariant?: "default" | "compaction";
   runningToolCallIds?: string[];
@@ -93,6 +96,7 @@ export function RoundContent(props: {
     usageContextWindow,
     isLive,
     isActive,
+    renderMode,
     toolStatus,
     toolStatusVariant,
     runningToolCallIds,
@@ -192,15 +196,14 @@ export function RoundContent(props: {
 
         if (!block.text.trim()) return null;
 
-        return isLive && isActive ? (
-          <LiveMarkdown
+        return (
+          <Markdown
             key={block.key}
             content={block.text}
             className="font-openai-chat"
-            isAnimating
+            renderMode={renderMode ?? (isLive ? "streaming" : "static")}
+            showCaret={Boolean(isLive && isActive)}
           />
-        ) : (
-          <Markdown key={block.key} content={block.text} className="font-openai-chat" />
         );
       })}
 
@@ -209,4 +212,4 @@ export function RoundContent(props: {
       ) : null}
     </div>
   );
-}
+});

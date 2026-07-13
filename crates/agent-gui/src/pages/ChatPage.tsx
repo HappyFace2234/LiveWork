@@ -89,6 +89,7 @@ import {
   getFirstUserMessageText,
   isAbortLikeError,
 } from "../lib/chat/page/chatPageHelpers";
+import type { ScrollFollowHandle } from "../lib/chat-scroll/useScrollFollow";
 import { createStreamDebugLogger } from "../lib/debug/agentDebug";
 import { tauriGitClient } from "../lib/git/tauriGitClient";
 import { memoryDeleteProject } from "../lib/memory/api";
@@ -222,7 +223,6 @@ import {
   normalizeGatewayExecutionMode,
   normalizeGatewayWorkdir,
 } from "./chat/gateway/gatewayBridgeTypes";
-import type { ScrollFollowHandle } from "./chat/hooks/useScrollFollow";
 import {
   appendQueuedChatTurn,
   buildQueuedChatTurnPreview,
@@ -620,7 +620,6 @@ export function ChatPage(props: ChatPageProps) {
   const [hookWarning, setHookWarning] = useState<string | null>(null);
   const [notifyItems, setNotifyItems] = useState<NotifyItem[]>([]);
   const notifyIdCounter = useRef(0);
-  const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
   const [hydratingConversationId, setHydratingConversationIdState] = useState<string | null>(null);
   const [hydrationFailedConversationId, setHydrationFailedConversationIdState] = useState<
     string | null
@@ -1930,7 +1929,6 @@ export function ChatPage(props: ChatPageProps) {
     setPendingUploadsForConversation(targetConversationId, []);
     setErrorMessage(null);
     setHookWarning(null);
-    setCopiedMessageKey(null);
     scrollFollowRef.current?.stickToBottom();
   }
 
@@ -5199,8 +5197,6 @@ export function ChatPage(props: ChatPageProps) {
                 liveTranscriptStore={liveTranscriptStore}
                 isCompactionRunning={isCompactionRunning}
                 bottomReservePx={composerOverlayHeight}
-                copiedMessageKey={copiedMessageKey}
-                setCopiedMessageKey={setCopiedMessageKey}
                 onResendFromEdit={handleResendFromEdit}
                 onOpenSettings={onOpenSettings}
                 onSuggestionSelect={handleEmptyStateSuggestion}

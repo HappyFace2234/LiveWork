@@ -29,15 +29,17 @@ function userMessage(runId, seq, message, extra = {}) {
 }
 
 function foldedRows(snapshot) {
-  return snapshot.foldedRows;
+  return snapshot.liveStartIndex >= 0
+    ? snapshot.rows.slice(0, snapshot.liveStartIndex)
+    : snapshot.rows;
 }
 
 function liveRows(snapshot) {
-  return snapshot.liveRows;
+  return snapshot.liveStartIndex >= 0 ? snapshot.rows.slice(snapshot.liveStartIndex) : [];
 }
 
 function allRows(snapshot) {
-  return [...snapshot.foldedRows, ...snapshot.liveRows];
+  return snapshot.rows;
 }
 
 function rowText(row) {
@@ -1018,7 +1020,7 @@ test("rebased with duplicate prompt texts truncates at the edited message, not t
   );
 });
 
-test("streaming commits keep the folded-region array identity stable", () => {
+test("streaming commits keep the folded prefix rows identity-stable", () => {
   const store = createTranscriptStore();
   store.applyEvent(userMessage("run-1", 1, "one"));
   store.applyEvent(runStarted("run-1", 2));
@@ -1028,19 +1030,57 @@ test("streaming commits keep the folded-region array identity stable", () => {
   store.applyEvent(runStarted("run-2", 6));
   store.flush();
   const before = store.getSnapshot();
-  assert.equal(before.foldedRows.length, 2);
+  assert.equal(before.liveStartIndex, 2);
 
   store.applyEvent(token("run-2", 7, "streaming "));
   store.flush();
   store.applyEvent(token("run-2", 8, "more"));
   store.flush();
   const after = store.getSnapshot();
-  assert.equal(
-    after.foldedRows,
-    before.foldedRows,
-    "token deltas must not re-derive the virtualized region's rows",
+  assert.equal(after.liveStartIndex, 2);
+  for (let index = 0; index < after.liveStartIndex; index += 1) {
+    assert.equal(
+      after.rows[index],
+      before.rows[index],
+      "token deltas must not re-derive the folded prefix's row objects",
+    );
+  }
+  assert.equal(rowText(liveRows(after)[1]), "streaming more");
+});
+
+test("fold is a pure data transition: keys carry over and the boundary moves", () => {
+  const store = createTranscriptStore();
+  store.applyEvent(userMessage("run-1", 1, "prompt"));
+  store.applyEvent(runStarted("run-1", 2));
+  store.applyEvent(token("run-1", 3, "the reply"));
+  store.applyEvent(runFinished("run-1", 4));
+  store.flush();
+  const settled = store.getSnapshot();
+  assert.equal(settled.liveStartIndex, 0, "settled turn still lives in the unfolded suffix");
+  const settledKeys = settled.rows.map((row) => row.key);
+
+  // The next run_started folds the settled turn: its rows keep their keys in
+  // the same single list, so React reconciles them in place (no remount) and
+  // the key-addressed virtualizer measurements survive.
+  store.applyEvent(userMessage("run-2", 5, "next prompt"));
+  store.applyEvent(runStarted("run-2", 6));
+  store.flush();
+  const folded = store.getSnapshot();
+  assert.equal(folded.liveStartIndex, settledKeys.length, "boundary moved past the folded turn");
+  assert.deepEqual(
+    folded.rows.slice(0, settledKeys.length).map((row) => row.key),
+    settledKeys,
+    "keys are unchanged across the fold",
   );
-  assert.equal(rowText(after.liveRows[1]), "streaming more");
+
+  // After the fold, streaming commits reuse the folded prefix identically.
+  const foldedPrefix = folded.rows.slice(0, folded.liveStartIndex);
+  store.applyEvent(token("run-2", 7, "next reply"));
+  store.flush();
+  const streaming = store.getSnapshot();
+  for (const [index, row] of foldedPrefix.entries()) {
+    assert.equal(streaming.rows[index], row, "folded prefix rows stay identity-stable");
+  }
 });
 
 test("replace keeps a settled exchange whose persistence lags the fetched window", () => {

@@ -22,17 +22,15 @@ import { Button } from "./ui/button";
 type MarkdownProps = {
   content: string;
   className?: string;
-  isAnimating?: boolean;
-  // Fixed per-entry render mode: entries born in the live region render in
-  // Streamdown streaming mode forever; history-born entries render static.
-  // The mode of a given entry never flips, so the streaming→static
-  // re-render (and its late shiki re-highlight reflow) cannot happen. When
-  // omitted, falls back to deriving the mode from `isAnimating`.
+  // Fixed render mode: content born from a live stream renders in Streamdown
+  // streaming mode forever; history-born content renders static. The mode of
+  // a given block never flips, so the streaming→static re-render (and its
+  // full re-parse) cannot happen. Shiki themes are always active, so code
+  // highlights identically in both modes and nothing re-highlights at settle.
   renderMode?: "streaming" | "static";
-  // Independently control caret visibility. Defaults to `isAnimating`.
-  // Set to `false` when the source content is no longer receiving tokens but
-  // we still want to keep Streamdown in streaming mode (to avoid the heavy
-  // re-render that mode="static" triggers).
+  // Caret visibility while tokens are arriving. Toggled via a className so
+  // the flip never invalidates Streamdown's memoized blocks; the caret slot
+  // itself stays mounted for the whole life of a streaming-mode block.
   showCaret?: boolean;
   readOnly?: boolean;
   // Extra component overrides merged over the built-in map. Used by the
@@ -97,6 +95,7 @@ function MarkdownImageFallback(props: MarkdownImageFallbackProps) {
 export const markdownComponents: Components = {
   img: MarkdownImageFallback,
 };
+
 function MarkdownReadOnlyLink(props: MarkdownAnchorFallbackProps) {
   const { children, href, title } = props;
   const label =
@@ -230,7 +229,7 @@ const streamdownTranslations = {
 } satisfies Partial<StreamdownTranslations>;
 
 export function ExternalLinkModal({ isOpen, onClose, onConfirm, url }: LinkSafetyModalProps) {
-  if (!isOpen) {
+  if (!isOpen || typeof document === "undefined") {
     return null;
   }
 
@@ -246,7 +245,7 @@ export function ExternalLinkModal({ isOpen, onClose, onConfirm, url }: LinkSafet
     try {
       await openUrl(url);
     } catch (error) {
-      console.error("Failed to open external link via Tauri opener", error);
+      console.error("Failed to open external link via opener", error);
       onConfirm();
     } finally {
       onClose();
@@ -321,31 +320,26 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
   const {
     content,
     className,
-    isAnimating = false,
-    renderMode,
-    showCaret = isAnimating,
+    renderMode = "static",
+    showCaret = false,
     readOnly = false,
     componentOverrides,
     preserveRelativeUrls = false,
   } = props;
-  const useStreamingMode = renderMode ? renderMode === "streaming" : isAnimating;
-  const isActivelyStreaming = showCaret;
-  const codeCopyRootRef = useEnabledCodeCopyButtons(!readOnly && isActivelyStreaming);
+  const streaming = renderMode === "streaming";
+  const codeCopyRootRef = useEnabledCodeCopyButtons(!readOnly && showCaret);
   const baseComponents = readOnly ? markdownReadOnlyComponents : markdownComponents;
   const components = useMemo(
     () => (componentOverrides ? { ...baseComponents, ...componentOverrides } : baseComponents),
     [baseComponents, componentOverrides],
   );
-  // Keep Streamdown's caret pseudo-element mounted while in streaming mode;
-  // `showCaret` only toggles visibility so the final token does not reflow.
-  const keepCaretSlot = useStreamingMode;
 
   return (
     <div ref={codeCopyRootRef}>
       <Streamdown
         className={cn(
           "chat-markdown max-w-none break-words",
-          useStreamingMode ? "chat-markdown--streaming" : "chat-markdown--static",
+          streaming ? "chat-markdown--streaming" : "chat-markdown--static",
           // Streamdown's memo equality does not include `caret` in its check,
           // so toggling the caret prop alone does not invalidate the render.
           // Mirror the visibility into a className modifier to force a re-render
@@ -357,12 +351,12 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
         remarkPlugins={remarkPlugins}
         {...(preserveRelativeUrls ? { rehypePlugins: relativeUrlRehypePlugins } : {})}
         components={components}
-        mode={useStreamingMode ? "streaming" : "static"}
+        mode={streaming ? "streaming" : "static"}
         dir="auto"
         parseIncompleteMarkdown
         normalizeHtmlIndentation
-        isAnimating={isActivelyStreaming}
-        caret={keepCaretSlot ? "block" : undefined}
+        isAnimating={showCaret}
+        caret={streaming ? "block" : undefined}
         animated={false}
         linkSafety={{
           enabled: !readOnly,
@@ -380,8 +374,4 @@ export const Markdown = memo(function Markdown(props: MarkdownProps) {
       </Streamdown>
     </div>
   );
-});
-
-export const LiveMarkdown = memo(function LiveMarkdown(props: MarkdownProps) {
-  return <Markdown {...props} />;
 });

@@ -42,16 +42,19 @@ function rowText(row) {
   return row.text ?? "";
 }
 
+function liveRows(snapshot) {
+  return snapshot.liveStartIndex >= 0 ? snapshot.rows.slice(snapshot.liveStartIndex) : [];
+}
+
 // Live-flow texts (the region the old snapshot exposed as `tail`).
 function tailTexts(store) {
   store.flush();
-  return store.getSnapshot().liveRows.map((row) => rowText(row));
+  return liveRows(store.getSnapshot()).map((row) => rowText(row));
 }
 
 function transcriptTexts(store) {
   store.flush();
-  const snapshot = store.getSnapshot();
-  return [...snapshot.foldedRows, ...snapshot.liveRows].map((row) => rowText(row));
+  return store.getSnapshot().rows.map((row) => rowText(row));
 }
 
 test("submit inserts the optimistic bubble and resolves the accepted run", async () => {
@@ -227,6 +230,8 @@ test("bound update re-keys a draft conversation", async () => {
   assert.equal(outcomes.bound[0].pending.conversationId, "conv-real");
   assert.equal(pipeline.hasPending("draft-1"), false);
   assert.equal(pipeline.hasPending("conv-real"), true);
+  pipeline.handleRunSignal("conv-real", "run-1");
+  assert.equal(pipeline.hasPending("conv-real"), false);
 });
 
 test("queued_in_gui clears pending and removes the optimistic bubble", async () => {

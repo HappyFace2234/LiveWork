@@ -8,7 +8,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import type {
   MentionComposerDraft,
@@ -115,7 +114,7 @@ function isLocalDraftConversationId(id: string) {
 
 import { HistoryShareModal } from "@/components/chat/HistoryShareModal";
 import { GatewayTranscript } from "@/components/GatewayTranscript";
-import { useGatewayScrollAffordance } from "@/components/useGatewayScrollAffordance";
+import { useScrollFollow } from "@/lib/chat-scroll/useScrollFollow";
 import { parseHistoryShareToken } from "@/lib/historyShare";
 import {
   type ConversationOpenState,
@@ -244,8 +243,6 @@ export default function GatewayApp() {
   // Bumped whenever the command pipeline's pending set changes so busy state
   // re-derives.
   const [pendingCommandRevision, setPendingCommandRevision] = useState(0);
-  // Bumped inside flushSync to synchronously commit a settled-tail fold.
-  const [, setFoldFlushTick] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SectionId>("system");
@@ -288,16 +285,18 @@ export default function GatewayApp() {
   const [activeView, setActiveView] = useState<"chat" | "skills-hub" | "mcp-hub">("chat");
   const [rightDockOpen, setRightDockOpen] = useState(false);
   const { confirm: requestConfirmDialog, dialog: confirmDialog } = useConfirmDialog();
-  const {
-    scrollAreaRef: transcriptScrollAreaRef,
-    showJumpToBottom: showTranscriptJumpToBottom,
-    jumpToBottom: jumpTranscriptToBottom,
-    stickToBottom: stickTranscriptToBottom,
-    isAtBottom: isTranscriptAtBottom,
-    syncAutoScroll: syncTranscriptAutoScroll,
-    refreshScrollState: refreshTranscriptScrollState,
-    preserveScrollPosition: preserveTranscriptScrollPosition,
-  } = useGatewayScrollAffordance();
+  // Both elements arrive via callback refs → state so the scroll-follow hook
+  // re-binds on element identity change and can never keep listeners on a
+  // dead node.
+  const [transcriptScrollAreaRoot, setTranscriptScrollAreaRoot] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [transcriptViewport, setTranscriptViewport] = useState<HTMLDivElement | null>(null);
+  const { handle: transcriptFollow, following: transcriptFollowing } = useScrollFollow({
+    viewport: transcriptViewport,
+    listenerRoot: transcriptScrollAreaRoot,
+    trackKeys: true,
+  });
   const composerRef = useRef<MentionComposerHandle | null>(null);
   const composerDraftCacheRef = useRef<Map<string, MentionComposerDraft>>(new Map());
   const conversationIdRef = useRef(conversationId);
@@ -1334,32 +1333,15 @@ export default function GatewayApp() {
           : "";
       switch (event.type) {
         case "run_started": {
+          // The fold this event triggers in the store is a pure data
+          // transition of the single row list (identical row keys, same DOM
+          // container, key-addressed measurement cache) — no scroll
+          // compensation is needed.
           chatCommandPipeline.handleRunSignal(
             targetConversationId,
             readEventRunId(event),
             eventClientRequestId || undefined,
           );
-          if (!isReplay && isDisplayedConversation(targetConversationId)) {
-            // The transcript store folded the settled tail into committed
-            // when it applied this event. Commit that fold to the DOM in one
-            // synchronous, scroll-compensated pass — otherwise the
-            // virtualizer paints a frame with estimated row heights and the
-            // transcript visibly jumps right as the next run starts.
-            const shouldKeepBottom = isTranscriptAtBottom();
-            preserveTranscriptScrollPosition(
-              () => {
-                flushSync(() => {
-                  setFoldFlushTick((current) => current + 1);
-                });
-              },
-              { stickToBottom: shouldKeepBottom },
-            );
-            if (shouldKeepBottom) {
-              stickTranscriptToBottom();
-            } else {
-              refreshTranscriptScrollState();
-            }
-          }
           return;
         }
         case "run_finished": {
@@ -1408,11 +1390,7 @@ export default function GatewayApp() {
       applyLiveConversationTitle,
       chatCommandPipeline,
       handleTunnelManagerChatEvent,
-      isTranscriptAtBottom,
-      preserveTranscriptScrollPosition,
       refreshChatQueueSnapshot,
-      refreshTranscriptScrollState,
-      stickTranscriptToBottom,
     ],
   );
 
@@ -1784,7 +1762,7 @@ export default function GatewayApp() {
     protectedConversationRef.current = activeConversationId;
     setChatError(null);
     if (isDisplayedConversation(activeConversationId)) {
-      stickTranscriptToBottom();
+      transcriptFollow.stickToBottom();
     }
     if (startedAsDraftConversation) {
       draftClientRequestsRef.current.set(clientRequestId, activeConversationId);
@@ -3495,12 +3473,12 @@ export default function GatewayApp() {
     const item = sidebarConversationsById.get(selectedId);
     return item?.title ?? "";
   }, [selectedHistoryId, sidebarConversationsById]);
-  const transcriptFoldedRows = displayedTranscript.foldedRows;
-  const transcriptLiveRows = displayedTranscript.liveRows;
+  const transcriptRows = displayedTranscript.rows;
+  const transcriptLiveStartIndex = displayedTranscript.liveStartIndex;
   // Row count gates everything visual (empty state, error banner, loading
   // screen): entryCount can be non-zero while nothing renders (meta-only
   // entries), and hiding an error behind an invisible entry would strand it.
-  const displayedTranscriptRowCount = transcriptFoldedRows.length + transcriptLiveRows.length;
+  const displayedTranscriptRowCount = transcriptRows.length;
   const transcriptHistoryLoading = historyDetailLoading && displayedTranscriptRowCount === 0;
   const selectedHistoryHasMore =
     selectedHistory?.conversation_id === displayedConversationId &&
@@ -3519,7 +3497,6 @@ export default function GatewayApp() {
       setFullHistoryLoading(false);
     });
   }, [api, displayedConversationId, refreshDisplayedConversationHistorySnapshot]);
-  const transcriptHasLiveRows = transcriptLiveRows.length > 0;
   useEffect(() => {
     if (typeof document === "undefined") {
       return;
@@ -3618,31 +3595,13 @@ export default function GatewayApp() {
       return;
     }
 
-    stickTranscriptToBottom();
-    refreshTranscriptScrollState();
+    transcriptFollow.stickToBottom();
     pendingDisplayedConversationAutoBottomRef.current = null;
   }, [
     displayedConversationId,
     displayedTranscriptRowCount,
     historyDetailLoading,
-    refreshTranscriptScrollState,
-    stickTranscriptToBottom,
-  ]);
-
-  useLayoutEffect(() => {
-    if (transcriptBusy || transcriptHasLiveRows) {
-      syncTranscriptAutoScroll();
-    }
-    refreshTranscriptScrollState();
-  }, [
-    chatError,
-    refreshTranscriptScrollState,
-    syncTranscriptAutoScroll,
-    transcriptBusy,
-    transcriptHasLiveRows,
-    transcriptFoldedRows,
-    transcriptLiveRows,
-    transcriptToolStatus,
+    transcriptFollow,
   ]);
 
   if (historyShareToken) {
@@ -3897,13 +3856,14 @@ export default function GatewayApp() {
                   <section className="gateway-transcript-stage">
                     <div className="gateway-transcript-scroll-shell">
                       <ScrollArea
-                        ref={transcriptScrollAreaRef}
+                        ref={setTranscriptScrollAreaRoot}
+                        viewportRef={setTranscriptViewport}
                         className="gateway-transcript-scroll"
                       >
                         <GatewayTranscript
                           conversationId={displayedConversationId}
-                          foldedRows={transcriptFoldedRows}
-                          liveRows={transcriptLiveRows}
+                          rows={transcriptRows}
+                          liveStartIndex={transcriptLiveStartIndex}
                           activeTurnKey={displayedTranscript.activeTurnKey}
                           error={transcriptError}
                           toolStatus={transcriptToolStatus}
@@ -3933,11 +3893,11 @@ export default function GatewayApp() {
                         <HistorySwitchLoadingOverlay locale={settings.locale} />
                       ) : null}
                     </div>
-                    {showTranscriptJumpToBottom ? (
+                    {!transcriptFollowing ? (
                       <button
                         type="button"
                         className="gateway-scroll-to-bottom"
-                        onClick={jumpTranscriptToBottom}
+                        onClick={transcriptFollow.jumpToBottom}
                         aria-label="滚动到底部"
                         title="滚动到底部"
                       >

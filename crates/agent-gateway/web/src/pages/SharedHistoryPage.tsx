@@ -112,7 +112,7 @@ export function SharedHistoryPage({ token }: SharedHistoryPageProps) {
               <ScrollArea className="history-share-scroll">
                 <GatewayTranscript
                   conversationId={state.detail.conversation_id}
-                  foldedRows={transcriptRows}
+                  rows={transcriptRows}
                   readOnly
                   redactToolContent={state.detail.redact_tool_content === true}
                   isAgentMode

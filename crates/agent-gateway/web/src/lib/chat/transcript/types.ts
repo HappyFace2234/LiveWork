@@ -28,8 +28,9 @@ export type Turn = {
   // hosted_search | checkpoint | error.
   entries: ChatEntry[];
   phase: TurnPhase;
-  // Folded turns render inside the virtualized region; the fold only flips
-  // this flag — row keys and objects never change, so nothing remounts.
+  // Folded turns join the identity-cached prefix of the snapshot's single
+  // row list; the fold only flips this flag and moves liveStartIndex — row
+  // keys, row objects and DOM position never change, so nothing remounts.
   folded: boolean;
   // The run ended during a reset gap and the replay could not rebuild the
   // content: the kept streamed entries may be incomplete, so a history twin
@@ -40,8 +41,8 @@ export type Turn = {
 
 export type TranscriptRowOrigin = "history" | "stream";
 
-// One rendered transcript row. Both regions (virtualized + live flow) are
-// slices of a single row list, so an entry can never render twice.
+// One rendered transcript row of the single virtualized row list; keys are
+// unique by construction so an entry can never render twice.
 export type TranscriptRow =
   | {
       key: string;
@@ -79,13 +80,16 @@ export type TranscriptRow =
 export type HistoryApplyMode = "replace" | "enrich";
 
 export type TranscriptSnapshot = {
-  // Rendered in the virtualized region. Identity-stable across streaming
-  // commits — the array only changes when the history region or the folded
-  // turn set changes — so the virtualized region skips re-renders while a
-  // reply streams.
-  foldedRows: readonly TranscriptRow[];
-  // Rendered in the plain live flow below the virtualized region.
-  liveRows: readonly TranscriptRow[];
+  // The whole transcript as one row list, rendered by a single virtualized
+  // container. The folded prefix (history + folded turns) is identity-stable
+  // across streaming commits — memoized rows bail while a reply streams —
+  // and folding only moves liveStartIndex, so row objects, keys and DOM all
+  // carry over untouched.
+  rows: readonly TranscriptRow[];
+  // Index of the first unfolded-turn row; -1 when everything is folded. Rows
+  // at or after this index are force-mounted by the virtualizer so a
+  // streaming reply never unmounts mid-run.
+  liveStartIndex: number;
   // Key of the turn whose run is streaming (live structural state + caret
   // attribution in the renderer).
   activeTurnKey: string | null;

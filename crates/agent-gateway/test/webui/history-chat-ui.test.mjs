@@ -732,7 +732,7 @@ test("buildOptimisticConversationTitle uses the first ten characters of the firs
   assert.equal(chatUi.buildOptimisticConversationTitle("   \n\n  "), "新对话");
 });
 
-test("GatewayTranscript renders folded and live regions as slices of one row list", () => {
+test("GatewayTranscript renders folded and live rows in one virtualized list", () => {
   const fakeReact = {
     createContext(defaultValue) {
       return { defaultValue };
@@ -771,10 +771,15 @@ test("GatewayTranscript renders folded and live regions as slices of one row lis
     mocks: {
       react: fakeReact,
       "@tanstack/react-virtual": {
-        useVirtualizer() {
+        useVirtualizer({ count, getItemKey }) {
           return {
-            getTotalSize: () => 0,
-            getVirtualItems: () => [],
+            getTotalSize: () => count * 100,
+            getVirtualItems: () =>
+              Array.from({ length: count }, (_, index) => ({
+                index,
+                key: getItemKey(index),
+                start: index * 100,
+              })),
             measureElement: () => {},
           };
         },
@@ -811,8 +816,8 @@ test("GatewayTranscript renders folded and live regions as slices of one row lis
   globalThis.document = { visibilityState: "visible" };
 
   // Folded rows come from parsed history; live rows are born from the
-  // stream (a seeded prompt plus its streaming reply). Both regions come
-  // from one store assembly: foldedRows + liveRows.
+  // stream (a seeded prompt plus its streaming reply). Both regions share
+  // one row list, separated only by liveStartIndex.
   const store = transcriptStoreModule.createTranscriptStore();
   store.applyHistorySnapshot(
     [
@@ -843,54 +848,38 @@ test("GatewayTranscript renders folded and live regions as slices of one row lis
   });
   store.flush();
   const snapshot = store.getSnapshot();
-  assert.equal(snapshot.foldedRows.length, 2, "history rows fold; the live exchange stays below");
+  assert.equal(snapshot.liveStartIndex, 2, "history rows fold; the live exchange stays below");
   assert.deepEqual(
-    [...snapshot.foldedRows, ...snapshot.liveRows].map((row) => row.kind),
+    snapshot.rows.map((row) => row.kind),
     ["user", "assistant", "user", "assistant"],
   );
 
   const transcriptTree = GatewayTranscript({
     conversationId: "conversation-1",
-    foldedRows: snapshot.foldedRows,
-    liveRows: snapshot.liveRows,
+    rows: snapshot.rows,
+    liveStartIndex: snapshot.liveStartIndex,
     activeTurnKey: snapshot.activeTurnKey,
     isStreaming: true,
   });
 
-  const foldedRegionNode = findTreeNode(
+  const listRegionNode = findTreeNode(
     transcriptTree,
     (node) =>
       typeof node.type === "function" &&
       Array.isArray(node.props?.rows) &&
       node.props?.conversationId === "conversation-1",
   );
-  assert.ok(foldedRegionNode, "virtualized region receives the folded rows");
+  assert.ok(listRegionNode, "the virtualized region receives the unified row list");
   assert.deepEqual(
-    foldedRegionNode.props.rows.map((row) => row.key),
-    snapshot.foldedRows.map((row) => row.key),
+    listRegionNode.props.rows.map((row) => row.key),
+    snapshot.rows.map((row) => row.key),
   );
+  assert.equal(listRegionNode.props.liveStartIndex, snapshot.liveStartIndex);
 
-  const liveRegionNode = findTreeNode(
-    transcriptTree,
-    (node) =>
-      typeof node.type === "function" &&
-      Array.isArray(node.props?.rows) &&
-      node.props?.isAgentMode !== undefined,
-  );
-  assert.ok(liveRegionNode, "live region receives the rows past the fold boundary");
-  assert.deepEqual(
-    liveRegionNode.props.rows.map((row) => row.key),
-    snapshot.liveRows.map((row) => row.key),
-  );
-  assert.deepEqual(
-    liveRegionNode.props.rows.map((row) => row.kind),
-    ["user", "assistant"],
-  );
-
-  const liveTree = liveRegionNode.type(liveRegionNode.props);
+  const listTree = listRegionNode.type(listRegionNode.props);
   assert.ok(
     findTreeNode(
-      liveTree,
+      listTree,
       (node) =>
         typeof node.props?.className === "string" &&
         node.props.className.includes("gateway-transcript-row-user"),
@@ -899,7 +888,7 @@ test("GatewayTranscript renders folded and live regions as slices of one row lis
   );
   assert.ok(
     findTreeNode(
-      liveTree,
+      listTree,
       // User rows render through GatewayUserMessageRowBody, which receives
       // the whole row (row.text) rather than a bare text prop.
       (node) =>
@@ -908,8 +897,11 @@ test("GatewayTranscript renders folded and live regions as slices of one row lis
     ),
   );
   const assistantBubble = findTreeNode(
-    liveTree,
-    (node) => typeof node.type === "function" && node.props?.renderMode !== undefined,
+    listTree,
+    (node) =>
+      typeof node.type === "function" &&
+      node.props?.renderMode !== undefined &&
+      node.props?.isLive === true,
   );
   assert.ok(assistantBubble, "live assistant bubble rendered");
   assert.equal(
@@ -939,10 +931,10 @@ test("transcript store history refresh stays quiet for identical content", () =>
   store.flush();
   const first = store.getSnapshot();
   assert.deepEqual(
-    first.foldedRows.map((row) => row.kind),
+    first.rows.map((row) => row.kind),
     ["user", "assistant"],
   );
-  assert.equal(first.liveRows.length, 0, "history renders in the folded region");
+  assert.equal(first.liveStartIndex, -1, "history renders before the live boundary");
 
   const secondParse = chatUi.parseHistoryMessagesJson(messagesJson);
   assert.deepEqual(
@@ -957,12 +949,12 @@ test("transcript store history refresh stays quiet for identical content", () =>
   const second = store.getSnapshot();
   assert.equal(second, first, "identical content leaves the snapshot untouched");
   assert.deepEqual(
-    second.foldedRows.map((row) => row.key),
-    first.foldedRows.map((row) => row.key),
+    second.rows.map((row) => row.key),
+    first.rows.map((row) => row.key),
     "row keys are stable across the refresh",
   );
   assert.equal(
-    [...second.foldedRows, ...second.liveRows].filter((row) => row.kind === "user").length,
+    second.rows.filter((row) => row.kind === "user").length,
     1,
     "the exchange renders exactly once (no duplicate prompt)",
   );

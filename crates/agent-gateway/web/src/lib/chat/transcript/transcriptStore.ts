@@ -9,7 +9,12 @@ import { type ChatEntry, normalizeLiveUploadedFiles } from "@/lib/chatUi";
 import type { ChatEvent } from "@/lib/gatewayTypes";
 
 import { alignHistory } from "./historyAlignment";
-import { buildRowsFromEntries, buildTurnRows, dedupeRowKeys } from "./rows";
+import {
+  buildRowsFromEntries,
+  buildTurnRows,
+  dedupeRowKeys,
+  normalizeSettledRowRounds,
+} from "./rows";
 import {
   applyEventToTurn,
   createTurn,
@@ -28,17 +33,18 @@ import type {
 // One transcript store per conversation, built on two structures:
 //
 //   historyEntries — the parsed persisted conversation (deterministic ids),
-//                    always rendered first, inside the virtualized region
+//                    always rendered first
 //   turns          — live exchanges, one Turn per run: a single user-bubble
 //                    slot plus the run's assistant entries
 //
-// The snapshot is a single derived row list plus a fold boundary index; the
-// virtualized region renders rows[0..foldedRowCount) and the live flow the
-// rest. Because both regions are slices of one list built from one source,
-// a prompt or reply can never render twice, and a turn's user bubble always
-// precedes its assistant content. Completion is supersession: at the next
-// run_started, settled turns just flip `folded` — row keys and objects never
-// change, so the fold moves zero DOM identity.
+// The snapshot is a single derived row list plus liveStartIndex, rendered by
+// one virtualized container. Because every row comes from one list built
+// from one source, a prompt or reply can never render twice, and a turn's
+// user bubble always precedes its assistant content. Completion is
+// supersession: at the next run_started, settled turns just flip `folded`,
+// which moves rows from the live suffix into the identity-cached prefix —
+// row keys, row objects and the DOM container are all unchanged, so the
+// fold is a pure data transition and nothing remounts.
 
 export type { TranscriptRow, TranscriptSnapshot, Turn } from "./types";
 
@@ -78,8 +84,8 @@ export type TranscriptStore = {
 };
 
 const EMPTY_SNAPSHOT: TranscriptSnapshot = {
-  foldedRows: [],
-  liveRows: [],
+  rows: [],
+  liveStartIndex: -1,
   activeTurnKey: null,
   entryCount: 0,
   activeRun: null,
@@ -176,7 +182,7 @@ export function createTranscriptStore(options?: {
     if (historyRowsCache?.entries !== historyEntries) {
       historyRowsCache = {
         entries: historyEntries,
-        rows: buildRowsFromEntries(historyEntries, "history"),
+        rows: normalizeSettledRowRounds(buildRowsFromEntries(historyEntries, "history")),
       };
     }
     return historyRowsCache.rows;
@@ -288,8 +294,10 @@ export function createTranscriptStore(options?: {
     );
 
     return {
-      foldedRows,
-      liveRows,
+      // When nothing is live the snapshot exposes the cached prefix array
+      // itself, so idle commits keep full row-list identity.
+      rows: liveRows.length > 0 ? [...foldedRows, ...liveRows] : foldedRows,
+      liveStartIndex: liveRows.length > 0 ? foldedRows.length : -1,
       activeTurnKey: activeTurn?.key ?? null,
       entryCount,
       activeRun,

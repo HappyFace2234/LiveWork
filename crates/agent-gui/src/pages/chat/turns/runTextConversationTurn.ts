@@ -182,7 +182,7 @@ export async function runTextConversationTurn(params: RunTextConversationTurnPar
       return [
         ...prev,
         {
-          key: `${Date.now()}-${round}`,
+          key: `r${round}`,
           round,
           blocks: [],
           runningToolCallIds: [],

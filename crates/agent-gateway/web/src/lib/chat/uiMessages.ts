@@ -32,6 +32,9 @@ export type ToolTraceItem = {
 export type UiRoundContentBlock =
   | {
       kind: "thinking";
+      // Stable render key: assigned when the block is created and never
+      // shifted by later inserts, unlike an array index.
+      id: string;
       text: string;
     }
   | {
@@ -44,6 +47,7 @@ export type UiRoundContentBlock =
     }
   | {
       kind: "text";
+      id: string;
       text: string;
     };
 
@@ -58,12 +62,6 @@ export type UiRound = {
     usage?: Usage;
     usageTotalTokens?: number;
   };
-};
-
-export type LiveRound = UiRound & {
-  key: string;
-  runningToolCallIds: string[];
-  thinkingOpen: boolean;
 };
 
 export type UiMessage = {
@@ -607,6 +605,19 @@ export function previewText(input: string, maxChars = 1200) {
   return `${text.slice(0, maxChars)}\n...（已截断预览，len=${text.length}）...`;
 }
 
+// Deterministic next id for a text-like block: one more than the highest
+// existing ordinal of the same kind. A pure function of the current array, so
+// replays of the same block sequence assign identical ids.
+function nextTextLikeBlockId(blocks: UiRoundContentBlock[], kind: "thinking" | "text") {
+  let max = 0;
+  for (const block of blocks) {
+    if (block.kind !== kind) continue;
+    const suffix = Number(block.id.slice(kind.length + 1));
+    if (Number.isFinite(suffix) && suffix > max) max = suffix;
+  }
+  return `${kind}-${max + 1}`;
+}
+
 function appendTextLikeBlock(
   blocks: UiRoundContentBlock[],
   kind: "thinking" | "text",
@@ -618,11 +629,12 @@ function appendTextLikeBlock(
     const next = blocks.slice();
     next[next.length - 1] = {
       kind,
+      id: last.id,
       text: last.text + delta,
     };
     return next;
   }
-  return [...blocks, { kind, text: delta }];
+  return [...blocks, { kind, id: nextTextLikeBlockId(blocks, kind), text: delta }];
 }
 
 function rebalanceHostedSearchTextBoundaries(blocks: UiRoundContentBlock[]): UiRoundContentBlock[] {
@@ -643,11 +655,11 @@ function rebalanceHostedSearchTextBoundaries(blocks: UiRoundContentBlock[]): UiR
           const before = combinedText.slice(0, boundary);
           const after = combinedText.slice(boundary);
           if (before) {
-            out.push({ kind: "text", text: before });
+            out.push({ kind: "text", id: current.id, text: before });
           }
           out.push(...blocks.slice(hostedStart, hostedEnd));
           if (after) {
-            out.push({ kind: "text", text: after });
+            out.push({ kind: "text", id: following.id, text: after });
           }
           index = hostedEnd;
           continue;
@@ -1072,11 +1084,21 @@ function upsertHostedSearchBlock(blocks: UiRoundContentBlock[], hostedSearch: Ho
     if (lastTextBlock?.kind === "text") {
       const split = splitTextAroundHostedSearch(lastTextBlock.text, hostedSearch);
       if (split) {
+        // The before-half keeps the original id (its rendered prefix is
+        // unchanged); only the after-half is a genuinely new block.
         return filterHiddenToolBlocks([
           ...blocks.slice(0, lastTextIndex),
-          { kind: "text" as const, text: split.before },
+          { kind: "text" as const, id: lastTextBlock.id, text: split.before },
           nextBlock,
-          ...(split.after ? [{ kind: "text" as const, text: split.after }] : []),
+          ...(split.after
+            ? [
+                {
+                  kind: "text" as const,
+                  id: nextTextLikeBlockId(blocks, "text"),
+                  text: split.after,
+                },
+              ]
+            : []),
           ...blocks.slice(lastTextIndex + 1),
         ]);
       }
@@ -1111,33 +1133,6 @@ export function upsertHostedSearchToRound<TRound extends Pick<UiRound, "blocks">
     ...round,
     blocks: upsertHostedSearchBlock(round.blocks, hostedSearch),
   };
-}
-
-export function updateLiveRound(
-  prev: LiveRound[],
-  round: number,
-  updater: (target: LiveRound) => LiveRound,
-) {
-  if (prev.length === 0) return prev;
-
-  const lastIdx = prev.length - 1;
-  if (prev[lastIdx].round === round) {
-    const next = prev.slice();
-    next[lastIdx] = updater(prev[lastIdx]);
-    return next;
-  }
-
-  const idx = prev.findIndex((item) => item.round === round);
-  if (idx < 0) return prev;
-
-  const next = prev.slice();
-  next[idx] = updater(prev[idx]);
-  return next;
-}
-
-export function collapseThinking(target: LiveRound) {
-  if (!target.thinkingOpen || !getRoundThinkingText(target).trim()) return target;
-  return { ...target, thinkingOpen: false };
 }
 
 function buildUiRoundBlocks(

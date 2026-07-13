@@ -9,7 +9,7 @@ import {
   isDominantVerticalWheel,
   POINTER_DRAG_SLOP_PX,
   reduceFollowEvent,
-} from "../utils/scrollFollowCore";
+} from "./scrollFollowCore";
 
 // Below this the element cannot meaningfully scroll; wheel/touch on it must
 // not change follow state, and nested elements under it don't consume wheels.

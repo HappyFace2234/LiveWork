@@ -340,6 +340,25 @@ export function buildRowsFromEntries(
   return rows;
 }
 
+const EMPTY_RUNNING_TOOL_CALL_IDS: string[] = [];
+
+function normalizeSettledRound(round: GatewayTranscriptRound): GatewayTranscriptRound {
+  if (round.runningToolCallIds.length === 0 && round.thinkingOpen === undefined) {
+    return round;
+  }
+  return { ...round, runningToolCallIds: EMPTY_RUNNING_TOOL_CALL_IDS, thinkingOpen: undefined };
+}
+
+// Live-only round state (running spinners, auto-opened thinking) is cleared
+// once at row build time — rows are cached per turn/history-entries identity,
+// so renderers receive stable, already-normalized round objects instead of
+// cloning per render.
+export function normalizeSettledRowRounds(rows: TranscriptRow[]): TranscriptRow[] {
+  return rows.map((row) =>
+    row.kind === "assistant" ? { ...row, rounds: row.rounds.map(normalizeSettledRound) } : row,
+  );
+}
+
 // A turn's rows: the user bubble first, then its run's assistant content —
 // derived from one object, so the order is fixed by construction.
 export function buildTurnRows(turn: Turn): TranscriptRow[] {
@@ -355,8 +374,14 @@ export function buildTurnRows(turn: Turn): TranscriptRow[] {
       timestamp: turn.user.timestamp,
     });
   }
+  const settled = turn.phase === "settled";
   for (const row of buildRowsFromEntries(turn.entries, "stream")) {
-    rows.push(row.kind === "assistant" ? { ...row, turnKey: turn.key } : row);
+    const withTurnKey = row.kind === "assistant" ? { ...row, turnKey: turn.key } : row;
+    rows.push(
+      settled && withTurnKey.kind === "assistant"
+        ? { ...withTurnKey, rounds: withTurnKey.rounds.map(normalizeSettledRound) }
+        : withTurnKey,
+    );
   }
   return rows;
 }

@@ -122,8 +122,8 @@ jobs:
         run: pnpm lint
 
       - name: Test WebUI modules
-        working-directory: crates/agent-gateway
-        run: node --test test/webui/*.test.mjs web/test/*.test.mjs
+        working-directory: crates/agent-gateway/web
+        run: pnpm test
 
   gui:
     name: GUI
