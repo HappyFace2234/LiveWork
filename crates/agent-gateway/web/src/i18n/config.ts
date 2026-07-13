@@ -1812,9 +1812,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     "chat.runtime.settingsSyncTitle": "Syncing desktop settings",
     "chat.runtime.reasoning": "Thinking effort",
     "chat.emptyRound": "(No reply)",
-    "chat.inputHint": "Type a message, @ to mention files, Enter to send, Shift+Enter for newline",
+    "chat.inputHint": "Type a message, @ to reference files, prompts can be queued...",
     "chat.inputHintWithSkills":
-      "Type a message, @ to mention files, $ to reference Skills, Enter to send, Shift+Enter for newline",
+      "Type a message, @ to reference files, $ to reference Skills, prompts can be queued...",
     "chat.compactingContext": "Compressing context",
     "chat.compactingContextWait": "Compressing context, please wait...",
     "chat.editMessage": "Edit Message",
