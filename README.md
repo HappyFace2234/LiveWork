@@ -6,7 +6,11 @@
 
 <p align="center">
   <strong>Your Local-First AI Agent Desktop</strong><br/>
-  多模型接入 · 本地工具执行 · MCP & Skills 生态 · 远程 Gateway
+  Multi-model access · Local tool execution · MCP & Skills ecosystem · Remote Gateway
+</p>
+
+<p align="center">
+  English | <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
@@ -19,112 +23,111 @@
 </p>
 
 <p align="center">
-  <a href="#核心能力">核心能力</a> •
-  <a href="#快速开始">快速开始</a> •
-  <a href="#下载与部署">下载与部署</a> •
+  <a href="#core-features">Core Features</a> •
+  <a href="#download--deployment">Download & Deployment</a> •
   <a href="#faq">FAQ</a> •
-  <a href="docs/">文档</a>
+  <a href="docs/">Docs</a>
 </p>
 
 ---
 
-## 为什么是 LiveAgent?
+## Why LiveAgent?
 
-LiveAgent 是一个 **本地优先** 的 AI Agent 桌面客户端。它将大语言模型的推理能力与本地系统工具深度整合,让 AI 能够真正操作你的文件系统、执行命令、管理定时任务,同时通过 Gateway 实现远程访问与协作。
+LiveAgent is a **local-first** AI agent desktop client. It deeply integrates large language model reasoning with local system tools, so the AI can genuinely operate your file system, run commands, and manage scheduled tasks — while the Gateway enables remote access and collaboration.
 
-- **真正动手的 Agent** — 不止于对话:读写文件、精确编辑、执行 Bash、托管长驻进程
-- **生态完全开放** — MCP 协议桥接任意外部工具,Skills 技能包按需加载
-- **本地与远程兼得** — 桌面端独立可用,部署 Gateway 后浏览器随处操控
+- **An agent that actually gets things done** — beyond chat: read and write files, make precise edits, run Bash, and supervise long-running processes
+- **A fully open ecosystem** — bridge any external tool via the MCP protocol, and load Skills packages on demand
+- **Local and remote, both** — the desktop app works fully standalone; deploy the Gateway and control it from any browser
 
 ---
 
-## 核心能力
+## Core Features
 
 ![](docs/images/product.webp)
 
-### 🧠 多模型与对话
+### 🧠 Multi-Model & Chat
 
-- **多模型路由** — Claude(Anthropic)与 Codex(OpenAI)、Gemini 三协议,支持自定义 Base URL 接入第三方兼容服务
-- **富文本渲染** — Markdown 流式渲染,内建 KaTeX 公式、Mermaid 图表与 Monaco 代码预览
-- **历史压缩** — Segment + Summary Checkpoint 双层持久化,长对话不丢上下文
-- **国际化** — 内建 i18n 多语言框架
+- **Multi-model routing** — Claude (Anthropic), Codex (OpenAI), and Gemini protocols, with custom Base URL support for third-party compatible services
+- **Rich rendering** — streaming Markdown with built-in KaTeX math, Mermaid diagrams, and Monaco code preview
+- **History compaction** — dual-layer Segment + Summary Checkpoint persistence keeps long conversations from losing context
+- **Internationalization** — built-in i18n multi-language framework
 
-### 🔧 本地工具执行
+### 🔧 Local Tool Execution
 
-- **文件系统全能力** — `Read` / `Write` / `Edit` / `Delete` 精确读写,`Glob` / `Grep` 模式与正则搜索
-- **Bash 与长驻进程** — 非交互式命令执行(cwd / timeout),`ManagedProcess` 托管 dev server 等常驻任务
-- **Sub-Agent 委派** — 独立子代理并行执行,worktree 隔离,自动合并
-- **隧道暴露** — `TunnelManager` 一键将本地服务暴露公网
+- **Full file-system capabilities** — precise `Read` / `Write` / `Edit` / `Delete`, plus `Glob` / `Grep` pattern and regex search
+- **Bash & long-running processes** — non-interactive command execution (cwd / timeout), with `ManagedProcess` supervising dev servers and other resident tasks
+- **Sub-agent delegation** — independent sub-agents execute in parallel with worktree isolation and automatic merging
+- **Tunnel exposure** — `TunnelManager` exposes local services to the public internet in one click
 
-### 🧩 MCP 与 Skills 生态
+### 🧩 MCP & Skills Ecosystem
 
-- **MCP 协议桥接** — Tauri 端原生桥接任意 stdio / http MCP Server,无限扩展工具能力
-- **Skills 技能包** — 渐进式披露、按需加载,支持安装 / 创建 / 打包与 ClawHub 生态
+- **MCP protocol bridging** — the Tauri side natively bridges any stdio / http MCP server for unlimited tool extension
+- **Skills packages** — progressive disclosure and on-demand loading, with install / create / package support and the ClawHub ecosystem
 
-### 💾 记忆与自动化
+### 💾 Memory & Automation
 
-- **持久化记忆** — Markdown + SQLite FTS 全文检索,跨会话知识管理
-- **定时任务** — bash / http / prompt 三种 Cron 任务类型,后台自动执行
+- **Persistent memory** — Markdown + SQLite FTS full-text search for cross-session knowledge management
+- **Scheduled tasks** — bash / http / prompt cron job types, executed automatically in the background
 
-### 🌐 远程 Gateway
+### 🌐 Remote Gateway
 
-- **浏览器随处访问** — Go + gRPC 网关,WebUI 远程操控本地 Agent
-- **断线可恢复** — 有界 seq window 补齐短时断线,桌面端持久化兜底
+- **Access from any browser** — Go + gRPC gateway with a WebUI for remotely controlling the local agent
+- **Disconnect recovery** — a bounded seq window replays short outages, with desktop-side persistence as the safety net
 
 ---
 
-## 下载与部署
+## Download & Deployment
 
-安装包由 GitHub Actions 自动构建、签名并发布,请前往 [**GitHub Releases**](https://github.com/Stack-Cairn/LiveAgent/releases/latest) 获取最新版本。
+Installers are automatically built, signed, and published by GitHub Actions — grab the latest version from [**GitHub Releases**](https://github.com/Stack-Cairn/LiveAgent/releases/latest).
 
-### 系统要求
+### System Requirements
 
-| 平台 | 要求 |
+| Platform | Requirements |
 |---|---|
-| macOS | Intel(x64)与 Apple Silicon(aarch64)双架构 |
-| Windows | x64,需 WebView2 运行时(Windows 11 已内置) |
-| Linux | x86_64,需 WebKitGTK 4.1(Ubuntu 22.04+ / Debian 12+ 等) |
+| macOS | Both Intel (x64) and Apple Silicon (aarch64) architectures |
+| Windows | x64; requires the WebView2 runtime (bundled with Windows 11) |
+| Linux | x86_64; requires WebKitGTK 4.1 (Ubuntu 22.04+ / Debian 12+, etc.) |
 
-### macOS 用户
+### macOS
 
-从 [Releases](https://github.com/Stack-Cairn/LiveAgent/releases/latest) 下载对应芯片的 DMG,打开后将 LiveAgent 拖入「应用程序」:
+Download the DMG matching your chip from [Releases](https://github.com/Stack-Cairn/LiveAgent/releases/latest), open it, and drag LiveAgent into Applications:
 
-- Apple Silicon(M 系列):`LiveAgent-<版本>-macOS-aarch64.dmg`
-- Intel:`LiveAgent-<版本>-macOS-x64.dmg`
+- Apple Silicon (M-series): `LiveAgent-<version>-macOS-aarch64.dmg`
+- Intel: `LiveAgent-<version>-macOS-x64.dmg`
 
-> 安装包已签名并通过 Apple 公证,首次启动无需在安全设置中手动放行。
+> The installer is signed and notarized by Apple — no manual security override is needed on first launch.
 
-### Windows 用户
+### Windows
 
-从 [Releases](https://github.com/Stack-Cairn/LiveAgent/releases/latest) 按需选择一种安装方式:
+Pick an installation method from [Releases](https://github.com/Stack-Cairn/LiveAgent/releases/latest):
 
-| 方式 | 文件 | 适合 |
+| Method | File | Best for |
 |---|---|---|
-| 安装向导 | `LiveAgent-<版本>-Windows-x64-Setup.exe` | 大多数用户 |
-| MSI 包 | `LiveAgent-<版本>-Windows-x64.msi` | 企业分发 / 静默安装 |
-| 便携版 | `LiveAgent-<版本>-Windows-x64-portable.zip` | 免安装,解压即用 |
+| Setup wizard | `LiveAgent-<version>-Windows-x64-Setup.exe` | Most users |
+| MSI package | `LiveAgent-<version>-Windows-x64.msi` | Enterprise distribution / silent install |
+| Portable | `LiveAgent-<version>-Windows-x64-portable.zip` | No install — unzip and run |
 
-### Linux 用户
+### Linux
 
-从 [Releases](https://github.com/Stack-Cairn/LiveAgent/releases/latest) 按发行版选择:
+Choose by distribution from [Releases](https://github.com/Stack-Cairn/LiveAgent/releases/latest):
 
-| 格式 | 适用发行版 | 安装方式 |
+| Format | Distributions | Install |
 |---|---|---|
-| AppImage | 任意发行版 | `chmod +x` 后直接运行 |
-| DEB | Debian / Ubuntu 系 | `sudo dpkg -i LiveAgent-<版本>-Linux-x86_64.deb` |
-| RPM | Fedora / openSUSE 系 | `sudo rpm -i LiveAgent-<版本>-Linux-x86_64.rpm` |
+| AppImage | Any distribution | `chmod +x`, then run directly |
+| DEB | Debian / Ubuntu family | `sudo dpkg -i LiveAgent-<version>-Linux-x86_64.deb` |
+| RPM | Fedora / openSUSE family | `sudo rpm -i LiveAgent-<version>-Linux-x86_64.rpm` |
 
-### 需要远程访问? 部署 Gateway
+### Need Remote Access? Deploy the Gateway
 
-桌面端开箱即用,不依赖任何服务端。只有想 **在浏览器里远程操控本地 Agent** 时,才需要部署 Gateway。
+The desktop app works out of the box and depends on no server. Deploy the Gateway only if you want to **control your local agent from a browser**.
 
-**注意：在部署并使用Nginx反向代理后，设置中Remote页面Gateway地址填写Https地址，端口号填写443。**
+**Note: when deployed behind an Nginx reverse proxy, set the Gateway address on the Settings → Remote page to the HTTPS URL and use port 443.**
 
 ```bash
-# 拉取镜像(GitHub Actions 自动构建,multi-arch: amd64 / arm64)
+# Pull the image (built by GitHub Actions, multi-arch: amd64 / arm64)
 docker pull ghcr.io/stack-cairn/liveagent-gateway:latest
 
-# 后台运行(gRPC → 宿主机 50051 ｜ HTTP/WebSocket → 宿主机 50052)
+# Run in the background (gRPC → host 50051 | HTTP/WebSocket → host 50052)
 docker run -d \
   --name liveagent-gateway \
   --restart unless-stopped \
@@ -135,13 +138,13 @@ docker run -d \
 ```
 
 <details>
-<summary><b>Nginx 反向代理配置</b> — 自建域名 / TLS 时参考</summary>
+<summary><b>Nginx reverse proxy configuration</b> — reference for custom domains / TLS</summary>
 
-> Gateway 对外有两类流量：
+> The Gateway serves two kinds of traffic:
 >
-> 桌面端的 gRPC 双向流 (默认 50051) 与浏览器端的 HTTP / WebSocket  (默认 50052)。
+> the desktop app's bidirectional gRPC stream (default 50051) and the browser's HTTP / WebSocket (default 50052).
 >
-> 经 Nginx 暴露时需要分别代理,注意 gRPC 与 WebSocket 均为长连接,超时需调大:
+> When exposing through Nginx, proxy them separately. Both gRPC and WebSocket are long-lived connections, so raise the timeouts:
 
 ```nginx
 # GUI Remote: gRPC Authenticate + AgentConnect
@@ -190,7 +193,7 @@ location / {
 }
 ```
 
-> 上游端口与上方 `docker run` 的宿主机映射一一对应:gRPC 50051、HTTP/WebSocket 50052(容器内 HTTP 实际监听 `PORT=8080`)。gRPC 代理要求 Nginx 以 HTTP/2 接收桌面端连接(`listen 443 ssl; http2 on;`)。
+> Upstream ports map one-to-one to the host ports from the `docker run` above: gRPC 50051, HTTP/WebSocket 50052 (inside the container, HTTP actually listens on `PORT=8080`). The gRPC proxy requires Nginx to accept the desktop connection over HTTP/2 (`listen 443 ssl; http2 on;`).
 
 </details>
 
@@ -198,14 +201,14 @@ location / {
 
 
 
-### 从源码构建
+### Build from Source
 
-参考上方 [快速开始](#快速开始),或展开下方「开发指南」查看完整 Make 命令。
+Expand the Development Guide below for the full set of Make commands.
 
 ![](docs/images/architecture.webp)
 
 <details>
-<summary><b>架构总览</b> — 架构图与技术栈</summary>
+<summary><b>Architecture Overview</b> — diagram & tech stack</summary>
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -216,86 +219,86 @@ location / {
 ┌────────────────────────────▼─────────────────────────────────┐
 │                       Agent Gateway                           │
 │         Go · gRPC · HTTP · Session Manager · Event Store     │
-│                    (Railway / Docker / 自部署)                 │
+│               (Railway / Docker / self-hosted)                │
 └────────────────────────────┬─────────────────────────────────┘
-                             │ gRPC (双向流)
+                             │ gRPC (bidirectional stream)
 ┌────────────────────────────▼─────────────────────────────────┐
 │                        Agent GUI                              │
 │                   Tauri 2 · React 19 · Rust                  │
-├──────────┬───────────┬───────────┬───────────┬───────────────┤
-│ 模型协议  │ Agent运行时 │  工具执行   │  Skills   │  Memory/Cron  │
-│ pi-ai    │ 多轮循环   │ FS/Bash/  │  渐进披露  │  SQLite+MD    │
-│ + Codex  │ + SubAgent │ MCP桥接   │  + Hub    │  FTS索引      │
-└──────────┴───────────┴───────────┴───────────┴───────────────┘
+├──────────┬────────────┬───────────┬────────────┬─────────────┤
+│ Models   │ Runtime    │ Tools     │ Skills     │ Memory/Cron │
+│ pi-ai    │ multi-turn │ FS/Bash/  │ progressive│ SQLite+MD   │
+│ + Codex  │ + SubAgent │ MCP bridge│ + Hub      │ FTS index   │
+└──────────┴────────────┴───────────┴────────────┴─────────────┘
 ```
 
-**技术栈**
+**Tech Stack**
 
-| 组件 | 技术 |
+| Component | Technology |
 |---|---|
-| **Agent GUI** · 框架 | Tauri 2 + React 19 + TypeScript 6 |
-| **Agent GUI** · 构建 | Vite 8 + pnpm |
-| **Agent GUI** · 样式 | Tailwind CSS 4 + Radix UI |
-| **Agent GUI** · 渲染 | streamdown + KaTeX + Mermaid + Monaco Editor |
-| **Agent GUI** · 后端 | Rust + Tokio + SQLite (rusqlite) + gRPC (tonic) |
+| **Agent GUI** · Framework | Tauri 2 + React 19 + TypeScript 6 |
+| **Agent GUI** · Build | Vite 8 + pnpm |
+| **Agent GUI** · Styling | Tailwind CSS 4 + Radix UI |
+| **Agent GUI** · Rendering | streamdown + KaTeX + Mermaid + Monaco Editor |
+| **Agent GUI** · Backend | Rust + Tokio + SQLite (rusqlite) + gRPC (tonic) |
 | **Agent GUI** · LLM | @earendil-works/pi-ai · @openai/codex-sdk · claude-agent-sdk |
-| **Gateway** · 语言 | Go 1.25 |
-| **Gateway** · 协议 | gRPC + Protobuf + HTTP + WebSocket |
-| **Gateway** · Web UI | React + Vite + Tailwind CSS(嵌入式) |
-| **Gateway** · 部署 | Docker multi-stage · Railway CI/CD |
+| **Gateway** · Language | Go 1.25 |
+| **Gateway** · Protocols | gRPC + Protobuf + HTTP + WebSocket |
+| **Gateway** · Web UI | React + Vite + Tailwind CSS (embedded) |
+| **Gateway** · Deployment | Docker multi-stage · Railway CI/CD |
 
 </details>
 
 <details>
-<summary><b>开发指南</b> — 常用 Make 命令(完整列表见 <code>make help</code>)</summary>
+<summary><b>Development Guide</b> — common Make commands (run <code>make help</code> for the full list)</summary>
 
-| 命令 | 说明 |
+| Command | Description |
 |---|---|
-| `make dev` | 启动 Tauri 开发环境 |
-| `make build` | 构建桌面应用 |
-| `make dev-gateway` | 启动 Gateway 开发服务 |
-| `make dev-webui` | 启动 WebUI 开发服务 |
-| `make gateway-build` | 构建 Gateway 二进制 |
-| `make gateway-docker-build` | 构建 Docker 镜像 |
-| `make gateway-docker-smoke` | 构建 + 健康检查 |
-| `make desktop-build-macos-release` | macOS 签名发布构建 |
-| `make build-linux` | Linux amd64 网关 |
-| `make build-linux-arm` | Linux arm64 网关 |
-| `make proto` | 重新生成 Protobuf 代码 |
-| `make clean` | 清理构建产物 |
+| `make dev` | Start the Tauri development environment |
+| `make build` | Build the desktop app |
+| `make dev-gateway` | Start the Gateway dev server |
+| `make dev-webui` | Start the WebUI dev server |
+| `make gateway-build` | Build the Gateway binary |
+| `make gateway-docker-build` | Build the Docker image |
+| `make gateway-docker-smoke` | Build + health check |
+| `make desktop-build-macos-release` | macOS signed release build |
+| `make build-linux` | Linux amd64 gateway |
+| `make build-linux-arm` | Linux arm64 gateway |
+| `make proto` | Regenerate Protobuf code |
+| `make clean` | Clean build artifacts |
 
 </details>
 
 <details>
-<summary><b>项目结构</b> — 目录树</summary>
+<summary><b>Project Structure</b> — directory tree</summary>
 
 ```
 LiveAgent/
 ├── crates/
-│   ├── agent-gui/                # 桌面客户端
-│   │   ├── src/                  # React 前端
-│   │   │   ├── components/       #   UI 组件
-│   │   │   ├── lib/              #   核心逻辑 (chat, tools, skills, memory)
-│   │   │   ├── pages/            #   页面 (Chat, Settings)
-│   │   │   ├── i18n/             #   国际化
-│   │   │   └── prompt/           #   System Prompt 模板
-│   │   └── src-tauri/            # Rust 后端 (Tauri)
+│   ├── agent-gui/                # Desktop client
+│   │   ├── src/                  # React frontend
+│   │   │   ├── components/       #   UI components
+│   │   │   ├── lib/              #   Core logic (chat, tools, skills, memory)
+│   │   │   ├── pages/            #   Pages (Chat, Settings)
+│   │   │   ├── i18n/             #   Internationalization
+│   │   │   └── prompt/           #   System prompt templates
+│   │   └── src-tauri/            # Rust backend (Tauri)
 │   │
-│   └── agent-gateway/            # Go 网关服务
-│       ├── cmd/gateway/          #   入口
-│       ├── internal/             #   核心实现
-│       ├── proto/v1/             #   Protobuf 定义
-│       └── web/                  #   嵌入式 WebUI
+│   └── agent-gateway/            # Go gateway service
+│       ├── cmd/gateway/          #   Entry point
+│       ├── internal/             #   Core implementation
+│       ├── proto/v1/             #   Protobuf definitions
+│       └── web/                  #   Embedded WebUI
 │
-├── docs/                         # 项目文档
-│   ├── architecture/             #   架构设计
-│   ├── features/                 #   功能说明
-│   └── operations/               #   运维部署
+├── docs/                         # Project docs
+│   ├── architecture/             #   Architecture design
+│   ├── features/                 #   Feature guides
+│   └── operations/               #   Operations & deployment
 │
-├── scripts/release/              # 发布自动化
+├── scripts/release/              # Release automation
 ├── .github/workflows/            # CI/CD (CI + Desktop Release + Gateway Docker)
-├── Dockerfile                    # Gateway 容器镜像
-├── Makefile                      # 构建命令集
+├── Dockerfile                    # Gateway container image
+├── Makefile                      # Build commands
 └── Cargo.toml                    # Rust workspace
 ```
 
@@ -306,77 +309,77 @@ LiveAgent/
 ## FAQ
 
 <details>
-<summary><b>API Key 会离开本机吗?</b></summary>
+<summary><b>Does my API key ever leave my machine?</b></summary>
 
-不会。秘钥仅保存在桌面端本地,Gateway 只做协议中继 — 不访问文件系统、不存储任何凭据。
-
-</details>
-
-<details>
-<summary><b>必须部署 Gateway 吗?</b></summary>
-
-不需要。桌面客户端可独立使用全部本地能力;只有需要从浏览器远程访问本地 Agent 时,才部署 Gateway。
+No. Keys are stored locally on the desktop side only. The Gateway is a pure protocol relay — it never accesses the file system and never stores any credentials.
 
 </details>
 
 <details>
-<summary><b>支持哪些模型?</b></summary>
+<summary><b>Do I have to deploy the Gateway?</b></summary>
 
-内置 Claude(Anthropic) 与 Codex(OpenAI)、Gemini 三协议,并支持自定义 Base URL 接入任何兼容的第三方服务。
+No. The desktop client works standalone with all local capabilities; deploy the Gateway only when you need browser-based remote access to your local agent.
 
 </details>
 
 <details>
-<summary><b>长对话 / 断线后上下文会丢吗?</b></summary>
+<summary><b>Which models are supported?</b></summary>
 
-不会。桌面端以 Segment + Summary Checkpoint 持久化完整历史;Gateway 通过有界 seq window 补齐短时断线,重连后自动收敛。
+Claude (Anthropic), Codex (OpenAI), and Gemini protocols are built in, plus custom Base URL support for any compatible third-party service.
+
+</details>
+
+<details>
+<summary><b>Will long conversations / disconnects lose context?</b></summary>
+
+No. The desktop app persists the full history with Segment + Summary Checkpoints; the Gateway replays short disconnects through a bounded seq window and converges automatically after reconnecting.
 
 </details>
 
 ---
 
-## 文档
+## Documentation
 
-| 文档列表 | 描述 |
+| Document | Description |
 |---|---|
-| [架构总览](docs/architecture/overview.md) | 系统分层、进程边界、数据流 |
-| [GUI 架构](docs/architecture/gui.md) | 桌面客户端内部设计 |
-| [Gateway 架构](docs/architecture/gateway.md) | 网关服务设计 |
-| [WebUI 架构](docs/architecture/webui.md) | 浏览器端设计 |
-| [协议定义](docs/architecture/protocols.md) | gRPC / WebSocket 协议 |
-| [Chat 运行时](docs/features/chat-runtime.md) | Agent 对话循环机制 |
-| [工具系统](docs/features/tools.md) | 内建工具实现 |
-| [Skills & MCP](docs/features/skills-and-mcp.md) | 技能与协议扩展 |
-| [记忆系统](docs/features/memory.md) | 持久化记忆设计 |
-| [历史压缩](docs/features/history-compaction.md) | 长对话上下文管理 |
-| [部署运维](docs/operations/deployment.md) | Docker、自部署、桌面发布 |
-| [开发指南](docs/operations/development.md) | 本地开发环境搭建 |
+| [Architecture Overview](docs/architecture/overview.md) | System layers, process boundaries, data flow |
+| [GUI Architecture](docs/architecture/gui.md) | Desktop client internal design |
+| [Gateway Architecture](docs/architecture/gateway.md) | Gateway service design |
+| [WebUI Architecture](docs/architecture/webui.md) | Browser-side design |
+| [Protocol Definitions](docs/architecture/protocols.md) | gRPC / WebSocket protocols |
+| [Chat Runtime](docs/features/chat-runtime.md) | Agent conversation loop mechanics |
+| [Tool System](docs/features/tools.md) | Built-in tool implementations |
+| [Skills & MCP](docs/features/skills-and-mcp.md) | Skill and protocol extensions |
+| [Memory System](docs/features/memory.md) | Persistent memory design |
+| [History Compaction](docs/features/history-compaction.md) | Long-conversation context management |
+| [Deployment & Operations](docs/operations/deployment.md) | Docker, self-hosting, desktop releases |
+| [Development Guide](docs/operations/development.md) | Local development environment setup |
 
 ---
 
-## 贡献
+## Contributing
 
-欢迎提交 Issue 与 Pull Request!开发环境搭建请参考 [开发指南](docs/operations/development.md)。
+Issues and pull requests are welcome! See the [Development Guide](docs/operations/development.md) for setting up a dev environment.
 
-提交 PR 前,请确保以下检查全部通过(与 CI 门禁一致):
+Before submitting a PR, make sure all of the following checks pass (they match the CI gates):
 
-**桌面客户端 · `crates/agent-gui`**
+**Desktop client · `crates/agent-gui`**
 
-1. 类型检查与构建通过:`pnpm build`
-2. 代码规范检查通过:`pnpm lint`
-3. 前端单元测试通过:`pnpm test:frontend`(改动发布脚本时另跑 `pnpm test:release`)
-4. Rust 后端检查通过:`cargo check --manifest-path crates/agent-gui/src-tauri/Cargo.toml --tests`(仓库根目录执行)
+1. Type check & build pass: `pnpm build`
+2. Lint passes: `pnpm lint`
+3. Frontend unit tests pass: `pnpm test:frontend` (also run `pnpm test:release` when touching release scripts)
+4. Rust backend check passes: `cargo check --manifest-path crates/agent-gui/src-tauri/Cargo.toml --tests` (run from the repo root)
 
-**Gateway · `crates/agent-gateway`(如有改动)**
+**Gateway · `crates/agent-gateway` (if changed)**
 
-1. Go 单元测试通过:`go test ./...`
-2. WebUI 构建 / Lint / 测试通过:`pnpm build && pnpm lint && pnpm test`(在 `web/` 目录执行)
-3. Proto 变更后重新生成并提交产物:`make proto`
+1. Go unit tests pass: `go test ./...`
+2. WebUI build / lint / tests pass: `pnpm build && pnpm lint && pnpm test` (run in `web/`)
+3. Regenerate and commit artifacts after proto changes: `make proto`
 
-**跨端一致性**
+**Cross-frontend consistency**
 
-- GUI 与 WebUI 的镜像文件必须逐字节一致:`node scripts/check-mirror.mjs`
-- 保持 diff 干净 (无行尾空白):`git diff --check`
+- Mirrored files between GUI and WebUI must be byte-identical: `node scripts/check-mirror.mjs`
+- Keep the diff clean (no trailing whitespace): `git diff --check`
 
 ---
 
