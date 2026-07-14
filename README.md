@@ -125,10 +125,26 @@ LiveAgent 是一个 **本地优先** 的 AI Agent 桌面客户端。它将大语
 # 拉取镜像(GitHub Actions 自动构建,multi-arch: amd64 / arm64)
 docker pull ghcr.io/stack-cairn/liveagent-gateway:latest
 
-# 运行(gRPC → 宿主机 50051 ｜ HTTP/WebSocket → 宿主机 50052)
-docker run -p 50051:50051 -p 50052:8080 \
+# 后台运行(gRPC → 宿主机 50051 ｜ HTTP/WebSocket → 宿主机 50052)
+docker run -d \
+  --name liveagent-gateway \
+  --restart unless-stopped \
+  -p 50051:50051 \
+  -p 50052:8080 \
   -e LIVEAGENT_GATEWAY_TOKEN=your-token \
   ghcr.io/stack-cairn/liveagent-gateway:latest
+```
+
+常用运维命令:
+
+```bash
+docker logs -f liveagent-gateway      # 查看日志
+docker restart liveagent-gateway     # 重启服务
+
+# 升级到最新版本
+docker pull ghcr.io/stack-cairn/liveagent-gateway:latest
+docker stop liveagent-gateway && docker rm liveagent-gateway
+# 再执行上方 docker run 命令即可(Gateway 无本地状态,可随时重建)
 
 # 也可从源码本地构建(multi-stage,最终镜像 ~30MB)
 docker build -t liveagent-gateway .
