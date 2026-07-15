@@ -226,6 +226,16 @@ function ToolCallItem({
                 );
               }
 
+              // Errors must be readable at a glance — never behind the
+              // collapsed "view return" toggle.
+              if (result.isError) {
+                return (
+                  <ToolScrollablePre className="max-h-56 bg-red-500/[0.05] text-red-700/90 dark:bg-red-500/[0.08] dark:text-red-300/90">
+                    {previewText(resultText, 6000)}
+                  </ToolScrollablePre>
+                );
+              }
+
               return (
                 <details className="group/result">
                   <summary className="flex cursor-pointer select-none items-center gap-1 text-[calc(10.5px*var(--zone-font-scale,1))] text-muted-foreground/50 transition-colors duration-150 hover:text-foreground/60">

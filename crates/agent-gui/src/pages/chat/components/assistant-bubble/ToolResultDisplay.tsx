@@ -879,7 +879,13 @@ export function ToolResultDisplay({
     );
   }
 
-  if (result.details && typeof result.details === "object") {
+  // Error results (and blocked calls) carry an empty details object — showing
+  // a literal "{}" would bury the actual error text, which renders below.
+  if (
+    result.details &&
+    typeof result.details === "object" &&
+    Object.keys(result.details).length > 0
+  ) {
     return (
       <ToolSurface className="overflow-hidden px-0 py-0">
         <ToolScrollablePre className="max-h-32 rounded-none">
