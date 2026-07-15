@@ -3890,6 +3890,7 @@ export default function GatewayApp() {
                           rows={transcriptRows}
                           liveStartIndex={transcriptLiveStartIndex}
                           activeTurnKey={displayedTranscript.activeTurnKey}
+                          isViewportFollowing={transcriptFollow.isFollowing}
                           error={transcriptError}
                           toolStatus={transcriptToolStatus}
                           toolStatusIsCompaction={transcriptToolStatusIsCompaction}

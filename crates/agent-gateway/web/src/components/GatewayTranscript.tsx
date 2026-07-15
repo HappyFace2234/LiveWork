@@ -36,6 +36,7 @@ import {
 import type { GitClient } from "@/lib/git/types";
 import { cn } from "@/lib/shared/utils";
 import { extractLiveRange } from "@/lib/transcript-virtual/liveRangeExtractor";
+import { createLiveRowScrollAdjustPolicy } from "@/lib/transcript-virtual/liveScrollAdjustPolicy";
 import {
   CHECKPOINT_ROW_ESTIMATE_PX,
   estimateAssistantRowHeight,
@@ -77,6 +78,9 @@ type GatewayTranscriptProps = {
   liveStartIndex?: number;
   // Key of the actively streaming turn (caret / live structural state).
   activeTurnKey?: string | null;
+  // Whether the scroll-follow engine is attached to the bottom; gates the
+  // virtualizer's resize-compensation carve-out for live-row growth.
+  isViewportFollowing?: () => boolean;
   error?: string | null;
   toolStatus?: string | null;
   toolStatusIsCompaction?: boolean;
@@ -1088,6 +1092,7 @@ const GatewayTranscriptListRegion = memo(function GatewayTranscriptListRegion(pr
   liveStartIndex: number;
   activeTurnKey?: string | null;
   scrollViewport: HTMLDivElement | null;
+  isViewportFollowing?: () => boolean;
   hasMoreHistory?: boolean;
   isLoadingMoreHistory?: boolean;
   onLoadFullHistory?: () => void;
@@ -1114,6 +1119,7 @@ const GatewayTranscriptListRegion = memo(function GatewayTranscriptListRegion(pr
     liveStartIndex,
     activeTurnKey,
     scrollViewport,
+    isViewportFollowing,
     hasMoreHistory,
     isLoadingMoreHistory,
     onLoadFullHistory,
@@ -1240,6 +1246,15 @@ const GatewayTranscriptListRegion = memo(function GatewayTranscriptListRegion(pr
     enabled: scrollViewport !== null,
     rangeExtractor: (range) => extractLiveRange(range, forceMountStartRef.current),
   });
+
+  // TanStack exposes the resize-compensation predicate as an instance field,
+  // not an option; reassigning per render keeps the closure's inputs current.
+  transcriptVirtualizer.shouldAdjustScrollPositionOnItemSizeChange =
+    createLiveRowScrollAdjustPolicy({
+      getLiveStartIndex: () => forceMountStartRef.current,
+      isFollowing: () => isViewportFollowing?.() ?? false,
+    });
+
   const virtualRows = transcriptVirtualizer.getVirtualItems();
 
   // Prepend anchor: when loading earlier history inserts rows above the
@@ -1248,7 +1263,8 @@ const GatewayTranscriptListRegion = memo(function GatewayTranscriptListRegion(pr
   // getOffsetForIndex(_, "start") is the public offset accessor; the anchor
   // and the restore read through the same function, so the delta is exact.
   const prependAnchorRef = useRef<{ key: string; start: number } | null>(null);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs per commit by design
+  // Intentionally no dependency array: the anchor must re-read on every
+  // commit, since any render can be the one that prepends rows.
   useLayoutEffect(() => {
     const firstRowKey = virtualItems[leadingOffset]?.key ?? null;
     const startOf = (index: number) => transcriptVirtualizer.getOffsetForIndex(index, "start")?.[0];
@@ -1458,6 +1474,7 @@ export function GatewayTranscript({
   rows,
   liveStartIndex = -1,
   activeTurnKey = null,
+  isViewportFollowing,
   error,
   toolStatus,
   toolStatusIsCompaction = false,
@@ -1531,6 +1548,7 @@ export function GatewayTranscript({
           liveStartIndex={liveStartIndex}
           activeTurnKey={activeTurnKey}
           scrollViewport={transcriptScrollViewport}
+          isViewportFollowing={isViewportFollowing}
           hasMoreHistory={hasMoreHistory}
           isLoadingMoreHistory={isLoadingMoreHistory}
           onLoadFullHistory={onLoadFullHistory}

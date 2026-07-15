@@ -193,6 +193,7 @@ export const ChatTranscript = memo(function ChatTranscript(props: ChatTranscript
               historyItems={historyItems}
               liveTranscriptStore={liveTranscriptStore}
               scrollViewport={scrollViewport}
+              isViewportFollowing={scrollFollowHandle.isFollowing}
               isSending={isSending}
               isAgentMode={isAgentMode}
               isCompactionRunning={isCompactionRunning}
