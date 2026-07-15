@@ -15,7 +15,12 @@ pub(crate) struct BuiltinSkillFile {
 pub(crate) struct BuiltinSkill {
     pub(crate) name: &'static str,
     pub(crate) files: &'static [BuiltinSkillFile],
+    pub(crate) ownership_marker: Option<(&'static str, &'static str)>,
 }
+
+const CODE_REVIEW_OWNERSHIP_MARKER_PATH: &str = "_liveagent_builtin.json";
+const CODE_REVIEW_OWNERSHIP_MARKER_CONTENT: &str =
+    "{\"schemaVersion\":1,\"owner\":\"LiveAgent\",\"skill\":\"liveagent-code-review\"}\n";
 
 const SKILLS_INSTALLER_FILES: &[BuiltinSkillFile] = &[
     BuiltinSkillFile {
@@ -55,28 +60,77 @@ const SKILLS_CREATOR_FILES: &[BuiltinSkillFile] = &[
     },
 ];
 
+const CODE_REVIEW_FILES: &[BuiltinSkillFile] = &[
+    BuiltinSkillFile {
+        path: "SKILL.md",
+        content: include_str!("../../../prompt/skills/liveagent-code-review/SKILL.md"),
+    },
+    BuiltinSkillFile {
+        path: CODE_REVIEW_OWNERSHIP_MARKER_PATH,
+        content: CODE_REVIEW_OWNERSHIP_MARKER_CONTENT,
+    },
+];
+
 pub(crate) const BUILTIN_AGENT_SKILLS: &[BuiltinSkill] = &[
+    BuiltinSkill {
+        name: "liveagent-code-review",
+        files: CODE_REVIEW_FILES,
+        ownership_marker: Some((
+            CODE_REVIEW_OWNERSHIP_MARKER_PATH,
+            CODE_REVIEW_OWNERSHIP_MARKER_CONTENT,
+        )),
+    },
     BuiltinSkill {
         name: "skills-installer",
         files: SKILLS_INSTALLER_FILES,
+        ownership_marker: None,
     },
     BuiltinSkill {
         name: "skills-creator",
         files: SKILLS_CREATOR_FILES,
+        ownership_marker: None,
     },
 ];
 
-pub(crate) fn is_builtin_agent_skill_name(name: &str) -> bool {
+fn builtin_agent_skill(name: &str) -> Option<&'static BuiltinSkill> {
     BUILTIN_AGENT_SKILLS
         .iter()
-        .any(|skill| skill.name.eq_ignore_ascii_case(name))
+        .find(|skill| skill.name.eq_ignore_ascii_case(name))
+}
+
+fn builtin_skill_owns_target(target: &Path, builtin: &BuiltinSkill) -> Result<bool, String> {
+    let Some((marker_path, expected_content)) = builtin.ownership_marker else {
+        return Ok(true);
+    };
+    let marker_path = sanitize_skill_child_rel_path(marker_path)?;
+    let marker = target.join(marker_path);
+    match fs::read_to_string(&marker) {
+        Ok(content) => Ok(content == expected_content),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "Failed to inspect built-in Skill ownership marker {}: {error}",
+            marker.display()
+        )),
+    }
+}
+
+pub(crate) fn is_managed_builtin_skill_dir(skill_dir: &Path, name: &str) -> bool {
+    builtin_agent_skill(name)
+        .and_then(|builtin| builtin_skill_owns_target(skill_dir, builtin).ok())
+        .unwrap_or(false)
 }
 
 pub(crate) fn ensure_not_builtin_skill_management_target(
+    root: &Path,
     name: &str,
     action: &str,
 ) -> Result<(), String> {
-    if is_builtin_agent_skill_name(name) {
+    let Some(builtin) = builtin_agent_skill(name) else {
+        return Ok(());
+    };
+    let target = root.join(name);
+    let is_protected = !target.exists() || builtin_skill_owns_target(&target, builtin)?;
+    if is_protected {
         return Err(format!(
             "SkillsManager action={action} cannot modify built-in Skill \"{name}\". Built-in Skills are managed by LiveAgent; create or update a separate user Skill instead."
         ));
@@ -155,6 +209,15 @@ pub(crate) fn ensure_builtin_agent_skills_in_root(
         let mut write_action = "created";
 
         if target.exists() {
+            if builtin.ownership_marker.is_some() && !builtin_skill_owns_target(&target, builtin)? {
+                results.push(SystemBuiltinSkillSeedResponse {
+                    name,
+                    target: display_path(&target),
+                    action: "conflict_preserved".to_string(),
+                    backup: None,
+                });
+                continue;
+            }
             let validation = validate_skill_dir(&target);
             let valid_same_name = validation.ok
                 && validation

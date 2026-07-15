@@ -405,10 +405,12 @@ test("builtin agent skills stay selected and sort first", () => {
       { name: "z-skill" },
       { name: "skills-installer" },
       { name: "a-skill" },
+      { name: "liveagent-code-review" },
       { name: "skills-creator" },
     ]).map((skill) => skill.name),
-    ["skills-creator", "skills-installer", "a-skill", "z-skill"],
+    ["skills-creator", "skills-installer", "a-skill", "liveagent-code-review", "z-skill"],
   );
+  assert.equal(skillBuiltinHelpers.isUserSelectableSkillName("liveagent-code-review"), true);
   assert.equal(skillBuiltinHelpers.isUserSelectableSkillName("skills-creator"), false);
   assert.equal(skillBuiltinHelpers.isUserSelectableSkillName("workflow-skill"), true);
 });
@@ -1161,7 +1163,7 @@ test("Write replays the Gomoku failure sequence with generic directory recovery 
   ]);
 });
 
-test("file tools block direct mutations inside built-in Skills", async () => {
+test("file tools block direct mutations inside backend-verified built-in Skills", async () => {
   const invocations = [];
   const fsLoader = createTsModuleLoader({
     mocks: {
@@ -1180,8 +1182,10 @@ test("file tools block direct mutations inside built-in Skills", async () => {
     skillsRootEnabled: true,
     skillsRootDir: "/Users/me/.liveagent/skills",
     skillAccessPolicy: {
-      allowedSkillNames: ["skills-creator", "skills-installer"],
-      allowedSkillBaseDirs: ["skills-creator", "skills-installer"],
+      allowedSkillNames: ["liveagent-code-review"],
+      allowedSkillBaseDirs: ["liveagent-code-review"],
+      protectedSkillNames: ["liveagent-code-review"],
+      protectedSkillBaseDirs: ["liveagent-code-review"],
       allowSkillMutation: true,
     },
     fileState: fileToolState.createFileToolState(),
@@ -1192,13 +1196,13 @@ test("file tools block direct mutations inside built-in Skills", async () => {
     id: "blocked-builtin-skill-write",
     name: "Write",
     arguments: {
-      path: "skill://skills-creator/SKILL.md",
-      content: "---\nname: skills-creator\ndescription: Changed\n---\n",
+      path: "skill://liveagent-code-review/SKILL.md",
+      content: "---\nname: liveagent-code-review\ndescription: Changed\n---\n",
     },
   });
 
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /built-in Skill "skills-creator" is protected/);
+  assert.match(result.content[0].text, /built-in Skill "liveagent-code-review" is protected/);
   assert.match(result.content[0].text, /cannot be modified by the model/);
   assert.deepEqual(invocations, []);
 });
@@ -1799,8 +1803,10 @@ test("SkillsManager blocks built-in Skill create/install targets before backend 
   const skillTools = skillLoader.loadModule("src/lib/tools/skillTools.ts");
   const bundle = skillTools.createSkillTools({
     skillAccessPolicy: {
-      allowedSkillNames: ["skills-creator", "skills-installer"],
-      allowedSkillBaseDirs: ["skills-creator", "skills-installer"],
+      allowedSkillNames: ["skills-creator", "skills-installer", "liveagent-code-review"],
+      allowedSkillBaseDirs: ["skills-creator", "skills-installer", "liveagent-code-review"],
+      protectedSkillNames: ["liveagent-code-review"],
+      protectedSkillBaseDirs: ["liveagent-code-review"],
       allowSkillManagement: true,
     },
   });
@@ -1833,6 +1839,18 @@ test("SkillsManager blocks built-in Skill create/install targets before backend 
   });
   assert.equal(installResult.isError, true);
   assert.match(installResult.content[0].text, /built-in Skill "skills-installer" is protected/);
+
+  const deleteResult = await bundle.executeToolCall({
+    type: "toolCall",
+    id: "blocked-builtin-delete",
+    name: "SkillsManager",
+    arguments: {
+      action: "delete",
+      name: "liveagent-code-review",
+    },
+  });
+  assert.equal(deleteResult.isError, true);
+  assert.match(deleteResult.content[0].text, /built-in Skill "liveagent-code-review" is protected/);
   assert.deepEqual(invocations, []);
 });
 

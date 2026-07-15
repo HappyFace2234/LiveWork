@@ -22,6 +22,8 @@ export type SkillSummary = {
   skillFile: string;
   /** relative directory of the skill (from app skills root) */
   baseDir: string;
+  /** true only when the backend verified LiveAgent ownership metadata */
+  builtIn?: boolean;
   /** full README.md content for fallback skills that do not declare metadata */
   inlineContent?: string;
   inlineContentTruncated?: boolean;
@@ -115,6 +117,7 @@ type SystemManageSkillResponse = {
     target: string;
     skillFile: string;
     baseDir: string;
+    builtIn?: boolean;
     source?: SkillSourceMetadata | null;
   }> | null;
   invalid?: Array<{ path: string; error: string }> | null;
@@ -411,6 +414,7 @@ async function managedSkillListToDiscovery(
         description,
         skillFile,
         baseDir,
+        builtIn: raw.builtIn === true,
         source: normalizeSkillSourceMetadata(raw.source),
       }),
     );

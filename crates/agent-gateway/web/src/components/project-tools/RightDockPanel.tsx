@@ -79,6 +79,7 @@ type RightDockPanelProps = {
   onSessionsChange?: (sessions: TerminalSession[]) => void;
   onInsertFileMention?: (path: string, kind: "file" | "dir") => void;
   onOpenFile?: (path: string, imagePaths?: string[]) => void;
+  onInsertCodeReviewSkill?: () => void;
   onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
   onClose?: () => void;
@@ -355,6 +356,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
     onSessionsChange,
     onInsertFileMention,
     onOpenFile,
+    onInsertCodeReviewSkill,
     onInsertCommitMention,
     onInsertGitFileMention,
     onClose,
@@ -622,6 +624,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
         onRevealInFileTree: revealPathInFileTree,
       },
       git: {
+        onInsertCodeReviewSkill,
         onInsertCommitMention,
         onInsertGitFileMention,
       },
@@ -649,6 +652,7 @@ export const RightDockPanel = memo(function RightDockPanel(props: RightDockPanel
       gitDisabledMessage,
       gitWriteEnabled,
       onFileTreeStateChange,
+      onInsertCodeReviewSkill,
       onInsertCommitMention,
       onInsertFileMention,
       onInsertGitFileMention,

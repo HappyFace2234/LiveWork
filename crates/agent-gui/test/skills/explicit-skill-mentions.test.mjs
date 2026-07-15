@@ -27,6 +27,9 @@ test("extractSkillMentionNamesFromText finds explicit skill tokens without treat
     ),
     ["code-review", "release_notes"],
   );
+  assert.deepEqual(skills.extractSkillMentionNamesFromText("$liveagent-code-review"), [
+    "liveagent-code-review",
+  ]);
 });
 
 test("resolveExplicitSkillMentions only returns enabled skills and deduplicates structured/text mentions", () => {

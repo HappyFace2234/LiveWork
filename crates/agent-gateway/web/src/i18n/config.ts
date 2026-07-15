@@ -308,6 +308,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.fileTreeDescription": "浏览和管理项目文件",
     "projectTools.newGitReview": "新建审查",
     "projectTools.gitReviewDescription": "查看代码变更和提交历史",
+    "projectTools.gitReview.addAiReview": "将 AI 代码审查添加到对话",
+    "projectTools.gitReview.aiReviewUnavailable": "启用 Agent 模式中的 Skills 后使用 AI 代码审查",
     "projectTools.newTunnel": "新建内网穿透",
     "projectTools.tunnelDescription": "通过 Gateway 暴露 HTTP 服务",
     "projectTools.sshTunnelTitle": "SSH 隧道",
@@ -2014,6 +2016,9 @@ export const translations: Record<Locale, Record<string, string>> = {
     "projectTools.fileTreeDescription": "Browse and manage project files",
     "projectTools.newGitReview": "New Review",
     "projectTools.gitReviewDescription": "Review code changes and commit history",
+    "projectTools.gitReview.addAiReview": "Add AI code review to chat",
+    "projectTools.gitReview.aiReviewUnavailable":
+      "Enable Skills in Agent mode to use AI code review",
     "projectTools.newTunnel": "New Tunnel",
     "projectTools.tunnelDescription": "Expose HTTP services through Gateway",
     "projectTools.sshTunnelTitle": "SSH Tunnel",

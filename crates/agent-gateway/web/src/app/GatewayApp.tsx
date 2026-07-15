@@ -87,6 +87,7 @@ import {
   updateRightDockFileTreeState,
   updateRightDockProjectState,
   updateRightDockWidth,
+  updateSkills,
   updateSshProjectHostIds,
   type WorkspaceProject,
   workspaceProjectPathKey,
@@ -3162,6 +3163,13 @@ export default function GatewayApp() {
       .map((name) => byName.get(name))
       .filter((skill): skill is (typeof availableSkills)[number] => Boolean(skill));
   }, [availableSkills, selectedSkillNames, skillsEnabled]);
+  const codeReviewSkill = useMemo(
+    () =>
+      availableSkills.find(
+        (skill) => skill.name === "liveagent-code-review" && skill.builtIn === true,
+      ),
+    [availableSkills],
+  );
 
   const canShareHistory = Boolean(
     api &&
@@ -3382,6 +3390,22 @@ export default function GatewayApp() {
     composerRef.current?.insertFileMention(path, kind);
     composerRef.current?.focus();
   }, []);
+  const handleRightDockInsertCodeReviewSkill = useCallback(() => {
+    const composer = composerRef.current;
+    if (!composer || !codeReviewSkill) return;
+    setSettings((prev) => {
+      const selected = mergeAlwaysEnabledSkillNames(prev.skills.selected);
+      if (selected.includes(codeReviewSkill.name)) return prev;
+      return updateSkills(prev, { selected: [...selected, codeReviewSkill.name] });
+    });
+    const alreadyInserted = composer
+      .getDraft()
+      .skillMentions.some((skill) => skill.name === codeReviewSkill.name);
+    if (!alreadyInserted) {
+      composer.insertSkillMention(codeReviewSkill);
+    }
+    composer.focus();
+  }, [codeReviewSkill, setSettings]);
   const handleRightDockInsertCommitMention = useCallback((commit: GitCommitContextPayload) => {
     composerRef.current?.insertCommitMention(commit);
     composerRef.current?.focus();
@@ -4106,6 +4130,9 @@ export default function GatewayApp() {
               onSessionsChange={handleProjectTerminalSessionsChange}
               onInsertFileMention={handleRightDockInsertFileMention}
               onOpenFile={handleOpenWorkspaceFile}
+              onInsertCodeReviewSkill={
+                codeReviewSkill ? handleRightDockInsertCodeReviewSkill : undefined
+              }
               onInsertCommitMention={handleRightDockInsertCommitMention}
               onInsertGitFileMention={handleRightDockInsertGitFileMention}
               onClose={handleRightDockClose}

@@ -1256,6 +1256,13 @@ export function ChatPage(props: ChatPageProps) {
       .map((name) => byName.get(name))
       .filter((skill): skill is (typeof availableSkills)[number] => Boolean(skill));
   }, [availableSkills, selectedSkillNames, skillsEnabled]);
+  const codeReviewSkill = useMemo(
+    () =>
+      availableSkills.find(
+        (skill) => skill.name === "liveagent-code-review" && skill.builtIn === true,
+      ),
+    [availableSkills],
+  );
 
   const modelOptions = useMemo(
     () => buildModelOptions(settings, { floatSelectedFirst: false }),
@@ -1473,6 +1480,22 @@ export function ChatPage(props: ChatPageProps) {
     composerRef.current?.insertFileMention(path, kind);
     composerRef.current?.focus();
   }, []);
+  const handleRightDockInsertCodeReviewSkill = useCallback(() => {
+    const composer = composerRef.current;
+    if (!composer || !codeReviewSkill) return;
+    setSettings((prev) => {
+      const selected = appendManagedSkillSelections(prev.skills.selected, [codeReviewSkill.name]);
+      if (selected.join("\n") === prev.skills.selected.join("\n")) return prev;
+      return updateSkills(prev, { selected });
+    });
+    const alreadyInserted = composer
+      .getDraft()
+      .skillMentions.some((skill) => skill.name === codeReviewSkill.name);
+    if (!alreadyInserted) {
+      composer.insertSkillMention(codeReviewSkill);
+    }
+    composer.focus();
+  }, [codeReviewSkill, setSettings]);
   const handleRightDockInsertCommitMention = useCallback((commit: GitCommitContextPayload) => {
     composerRef.current?.insertCommitMention(commit);
     composerRef.current?.focus();
@@ -4125,6 +4148,12 @@ export function ChatPage(props: ChatPageProps) {
       skillAccessPolicyForTools = {
         allowedSkillNames: selectedSkills.map((skill) => skill.name),
         allowedSkillBaseDirs: selectedSkills.map((skill) => skill.baseDir),
+        protectedSkillNames: selectedSkills
+          .filter((skill) => skill.builtIn === true)
+          .map((skill) => skill.name),
+        protectedSkillBaseDirs: selectedSkills
+          .filter((skill) => skill.builtIn === true)
+          .map((skill) => skill.baseDir),
         allowSkillInventory: true,
         allowSkillManagement: allowBuiltinSkillManagement,
         allowSkillMutation: true,
@@ -5408,6 +5437,7 @@ export function ChatPage(props: ChatPageProps) {
         onSessionsChange={handleRightDockSessionsChange}
         onInsertFileMention={handleRightDockInsertFileMention}
         onOpenFile={handleOpenWorkspaceFile}
+        onInsertCodeReviewSkill={codeReviewSkill ? handleRightDockInsertCodeReviewSkill : undefined}
         onInsertCommitMention={handleRightDockInsertCommitMention}
         onInsertGitFileMention={handleRightDockInsertGitFileMention}
       />

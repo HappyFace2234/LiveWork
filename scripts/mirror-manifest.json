@@ -71,6 +71,7 @@
     "lib/managed-process/types.ts",
     "lib/tools/systemToolOptions.ts",
     "lib/tools/builtinToolCatalog.ts",
+    "lib/skills/builtin.ts",
     "pages/settings/SystemToolsSection.tsx"
   ]
 }

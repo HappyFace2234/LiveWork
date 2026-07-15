@@ -246,6 +246,98 @@ fn builtin_seed_backs_up_invalid_target_before_writing() {
 }
 
 #[test]
+fn builtin_seed_installs_liveagent_code_review_workflow() {
+    let tmp = TempDir::new("liveagent-code-review-seed-test").expect("temp dir");
+    let root = tmp.path().join("skills");
+
+    let seeded = ensure_builtin_agent_skills_in_root(&root).expect("seed builtins");
+    let code_review = seeded
+        .iter()
+        .find(|item| item.name == "liveagent-code-review")
+        .expect("code review seed result");
+
+    assert_eq!(code_review.action, "created");
+    let skill_dir = root.join("liveagent-code-review");
+    let content = fs::read_to_string(skill_dir.join("SKILL.md")).expect("read code review skill");
+    assert!(content.contains("Anthropic's public Claude Code Code Review plugin"));
+    assert!(content.contains("confidence >= 80"));
+    assert!(content.contains("mode=readonly"));
+    assert!(content.contains("current local branch"));
+    assert!(content.contains("Never write to GitHub"));
+    assert!(skill_dir.join("_liveagent_builtin.json").is_file());
+    let validation = validate_skill_dir(&skill_dir);
+    assert!(validation.ok, "{:?}", validation.errors);
+
+    let (skills, invalid) = list_installed_skills(&root).expect("list seeded skills");
+    assert!(invalid.is_empty(), "{invalid:?}");
+    assert!(skills
+        .iter()
+        .find(|skill| skill.name == "liveagent-code-review")
+        .is_some_and(|skill| skill.built_in));
+}
+
+#[test]
+fn builtin_seed_preserves_unmanaged_code_review_collision() {
+    let tmp = TempDir::new("liveagent-code-review-collision-test").expect("temp dir");
+    let root = tmp.path().join("skills");
+    let skill_dir = write_skill(&root, "liveagent-code-review", "User-owned review workflow");
+    let original = fs::read(skill_dir.join("SKILL.md")).expect("read original skill");
+    fs::write(skill_dir.join("notes.txt"), "keep me\n").expect("write user file");
+
+    let seeded = ensure_builtin_agent_skills_in_root(&root).expect("seed builtins");
+    let code_review = seeded
+        .iter()
+        .find(|item| item.name == "liveagent-code-review")
+        .expect("code review seed result");
+
+    assert_eq!(code_review.action, "conflict_preserved");
+    assert!(code_review.backup.is_none());
+    assert_eq!(
+        fs::read(skill_dir.join("SKILL.md")).expect("read preserved skill"),
+        original
+    );
+    assert_eq!(
+        fs::read_to_string(skill_dir.join("notes.txt")).expect("read preserved user file"),
+        "keep me\n"
+    );
+    assert!(!skill_dir.join("_liveagent_builtin.json").exists());
+
+    let (skills, invalid) = list_installed_skills(&root).expect("list preserved skills");
+    assert!(invalid.is_empty(), "{invalid:?}");
+    assert!(skills
+        .iter()
+        .find(|skill| skill.name == "liveagent-code-review")
+        .is_some_and(|skill| !skill.built_in));
+
+    delete_installed_skill(&root, "liveagent-code-review")
+        .expect("preserved user skill remains manageable");
+}
+
+#[test]
+fn builtin_seed_updates_owned_code_review_workflow() {
+    let tmp = TempDir::new("liveagent-code-review-update-test").expect("temp dir");
+    let root = tmp.path().join("skills");
+    ensure_builtin_agent_skills_in_root(&root).expect("initial seed");
+    let skill_file = root.join("liveagent-code-review").join("SKILL.md");
+    fs::write(
+        &skill_file,
+        "---\nname: liveagent-code-review\ndescription: Old managed workflow\n---\n\n# Old\n",
+    )
+    .expect("modify managed skill");
+
+    let seeded = ensure_builtin_agent_skills_in_root(&root).expect("reseed builtins");
+    let code_review = seeded
+        .iter()
+        .find(|item| item.name == "liveagent-code-review")
+        .expect("code review seed result");
+
+    assert_eq!(code_review.action, "updated");
+    assert!(code_review.backup.is_some());
+    let content = fs::read_to_string(skill_file).expect("read restored workflow");
+    assert!(content.contains("Anthropic's public Claude Code Code Review plugin"));
+}
+
+#[test]
 fn builtin_seed_updates_changed_valid_target_before_writing() {
     let tmp = TempDir::new("liveagent-builtin-update-test").expect("temp dir");
     let root = tmp.path().join("skills");

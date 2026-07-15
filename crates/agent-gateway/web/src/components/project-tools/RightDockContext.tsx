@@ -44,6 +44,7 @@ export type RightDockFileTreeContext = {
 };
 
 export type RightDockGitContext = {
+  onInsertCodeReviewSkill?: () => void;
   onInsertCommitMention?: (commit: GitCommitContextPayload) => void;
   onInsertGitFileMention?: (file: GitFileContextPayload) => void;
 };

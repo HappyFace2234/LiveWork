@@ -269,6 +269,7 @@ pub(crate) fn skill_summary_from_dir(
     skill_dir: &Path,
 ) -> Result<SystemSkillSummary, String> {
     let metadata = read_skill_metadata_from_dir(skill_dir)?;
+    let built_in = is_managed_builtin_skill_dir(skill_dir, &metadata.name);
     let skill_file = rel_to_root_str(root, &metadata.metadata_file);
     let base_dir = rel_to_root_str(root, skill_dir);
     Ok(SystemSkillSummary {
@@ -277,6 +278,7 @@ pub(crate) fn skill_summary_from_dir(
         target: display_path(skill_dir),
         skill_file,
         base_dir,
+        built_in,
         source: read_skill_source_metadata(skill_dir),
     })
 }
@@ -320,7 +322,7 @@ pub(crate) fn delete_installed_skill(
     name: &str,
 ) -> Result<SystemSkillDeleteResponse, String> {
     let name = sanitize_skill_name(name)?;
-    ensure_not_builtin_skill_management_target(&name, "delete")?;
+    ensure_not_builtin_skill_management_target(root, &name, "delete")?;
     let _guard = skills_write_guard();
     let target = root.join(&name);
     let metadata = fs::symlink_metadata(&target).map_err(|e| {

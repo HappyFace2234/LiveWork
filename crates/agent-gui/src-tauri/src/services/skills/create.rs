@@ -40,7 +40,7 @@ pub(crate) fn create_skill_from_payload(
         .ok_or_else(|| "SkillsManager create requires name".to_string())?;
     let normalized = normalize_skill_name(raw_name);
     let name = sanitize_skill_name(&normalized)?;
-    ensure_not_builtin_skill_management_target(&name, "create")?;
+    ensure_not_builtin_skill_management_target(root, &name, "create")?;
     let description = object_string(payload, "description")
         .ok_or_else(|| "SkillsManager create requires description".to_string())?
         .trim()

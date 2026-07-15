@@ -23,6 +23,7 @@ import {
   filterSkillsByAccessPolicy,
   grantSkillsToAccessPolicy,
   isSkillAccessPolicyRestrictive,
+  isSkillNameProtectedByPolicy,
   normalizeSkillBaseDir,
   type SkillAccessPolicy,
 } from "./skillAccessPolicy";
@@ -439,7 +440,7 @@ function enforceSkillManagerAccessPolicy(
     assertSkillManagementAllowed(policy, action);
     const name = String(payload.name ?? "");
     assertSkillNameAllowedByPolicy(policy, name, `SkillsManager(action=${JSON.stringify(action)})`);
-    if (isAlwaysEnabledSkillName(name)) {
+    if (isAlwaysEnabledSkillName(name) || isSkillNameProtectedByPolicy(policy, name)) {
       throw new Error(
         `SkillsManager(action=${JSON.stringify(action)}) is blocked: built-in Skill "${name}" is protected and cannot be modified by the model. Create or update a separate user Skill instead.`,
       );
@@ -449,7 +450,7 @@ function enforceSkillManagerAccessPolicy(
   if (action === "install" || action === "create" || action === "clawhub_install") {
     assertSkillManagementAllowed(policy, action === "clawhub_install" ? "install" : action);
     const name = typeof payload.name === "string" ? payload.name.trim() : "";
-    if (name && isAlwaysEnabledSkillName(name)) {
+    if (name && (isAlwaysEnabledSkillName(name) || isSkillNameProtectedByPolicy(policy, name))) {
       throw new Error(
         `SkillsManager(action=${JSON.stringify(action)}) is blocked: built-in Skill "${name}" is protected and cannot be modified by the model. Create or update a separate user Skill instead.`,
       );

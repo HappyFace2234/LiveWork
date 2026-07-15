@@ -3,6 +3,8 @@ import { isAlwaysEnabledSkillName } from "../skills/builtin";
 export type SkillAccessPolicy = {
   allowedSkillNames?: readonly string[];
   allowedSkillBaseDirs?: readonly string[];
+  protectedSkillNames?: readonly string[];
+  protectedSkillBaseDirs?: readonly string[];
   allowSkillInventory?: boolean;
   allowSkillManagement?: boolean;
   allowSkillMutation?: boolean;
@@ -47,6 +49,26 @@ function normalizePolicyNames(policy?: SkillAccessPolicy) {
   return new Set(
     policy.allowedSkillNames.map((name) => normalizeName(String(name))).filter(Boolean),
   );
+}
+
+function normalizeProtectedSkillNames(policy?: SkillAccessPolicy) {
+  if (!Array.isArray(policy?.protectedSkillNames)) return new Set<string>();
+  return new Set(
+    policy.protectedSkillNames.map((name) => normalizeName(String(name))).filter(Boolean),
+  );
+}
+
+function normalizeProtectedSkillBaseDirs(policy?: SkillAccessPolicy) {
+  if (!Array.isArray(policy?.protectedSkillBaseDirs)) return new Set<string>();
+  return new Set(
+    policy.protectedSkillBaseDirs
+      .map((baseDir) => normalizeSkillBaseDir(String(baseDir)))
+      .filter(Boolean),
+  );
+}
+
+export function isSkillNameProtectedByPolicy(policy: SkillAccessPolicy | undefined, name: string) {
+  return normalizeProtectedSkillNames(policy).has(normalizeName(name));
 }
 
 export function isSkillAccessPolicyRestrictive(policy?: SkillAccessPolicy) {
@@ -206,7 +228,10 @@ export function assertSkillMutationAllowed(
   path?: string,
 ) {
   const baseDir = typeof path === "string" ? normalizeSkillBaseDir(path) : "";
-  if (baseDir && isAlwaysEnabledSkillName(baseDir)) {
+  if (
+    baseDir &&
+    (isAlwaysEnabledSkillName(baseDir) || normalizeProtectedSkillBaseDirs(policy).has(baseDir))
+  ) {
     throw new Error(
       [
         `${operation} is blocked: built-in Skill "${baseDir}" is protected and cannot be modified by the model.`,

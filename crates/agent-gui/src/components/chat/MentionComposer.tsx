@@ -124,6 +124,7 @@ export interface MentionComposerHandle {
   setText: (text: string) => void;
   setDraft: (draft: MentionComposerDraft) => void;
   insertFileMention: (path: string, kind: "file" | "dir") => void;
+  insertSkillMention: (skill: MentionComposerSkillMention) => void;
   insertCommitMention: (commit: MentionComposerCommitMention) => void;
   insertGitFileMention: (file: MentionComposerGitFileMention) => void;
   clear: () => void;
@@ -2268,6 +2269,15 @@ export const MentionComposer = memo(
           const chip = createFileMentionChip(path, kind);
           if (!chip) return;
           insertNodeAtCursor(el, chip, { ensureSpaceAfterNode: true });
+          closeMentionSession();
+          refreshEmptyState();
+        },
+        insertSkillMention: (skill: MentionComposerSkillMention) => {
+          const el = editorRef.current;
+          if (!el) return;
+          finishTypewriter();
+          el.focus();
+          insertNodeAtCursor(el, createSkillMentionChip(skill), { ensureSpaceAfterNode: true });
           closeMentionSession();
           refreshEmptyState();
         },

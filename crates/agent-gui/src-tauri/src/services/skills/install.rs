@@ -381,7 +381,7 @@ where
         }
         let metadata = read_skill_metadata_from_dir(&candidate)?;
         let skill_name = name_override.as_deref().unwrap_or(&metadata.name);
-        ensure_not_builtin_skill_management_target(skill_name, "install")?;
+        ensure_not_builtin_skill_management_target(root, skill_name, "install")?;
         on_progress(SkillInstallProgressUpdate {
             phase: "installing",
             downloaded_bytes: None,

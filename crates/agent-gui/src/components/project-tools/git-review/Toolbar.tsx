@@ -22,6 +22,7 @@ import {
   History,
   Loader2,
   RefreshCw,
+  Sparkles,
   Trash2,
   Upload,
   X,
@@ -29,6 +30,7 @@ import {
 } from "../../icons";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { useRightDockToolContext } from "../RightDockContext";
 import {
   type GitBranchFromCommitState,
   type GitDiscardConfirmState,
@@ -411,6 +413,7 @@ export function GitReviewToolbar(props: {
     state,
   } = data;
   const { t } = useLocale();
+  const { onInsertCodeReviewSkill } = useRightDockToolContext().git;
   const operationBusy = busy !== "";
 
   return (
@@ -425,6 +428,23 @@ export function GitReviewToolbar(props: {
             {state.repoRoot || disabledMessage || t("projectTools.gitReview.noRepository")}
           </div>
         </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={!onInsertCodeReviewSkill || state.status !== "ready"}
+          className="h-7 w-7 px-0"
+          title={t(
+            !onInsertCodeReviewSkill
+              ? "projectTools.gitReview.aiReviewUnavailable"
+              : state.status === "ready"
+                ? "projectTools.gitReview.addAiReview"
+                : "projectTools.gitReview.noRepository",
+          )}
+          aria-label={t("projectTools.gitReview.addAiReview")}
+          onClick={onInsertCodeReviewSkill}
+        >
+          <Sparkles className="h-3.5 w-3.5 text-primary" />
+        </Button>
         <Button
           size="sm"
           variant="ghost"
