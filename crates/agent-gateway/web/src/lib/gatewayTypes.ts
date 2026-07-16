@@ -201,6 +201,7 @@ export type ConversationSummary = {
   model?: string;
   session_id?: string;
   cwd?: string;
+  selected_model_json?: string;
   is_pinned?: boolean;
   pinned_at?: number;
   is_shared?: boolean;

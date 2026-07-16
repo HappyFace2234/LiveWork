@@ -11,16 +11,26 @@ export type EffectiveChatModelSelection = {
   model: string;
 };
 
-export function resolveEffectiveChatModelSelection(
+export function resolveActiveModelSelection(
   settings: AppSettings,
-  gatewaySelectedModel?: GatewaySelectedModelEvent,
-): EffectiveChatModelSelection {
+  conversationSelectedModel: SelectedModel | undefined,
+): SelectedModel | undefined {
+  return conversationSelectedModel ?? settings.selectedModel;
+}
+
+export function resolveEffectiveChatModelSelection(params: {
+  settings: AppSettings;
+  conversationSelectedModel?: SelectedModel;
+  gatewaySelectedModel?: GatewaySelectedModelEvent;
+}): EffectiveChatModelSelection {
+  const { settings, conversationSelectedModel, gatewaySelectedModel } = params;
   const resolveLocalSelection = (): EffectiveChatModelSelection => {
-    if (!settings.selectedModel) {
+    const activeSelectedModel = resolveActiveModelSelection(settings, conversationSelectedModel);
+    if (!activeSelectedModel) {
       throw new Error("请先在左上角选择一个模型（或先去设置添加模型）。");
     }
 
-    const { customProviderId, model } = settings.selectedModel;
+    const { customProviderId, model } = activeSelectedModel;
     const provider = settings.customProviders.find((item) => item.id === customProviderId);
     if (!provider) {
       throw new Error("所选供应商不存在，请重新选择模型。");
@@ -30,7 +40,7 @@ export function resolveEffectiveChatModelSelection(
     }
 
     return {
-      selectedModel: settings.selectedModel,
+      selectedModel: activeSelectedModel,
       provider,
       providerId: provider.type,
       model,

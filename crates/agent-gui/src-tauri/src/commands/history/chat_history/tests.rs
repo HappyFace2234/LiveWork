@@ -19,6 +19,7 @@ mod tests {
             model: "gpt-5".to_string(),
             session_id: Some("session-1".to_string()),
             cwd: Some("/tmp".to_string()),
+            selected_model_json: None,
             context_meta_json: "{}".to_string(),
             active_segment_index: 0,
             total_segment_count: 1,
@@ -522,6 +523,105 @@ mod tests {
         assert!(summary.is_pinned);
         assert_eq!(summary.pinned_at, Some(pinned_at));
         assert_eq!(summary.title, "Updated Conversation");
+    }
+
+    #[test]
+    fn v1_database_gains_selected_model_column_via_v2_migration() {
+        // 复现存量库场景：完整的 v1 schema（无 selected_model_json）且
+        // user_version 已到 1——版本门禁必须由 v2 迁移补齐新列。
+        let v1 = Connection::open_in_memory().expect("open v1 in-memory chat history database");
+        v1.execute_batch(
+            "
+            CREATE TABLE chatHistory (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT NOT NULL,
+                session_id TEXT,
+                cwd TEXT,
+                context_meta_json TEXT,
+                active_segment_index INTEGER,
+                total_segment_count INTEGER,
+                total_message_count INTEGER,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                is_pinned INTEGER NOT NULL DEFAULT 0,
+                pinned_at INTEGER
+            );
+            PRAGMA user_version = 1;
+            ",
+        )
+        .expect("create v1 chatHistory schema");
+
+        history_db::initialize_connection(&v1).expect("migrate v1 schema to v2");
+
+        assert!(
+            table_column_names(&v1, "chatHistory").contains(&"selected_model_json".to_string()),
+            "v2 migration should add selected_model_json to a v1 database"
+        );
+    }
+
+    #[test]
+    fn set_model_persists_without_bumping_updated_at() {
+        let conn = open_test_db().expect("open test db");
+        let conversation = sample_conversation();
+        upsert_chat_history_header(&conn, &conversation).expect("upsert header");
+        let before = get_summary_by_id(&conn, "conv-1").expect("load summary");
+
+        let payload = r#"{"customProviderId":"provider-a","model":"claude-fable-5"}"#;
+        let summary =
+            set_chat_history_model_sync(&conn, "conv-1", payload).expect("set conversation model");
+
+        assert_eq!(summary.selected_model_json.as_deref(), Some(payload));
+        assert_eq!(summary.updated_at, before.updated_at);
+        assert_eq!(summary.title, before.title);
+    }
+
+    #[test]
+    fn set_model_rejects_invalid_payloads() {
+        let conn = open_test_db().expect("open test db");
+        let conversation = sample_conversation();
+        upsert_chat_history_header(&conn, &conversation).expect("upsert header");
+
+        assert!(set_chat_history_model_sync(&conn, "conv-1", "not-json").is_err());
+        assert!(set_chat_history_model_sync(&conn, "conv-1", r#"{"model":"m"}"#).is_err());
+        assert!(set_chat_history_model_sync(
+            &conn,
+            "conv-1",
+            r#"{"customProviderId":" ","model":"m"}"#
+        )
+        .is_err());
+        assert!(set_chat_history_model_sync(
+            &conn,
+            "conv-missing",
+            r#"{"customProviderId":"provider-a","model":"m"}"#
+        )
+        .is_err());
+
+        let summary = get_summary_by_id(&conn, "conv-1").expect("load summary");
+        assert_eq!(summary.selected_model_json, None);
+    }
+
+    #[test]
+    fn upsert_header_preserves_selected_model_when_input_none() {
+        let conn = open_test_db().expect("open test db");
+        let mut conversation = sample_conversation();
+        upsert_chat_history_header(&conn, &conversation).expect("upsert header");
+
+        let payload = r#"{"customProviderId":"provider-a","model":"claude-fable-5"}"#;
+        set_chat_history_model_sync(&conn, "conv-1", payload).expect("set conversation model");
+
+        conversation.updated_at += 1_000;
+        upsert_chat_history_header(&conn, &conversation).expect("upsert without selection");
+        let preserved = get_summary_by_id(&conn, "conv-1").expect("load summary");
+        assert_eq!(preserved.selected_model_json.as_deref(), Some(payload));
+
+        let replacement = r#"{"customProviderId":"provider-b","model":"gpt-5"}"#;
+        conversation.selected_model_json = Some(replacement.to_string());
+        conversation.updated_at += 1_000;
+        upsert_chat_history_header(&conn, &conversation).expect("upsert with new selection");
+        let replaced = get_summary_by_id(&conn, "conv-1").expect("load summary");
+        assert_eq!(replaced.selected_model_json.as_deref(), Some(replacement));
     }
 
     #[test]

@@ -729,6 +729,7 @@ message ConversationSummary {
   bool is_pinned = 10;
   int64 pinned_at = 11;
   bool is_shared = 12;
+  string selected_model_json = 13;
 }
 
 message HistoryGetRequest {

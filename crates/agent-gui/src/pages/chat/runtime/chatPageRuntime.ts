@@ -4,7 +4,7 @@ import type { HookRunWarning } from "../../../lib/automation/hookRunner";
 import type { CompactionStatus } from "../../../lib/chat/compaction/types";
 import type { ConversationViewState } from "../../../lib/chat/conversation/conversationState";
 import { normalizeErrorMessage } from "../../../lib/providers/llm";
-import type { AppSettings } from "../../../lib/settings";
+import type { AppSettings, SelectedModel } from "../../../lib/settings";
 
 export const MAX_IDLE_CONVERSATION_RUNTIME_CACHE_ENTRIES = 12;
 
@@ -17,6 +17,7 @@ export type ConversationRuntimeEntry = {
   sessionId: string;
   createdAt: number;
   workdir?: string;
+  selectedModel?: SelectedModel;
 };
 
 export function createConversationRuntimeEntry(params: {
@@ -28,6 +29,7 @@ export function createConversationRuntimeEntry(params: {
   errorMessage?: string | null;
   hookWarning?: string | null;
   workdir?: string;
+  selectedModel?: SelectedModel;
 }): ConversationRuntimeEntry {
   const {
     state,
@@ -38,6 +40,7 @@ export function createConversationRuntimeEntry(params: {
     errorMessage = null,
     hookWarning = null,
     workdir,
+    selectedModel,
   } = params;
   return {
     state,
@@ -48,6 +51,7 @@ export function createConversationRuntimeEntry(params: {
     sessionId,
     createdAt,
     workdir: workdir?.trim() || undefined,
+    selectedModel,
   };
 }
 

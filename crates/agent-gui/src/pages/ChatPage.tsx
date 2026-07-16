@@ -66,6 +66,7 @@ import {
   getChatHistoryShare,
   listChatHistory,
   listSharedChatHistory,
+  setChatHistoryModel,
   setChatHistoryShare,
 } from "../lib/chat/history/chatHistory";
 import { memoryExtraction } from "../lib/chat/memory/extractionController";
@@ -120,8 +121,10 @@ import {
   isRightDockSingletonTabOpen,
   normalizeChatRuntimeControls,
   normalizeChatRuntimeControlsForProvider,
+  normalizeSelectedModelForProviders,
   normalizeSystemToolSelection,
   openRightDockSingletonTab,
+  parseSelectedModelJson,
   type RightDockFileTreeStatePatch,
   type RightDockProjectState,
   removeRightDockProjectState,
@@ -129,6 +132,8 @@ import {
   resolveWorkspaceProjects,
   type SelectedModel,
   type SystemToolId,
+  serializeSelectedModelJson,
+  setSelectedModel,
   updateChatRuntimeControlsForProvider,
   updateCustomSettings,
   updateMemorySettings,
@@ -201,6 +206,7 @@ import {
   formatHookWarningMessage,
   MAX_UPLOAD_FILES,
   pruneIdleConversationRuntimeCaches,
+  resolveActiveModelSelection,
   resolveEffectiveChatModelSelection,
   type SendChatAction,
   scheduleIdleHydration,
@@ -634,6 +640,9 @@ export function ChatPage(props: ChatPageProps) {
   const [currentConversationCreatedAt, setCurrentConversationCreatedAt] = useState(
     () => initialConversationRef.current.createdAt,
   );
+  const [currentConversationSelectedModel, setCurrentConversationSelectedModel] = useState<
+    SelectedModel | undefined
+  >(undefined);
   const [projectRenamingId, setProjectRenamingId] = useState<string | null>(null);
   const [projectRenameDraft, setProjectRenameDraft] = useState("");
   const [runningConversationIds, setRunningConversationIds] = useState<ReadonlySet<string>>(
@@ -783,6 +792,7 @@ export function ChatPage(props: ChatPageProps) {
   // The only page-level subscription to the sidebar list: ChatPage's own
   // render needs (draft detection, pending-item effect, workspace root).
   const historyItems = useSidebarSelector(sidebarStore, selectConversations);
+  const sidebarConversationsById = useSidebarSelector(sidebarStore, (s) => s.byId);
   const [shareConversation, setShareConversation] = useState<ChatHistorySummary | null>(null);
   const [shareStatus, setShareStatus] = useState<ChatHistoryShareStatus | null>(null);
   const [shareLoading, setShareLoading] = useState(false);
@@ -1268,8 +1278,12 @@ export function ChatPage(props: ChatPageProps) {
     () => buildModelOptions(settings, { floatSelectedFirst: false }),
     [settings],
   );
-  const selectedValue = settings.selectedModel
-    ? toModelValue(settings.selectedModel.customProviderId, settings.selectedModel.model)
+  const activeSelectedModel = resolveActiveModelSelection(
+    settings,
+    currentConversationSelectedModel,
+  );
+  const selectedValue = activeSelectedModel
+    ? toModelValue(activeSelectedModel.customProviderId, activeSelectedModel.model)
     : undefined;
 
   const historyRenderItems = useMemo<RenderTimelineItem[]>(
@@ -1378,6 +1392,7 @@ export function ChatPage(props: ChatPageProps) {
     hookWarning,
     currentConversationSessionId,
     currentConversationCreatedAt,
+    currentConversationSelectedModel,
     setConversationState,
     setCompactionStatus,
     setIsSending,
@@ -1385,6 +1400,7 @@ export function ChatPage(props: ChatPageProps) {
     setHookWarning,
     setCurrentConversationSessionId,
     setCurrentConversationCreatedAt,
+    setCurrentConversationSelectedModel,
     setRunningConversationIds,
   });
 
@@ -2703,6 +2719,8 @@ export function ChatPage(props: ChatPageProps) {
     },
     getDefaultNewConversationWorkdir: () =>
       isAgentMode ? activeWorkspaceProjectPath || undefined : undefined,
+    resolveConversationSelectedModel: (json) =>
+      normalizeSelectedModelForProviders(parseSelectedModelJson(json), settings.customProviders),
     setCurrentConversationId,
     setErrorMessage,
     setHydratingConversationId,
@@ -3254,6 +3272,10 @@ export function ChatPage(props: ChatPageProps) {
       compactionStatus: cached?.compactionStatus,
       isSending: cached?.isSending,
       workdir: record.cwd,
+      selectedModel: normalizeSelectedModelForProviders(
+        parseSelectedModelJson(record.selectedModelJson),
+        settings.customProviders,
+      ),
     });
     const historySummary: ChatHistorySummary = {
       id: record.id,
@@ -3262,6 +3284,7 @@ export function ChatPage(props: ChatPageProps) {
       model: record.model,
       sessionId: record.sessionId,
       cwd: record.cwd,
+      selectedModelJson: record.selectedModelJson,
       messageCount: record.state.meta.totalMessageCount,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
@@ -3311,11 +3334,11 @@ export function ChatPage(props: ChatPageProps) {
       getFirstUserMessageText(buildRequestContext(currentState)),
     );
     const providerId =
-      settings.selectedModel?.customProviderId ??
+      activeSelectedModel?.customProviderId ??
       sidebarStore.peek(currentConversationId)?.providerId ??
       "pending";
     const model =
-      settings.selectedModel?.model ?? sidebarStore.peek(currentConversationId)?.model ?? "pending";
+      activeSelectedModel?.model ?? sidebarStore.peek(currentConversationId)?.model ?? "pending";
 
     const pendingConversationTitle = t("chat.pendingTitle");
     const pendingItem = createPendingHistoryItem({
@@ -3345,7 +3368,7 @@ export function ChatPage(props: ChatPageProps) {
     currentConversationSessionId,
     historyItems,
     isSending,
-    settings.selectedModel,
+    activeSelectedModel,
     displayedConversationWorkdir,
     sidebarScope,
     sidebarStore,
@@ -3580,10 +3603,12 @@ export function ChatPage(props: ChatPageProps) {
 
     let effectiveSelectedModel: EffectiveChatModelSelection;
     try {
-      effectiveSelectedModel = resolveEffectiveChatModelSelection(
+      effectiveSelectedModel = resolveEffectiveChatModelSelection({
         settings,
-        gatewayBridgeRequest?.selectedModelOverride,
-      );
+        conversationSelectedModel:
+          conversationRuntimeCacheRef.current.get(conversationId)?.selectedModel,
+        gatewaySelectedModel: gatewayBridgeRequest?.selectedModelOverride,
+      });
     } catch (error) {
       const message = asErrorMessage(error, "当前模型配置不可用，请重新选择后重试。");
       setConversationErrorState(message);
@@ -3592,6 +3617,9 @@ export function ChatPage(props: ChatPageProps) {
     }
 
     const { selectedModel, provider, providerId, model } = effectiveSelectedModel;
+    updateConversationRuntimeEntry(conversationId, (prev) =>
+      selectedModelsMatch(prev.selectedModel, selectedModel) ? prev : { ...prev, selectedModel },
+    );
     const runtimeControls =
       gatewayBridgeRequest?.runtimeControlsOverride ??
       overrides?.runtimeControlsOverride ??
@@ -3935,6 +3963,7 @@ export function ChatPage(props: ChatPageProps) {
       sessionId,
       providerId,
       model,
+      selectedModel,
       cwd: conversationCwd,
       state: nextConversationState,
       fallbackTitle,
@@ -4083,6 +4112,7 @@ export function ChatPage(props: ChatPageProps) {
             sessionId,
             providerId,
             model,
+            selectedModel,
             cwd: conversationCwd,
             state,
             fallbackTitle,
@@ -4103,6 +4133,7 @@ export function ChatPage(props: ChatPageProps) {
             sessionId,
             providerId,
             model,
+            selectedModel,
             cwd: conversationCwd,
             state,
             fallbackTitle,
@@ -4223,6 +4254,7 @@ export function ChatPage(props: ChatPageProps) {
         sessionId,
         providerId,
         model,
+        selectedModel,
         cwd: conversationCwd,
         state: finalState,
         fallbackTitle,
@@ -4261,6 +4293,7 @@ export function ChatPage(props: ChatPageProps) {
         sessionId,
         providerId,
         model,
+        selectedModel,
         cwd: conversationCwd,
         state: finalState,
         fallbackTitle,
@@ -4858,24 +4891,75 @@ export function ChatPage(props: ChatPageProps) {
   const hasModels = modelOptions.length > 0;
 
   const currentModelLabel = (() => {
-    if (!settings.selectedModel) return t("chat.selectModel");
+    if (!activeSelectedModel) return t("chat.selectModel");
     const opt = modelOptions.find((o) => o.value === selectedValue);
     if (opt) return `${opt.providerName} / ${opt.model}`;
-    return settings.selectedModel.model;
+    return activeSelectedModel.model;
   })();
 
   const currentModelContextWindow = (() => {
-    if (!settings.selectedModel) return undefined;
+    if (!activeSelectedModel) return undefined;
     const provider = settings.customProviders.find(
-      (item) => item.id === settings.selectedModel?.customProviderId,
+      (item) => item.id === activeSelectedModel.customProviderId,
     );
     if (!provider) return undefined;
-    return findProviderModelConfig(provider, settings.selectedModel.model).contextWindow;
+    return findProviderModelConfig(provider, activeSelectedModel.model).contextWindow;
   })();
-  const currentChatProvider = settings.selectedModel
-    ? settings.customProviders.find((item) => item.id === settings.selectedModel?.customProviderId)
+  const currentChatProvider = activeSelectedModel
+    ? settings.customProviders.find((item) => item.id === activeSelectedModel.customProviderId)
     : undefined;
-  const currentChatModelId = settings.selectedModel?.model;
+  const currentChatModelId = activeSelectedModel?.model;
+
+  const handleSelectModel = useCallback(
+    (selection: SelectedModel) => {
+      const conversationId = currentConversationIdRef.current;
+      updateConversationRuntimeEntry(conversationId, (prev) =>
+        selectedModelsMatch(prev.selectedModel, selection)
+          ? prev
+          : { ...prev, selectedModel: selection },
+      );
+      const persistedRow = sidebarStore.peek(conversationId);
+      const selectedModelJson = serializeSelectedModelJson(selection);
+      if (persistedRow && !persistedRow.isPending && selectedModelJson) {
+        void setChatHistoryModel(conversationId, selectedModelJson)
+          .then((summary) => sidebarStore.upsertLocal({ ...summary, isPending: undefined }))
+          .catch((error) => {
+            updateConversationRuntimeEntry(conversationId, (prev) => ({
+              ...prev,
+              errorMessage: asErrorMessage(error, "保存会话模型选择失败。"),
+            }));
+          });
+      }
+      setSettings((prev) => setSelectedModel(prev, selection));
+    },
+    [currentConversationIdRef, setSettings, sidebarStore, updateConversationRuntimeEntry],
+  );
+
+  // 跨端收敛：history-sync 带回的会话模型选择（如 WebUI 发消息后落库）
+  // 写回当前会话的 runtime entry；值相等或发送中不动，无回环。
+  const displayedConversationPersistedModelJson =
+    sidebarConversationsById.get(currentConversationId)?.selectedModelJson;
+  useEffect(() => {
+    const parsed = normalizeSelectedModelForProviders(
+      parseSelectedModelJson(displayedConversationPersistedModelJson),
+      settings.customProviders,
+    );
+    if (!parsed) return;
+    const entry = conversationRuntimeCacheRef.current.get(currentConversationId);
+    if (!entry || entry.isSending) return;
+    if (selectedModelsMatch(entry.selectedModel, parsed)) return;
+    updateConversationRuntimeEntry(currentConversationId, (prev) => ({
+      ...prev,
+      selectedModel: parsed,
+    }));
+  }, [
+    conversationRuntimeCacheRef,
+    currentConversationId,
+    displayedConversationPersistedModelJson,
+    settings.customProviders,
+    updateConversationRuntimeEntry,
+  ]);
+
   const currentChatModelConfig = useMemo(
     () =>
       currentChatProvider && currentChatModelId
@@ -5182,7 +5266,7 @@ export function ChatPage(props: ChatPageProps) {
                   modelOptions={modelOptions}
                   selectedValue={selectedValue}
                   sidebarOpen={sidebarOpen}
-                  setSettings={setSettings}
+                  onSelectModel={handleSelectModel}
                   onOpenSettings={onOpenSettings}
                   onToggleTheme={onToggleTheme}
                   onOpenSidebar={handleOpenSidebar}

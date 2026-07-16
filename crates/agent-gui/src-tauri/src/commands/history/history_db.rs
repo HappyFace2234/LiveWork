@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension};
 use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex, time::Duration};
 
 const DB_FILENAME: &str = "chat-history.sqlite3";
-const HISTORY_DB_SCHEMA_VERSION: i64 = 1;
+const HISTORY_DB_SCHEMA_VERSION: i64 = 2;
 
 static HISTORY_DB_MIGRATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -83,6 +83,11 @@ fn migrate_history_db_inner(conn: &Connection) -> Result<(), String> {
         set_user_version(conn, 1)?;
     }
 
+    if current_version < 2 {
+        migrate_to_v2(conn)?;
+        set_user_version(conn, 2)?;
+    }
+
     // The subagent schema is versioned independently via subagentMeta and is
     // safe to (re)ensure on every startup.
     ensure_subagent_schema(conn)?;
@@ -91,6 +96,13 @@ fn migrate_history_db_inner(conn: &Connection) -> Result<(), String> {
 }
 
 fn migrate_to_v1(conn: &Connection) -> Result<(), String> {
+    ensure_chat_history_schema(conn)?;
+    Ok(())
+}
+
+// v2: chatHistory 新增 selected_model_json（每会话模型选择）。schema ensure
+// 本身幂等，重跑即补齐缺失列。
+fn migrate_to_v2(conn: &Connection) -> Result<(), String> {
     ensure_chat_history_schema(conn)?;
     Ok(())
 }
@@ -163,7 +175,8 @@ fn ensure_chat_history_schema(conn: &Connection) -> Result<(), String> {
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             is_pinned INTEGER NOT NULL DEFAULT 0,
-            pinned_at INTEGER
+            pinned_at INTEGER,
+            selected_model_json TEXT
         );
 
         CREATE TABLE IF NOT EXISTS chatHistorySegment (
@@ -270,6 +283,10 @@ fn ensure_chat_history_columns(conn: &Connection) -> Result<(), String> {
             (
                 "pinned_at",
                 "ALTER TABLE chatHistory ADD COLUMN pinned_at INTEGER;",
+            ),
+            (
+                "selected_model_json",
+                "ALTER TABLE chatHistory ADD COLUMN selected_model_json TEXT;",
             ),
         ],
     )?;
@@ -715,7 +732,10 @@ mod tests {
     #[test]
     fn initialize_connection_sets_schema_version() {
         let conn = open_test_db();
-        assert_eq!(read_user_version(&conn).expect("read version"), 1);
+        assert_eq!(
+            read_user_version(&conn).expect("read version"),
+            HISTORY_DB_SCHEMA_VERSION
+        );
     }
 
     #[test]
@@ -782,10 +802,14 @@ mod tests {
 
         initialize_connection(&conn).expect("migrate legacy history schema");
 
-        assert_eq!(read_user_version(&conn).expect("read version"), 1);
+        assert_eq!(
+            read_user_version(&conn).expect("read version"),
+            HISTORY_DB_SCHEMA_VERSION
+        );
         for (table_name, column_name) in [
             ("chatHistory", "context_meta_json"),
             ("chatHistory", "is_pinned"),
+            ("chatHistory", "selected_model_json"),
             ("subagentRun", "prompt"),
             ("subagentRun", "context_schema_version"),
         ] {

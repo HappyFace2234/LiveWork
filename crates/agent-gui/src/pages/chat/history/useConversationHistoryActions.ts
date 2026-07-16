@@ -14,6 +14,7 @@ import {
   createConversationIdentity,
   waitForTitleLookahead,
 } from "../../../lib/chat/page/chatPageHelpers";
+import { type SelectedModel, serializeSelectedModelJson } from "../../../lib/settings";
 import type { SidebarStore } from "../../../lib/sidebar/store";
 import { disposeTodoToolState } from "../../../lib/tools/todoTools";
 import {
@@ -34,6 +35,7 @@ type PersistConversationParams = {
   providerId: string;
   model: string;
   cwd?: string;
+  selectedModel?: SelectedModel;
   state: ConversationViewState;
   fallbackTitle: string;
   createdAt: number;
@@ -73,6 +75,7 @@ type UseConversationHistoryActionsParams = {
   deleteConversationArtifacts: (conversationId: string) => void;
   disposeSubagentsForConversation?: (conversationId: string) => void;
   getDefaultNewConversationWorkdir?: () => string | undefined;
+  resolveConversationSelectedModel: (json: string | null | undefined) => SelectedModel | undefined;
   setCurrentConversationId: Dispatch<SetStateAction<string>>;
   setErrorMessage: Dispatch<SetStateAction<string | null>>;
   setHydratingConversationId: Dispatch<SetStateAction<string | null>>;
@@ -137,6 +140,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
     deleteConversationArtifacts,
     disposeSubagentsForConversation,
     getDefaultNewConversationWorkdir,
+    resolveConversationSelectedModel,
     setCurrentConversationId,
     setErrorMessage,
     setHydratingConversationId,
@@ -214,6 +218,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
       sessionId: record.sessionId ?? record.id,
       createdAt: record.createdAt,
       workdir: record.cwd,
+      selectedModel: resolveConversationSelectedModel(record.selectedModelJson),
     });
     activateConversation({
       conversationId: record.id,
@@ -280,6 +285,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
         sessionId: activeRecord.sessionId ?? activeRecord.id,
         createdAt: activeRecord.createdAt,
         workdir: activeRecord.cwd,
+        selectedModel: resolveConversationSelectedModel(activeRecord.selectedModelJson),
       });
       activateConversation({
         conversationId: activeRecord.id,
@@ -367,6 +373,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
       providerId,
       model,
       cwd,
+      selectedModel,
       state,
       fallbackTitle,
       createdAt,
@@ -397,6 +404,7 @@ export function useConversationHistoryActions(params: UseConversationHistoryActi
         model,
         sessionId,
         cwd,
+        selectedModelJson: serializeSelectedModelJson(selectedModel),
         title: titleToStore,
         createdAt,
         updatedAt,

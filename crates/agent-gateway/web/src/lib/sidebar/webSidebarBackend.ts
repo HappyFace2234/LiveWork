@@ -52,6 +52,9 @@ export function normalizeGatewayConversationSummary(
     model: summary.model ?? "",
     sessionId: summary.session_id?.trim() ? summary.session_id : undefined,
     cwd: summary.cwd?.trim() ? summary.cwd : undefined,
+    selectedModelJson: summary.selected_model_json?.trim()
+      ? summary.selected_model_json
+      : undefined,
     messageCount: summary.message_count,
     createdAt: normalizeGatewayEpochMs(summary.created_at),
     updatedAt: normalizeGatewayEpochMs(summary.updated_at),

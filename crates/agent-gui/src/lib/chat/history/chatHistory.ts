@@ -16,6 +16,7 @@ export type ChatHistorySummary = {
   model: string;
   sessionId?: string;
   cwd?: string;
+  selectedModelJson?: string;
   messageCount?: number;
   createdAt: number;
   updatedAt: number;
@@ -100,6 +101,7 @@ type ChatHistoryUpsertInput = {
   model: string;
   sessionId?: string;
   cwd?: string;
+  selectedModelJson?: string;
   contextMetaJson: string;
   activeSegmentIndex: number;
   totalSegmentCount: number;
@@ -194,6 +196,7 @@ function normalizeWireRecord(
     model: record.model,
     sessionId: record.sessionId,
     cwd: record.cwd,
+    selectedModelJson: record.selectedModelJson,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     isPinned: record.isPinned,
@@ -245,6 +248,7 @@ export async function getChatHistoryActiveSegment(id: string, fallbackSystemProm
     model: record.model,
     sessionId: record.sessionId,
     cwd: record.cwd,
+    selectedModelJson: record.selectedModelJson,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     isPinned: record.isPinned,
@@ -281,13 +285,24 @@ function buildChatHistoryConversationInput(params: {
   model: string;
   sessionId?: string;
   cwd?: string;
+  selectedModelJson?: string;
   title: string;
   createdAt?: number;
   updatedAt: number;
   state: ConversationViewState;
 }): ChatHistoryConversationInput {
-  const { conversationId, providerId, model, sessionId, cwd, title, createdAt, updatedAt, state } =
-    params;
+  const {
+    conversationId,
+    providerId,
+    model,
+    sessionId,
+    cwd,
+    selectedModelJson,
+    title,
+    createdAt,
+    updatedAt,
+    state,
+  } = params;
 
   return {
     id: conversationId,
@@ -296,6 +311,7 @@ function buildChatHistoryConversationInput(params: {
     model,
     sessionId,
     cwd,
+    selectedModelJson,
     contextMetaJson: JSON.stringify(state.meta),
     activeSegmentIndex: state.activeSegmentIndex,
     totalSegmentCount: state.meta.totalSegmentCount,
@@ -341,6 +357,12 @@ export async function renameChatHistory(id: string, title: string) {
 export async function setChatHistoryPinned(id: string, isPinned: boolean) {
   return withConversationWriteLock(id, () =>
     invoke<ChatHistorySummary>("chat_history_set_pinned", { id, isPinned }),
+  );
+}
+
+export async function setChatHistoryModel(id: string, selectedModelJson: string) {
+  return withConversationWriteLock(id, () =>
+    invoke<ChatHistorySummary>("chat_history_set_model", { id, selectedModelJson }),
   );
 }
 
@@ -399,6 +421,7 @@ type PersistConversationStateParams = {
   model: string;
   sessionId?: string;
   cwd?: string;
+  selectedModelJson?: string;
   title: string;
   createdAt?: number;
   updatedAt: number;

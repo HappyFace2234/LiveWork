@@ -32,6 +32,7 @@ function summary(id, overrides = {}) {
     is_pinned: overrides.is_pinned,
     pinned_at: overrides.pinned_at,
     is_shared: overrides.is_shared,
+    selected_model_json: overrides.selected_model_json,
   };
 }
 
@@ -118,6 +119,7 @@ test("normalize maps snake_case summaries with second→ms timestamps and empty 
   assert.equal(normalized.model, "");
   assert.equal(normalized.sessionId, undefined);
   assert.equal(normalized.cwd, undefined);
+  assert.equal(normalized.selectedModelJson, undefined);
   assert.equal(normalized.createdAt, MILLIS);
   assert.equal(normalized.updatedAt, (SECONDS + 5) * 1000);
   assert.equal(normalized.isPinned, true);
@@ -134,6 +136,16 @@ test("normalize maps snake_case summaries with second→ms timestamps and empty 
   // Blank titles fall back through formatConversationTitle.
   const untitled = normalizeGatewayConversationSummary(summary("c3", { title: "  " }));
   assert.notEqual(untitled.title.trim(), "");
+
+  // Non-empty selected_model_json passes through; blank normalizes to undefined.
+  const withSelection = normalizeGatewayConversationSummary(
+    summary("c4", { selected_model_json: '{"customProviderId":"p1","model":"m1"}' }),
+  );
+  assert.equal(withSelection.selectedModelJson, '{"customProviderId":"p1","model":"m1"}');
+  const blankSelection = normalizeGatewayConversationSummary(
+    summary("c5", { selected_model_json: "  " }),
+  );
+  assert.equal(blankSelection.selectedModelJson, undefined);
 });
 
 test("listConversations normalizes items/workdirs and hydrates the activity store", async () => {

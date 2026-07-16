@@ -6902,21 +6902,22 @@ func (x *HistoryListResponse) GetTotalCount() int32 {
 }
 
 type ConversationSummary struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
-	CreatedAt     int64                  `protobuf:"varint,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt     int64                  `protobuf:"varint,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	MessageCount  int32                  `protobuf:"varint,5,opt,name=message_count,json=messageCount,proto3" json:"message_count,omitempty"`
-	ProviderId    string                 `protobuf:"bytes,6,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
-	Model         string                 `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
-	SessionId     string                 `protobuf:"bytes,8,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Cwd           string                 `protobuf:"bytes,9,opt,name=cwd,proto3" json:"cwd,omitempty"`
-	IsPinned      bool                   `protobuf:"varint,10,opt,name=is_pinned,json=isPinned,proto3" json:"is_pinned,omitempty"`
-	PinnedAt      int64                  `protobuf:"varint,11,opt,name=pinned_at,json=pinnedAt,proto3" json:"pinned_at,omitempty"`
-	IsShared      bool                   `protobuf:"varint,12,opt,name=is_shared,json=isShared,proto3" json:"is_shared,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	Id                string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Title             string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	CreatedAt         int64                  `protobuf:"varint,3,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt         int64                  `protobuf:"varint,4,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	MessageCount      int32                  `protobuf:"varint,5,opt,name=message_count,json=messageCount,proto3" json:"message_count,omitempty"`
+	ProviderId        string                 `protobuf:"bytes,6,opt,name=provider_id,json=providerId,proto3" json:"provider_id,omitempty"`
+	Model             string                 `protobuf:"bytes,7,opt,name=model,proto3" json:"model,omitempty"`
+	SessionId         string                 `protobuf:"bytes,8,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Cwd               string                 `protobuf:"bytes,9,opt,name=cwd,proto3" json:"cwd,omitempty"`
+	IsPinned          bool                   `protobuf:"varint,10,opt,name=is_pinned,json=isPinned,proto3" json:"is_pinned,omitempty"`
+	PinnedAt          int64                  `protobuf:"varint,11,opt,name=pinned_at,json=pinnedAt,proto3" json:"pinned_at,omitempty"`
+	IsShared          bool                   `protobuf:"varint,12,opt,name=is_shared,json=isShared,proto3" json:"is_shared,omitempty"`
+	SelectedModelJson string                 `protobuf:"bytes,13,opt,name=selected_model_json,json=selectedModelJson,proto3" json:"selected_model_json,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ConversationSummary) Reset() {
@@ -7031,6 +7032,13 @@ func (x *ConversationSummary) GetIsShared() bool {
 		return x.IsShared
 	}
 	return false
+}
+
+func (x *ConversationSummary) GetSelectedModelJson() string {
+	if x != nil {
+		return x.SelectedModelJson
+	}
+	return ""
 }
 
 type HistoryGetRequest struct {
@@ -11347,7 +11355,7 @@ const file_proto_v1_gateway_proto_rawDesc = "" +
 	"\x13HistoryListResponse\x12O\n" +
 	"\rconversations\x18\x01 \x03(\v2).liveagent.gateway.v1.ConversationSummaryR\rconversations\x12\x1f\n" +
 	"\vtotal_count\x18\x02 \x01(\x05R\n" +
-	"totalCount\"\xdd\x02\n" +
+	"totalCount\"\x8d\x03\n" +
 	"\x13ConversationSummary\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x1d\n" +
@@ -11365,7 +11373,8 @@ const file_proto_v1_gateway_proto_rawDesc = "" +
 	"\tis_pinned\x18\n" +
 	" \x01(\bR\bisPinned\x12\x1b\n" +
 	"\tpinned_at\x18\v \x01(\x03R\bpinnedAt\x12\x1b\n" +
-	"\tis_shared\x18\f \x01(\bR\bisShared\"_\n" +
+	"\tis_shared\x18\f \x01(\bR\bisShared\x12.\n" +
+	"\x13selected_model_json\x18\r \x01(\tR\x11selectedModelJson\"_\n" +
 	"\x11HistoryGetRequest\x12'\n" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12!\n" +
 	"\fmax_messages\x18\x02 \x01(\x05R\vmaxMessages\"\xb2\x02\n" +

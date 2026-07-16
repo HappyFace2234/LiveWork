@@ -29,6 +29,7 @@ export { buildPreparedContext, buildResumeContext } from "./runtime/conversation
 export { startConversationTitleJob } from "./runtime/conversationTitleJob";
 export {
   type EffectiveChatModelSelection,
+  resolveActiveModelSelection,
   resolveEffectiveChatModelSelection,
 } from "./runtime/modelSelection";
 export { ChatTranscript } from "./transcript/ChatTranscript";

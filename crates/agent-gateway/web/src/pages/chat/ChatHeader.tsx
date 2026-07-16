@@ -26,7 +26,7 @@ import {
   type AppSettings,
   getNextTheme,
   type ProviderId,
-  setSelectedModel,
+  type SelectedModel,
   type Theme,
 } from "../../lib/settings";
 import { cn } from "../../lib/shared/utils";
@@ -52,7 +52,7 @@ export const ChatHeader = memo(function ChatHeader(props: {
   modelOptions: ModelOption[];
   selectedValue?: string;
   sidebarOpen: boolean;
-  setSettings: (updater: (prev: AppSettings) => AppSettings) => void;
+  onSelectModel: (selection: SelectedModel) => void;
   onOpenSettings: (section?: SectionId) => void;
   onToggleTheme: () => void;
   onOpenSidebar: () => void;
@@ -66,7 +66,7 @@ export const ChatHeader = memo(function ChatHeader(props: {
     modelOptions,
     selectedValue,
     sidebarOpen,
-    setSettings,
+    onSelectModel,
     onOpenSettings,
     onToggleTheme,
     onOpenSidebar,
@@ -208,7 +208,7 @@ export const ChatHeader = memo(function ChatHeader(props: {
                                 onSelect={() => {
                                   const parsed = parseModelValue(option.value);
                                   if (!parsed) return;
-                                  setSettings((prev) => setSelectedModel(prev, parsed));
+                                  onSelectModel(parsed);
                                 }}
                                 className={cn(
                                   "model-selector-item h-[30px] max-w-full shrink-0 justify-between gap-3 overflow-hidden py-0 text-xs font-normal leading-5 text-foreground transition-none focus:bg-foreground/[0.05] dark:text-white",

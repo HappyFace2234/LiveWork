@@ -18,6 +18,7 @@ export type SidebarConversation = {
   isPinned?: boolean;
   pinnedAt?: number | null;
   isShared?: boolean;
+  selectedModelJson?: string;
   // Local-only draft/persisting row; survives authoritative reconciles until
   // the backend confirms (an upsert event clears it) or it is removed locally.
   isPending?: boolean;

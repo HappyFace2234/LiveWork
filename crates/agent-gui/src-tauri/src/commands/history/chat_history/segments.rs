@@ -36,6 +36,7 @@ fn validate_upsert_input(input: &ChatHistoryUpsertInput) -> Result<(), String> {
         model: input.model.clone(),
         session_id: input.session_id.clone(),
         cwd: input.cwd.clone(),
+        selected_model_json: input.selected_model_json.clone(),
         context_meta_json: input.context_meta_json.clone(),
         active_segment_index: input.active_segment_index,
         total_segment_count: input.total_segment_count,
@@ -315,6 +316,12 @@ fn upsert_chat_history_header(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let selected_model_json = input
+        .selected_model_json
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
     conn.execute(
         "
@@ -325,19 +332,21 @@ fn upsert_chat_history_header(
             model,
             session_id,
             cwd,
+            selected_model_json,
             context_meta_json,
             active_segment_index,
             total_segment_count,
             total_message_count,
             created_at,
             updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             provider_id = excluded.provider_id,
             model = excluded.model,
             session_id = excluded.session_id,
             cwd = excluded.cwd,
+            selected_model_json = COALESCE(excluded.selected_model_json, chatHistory.selected_model_json),
             context_meta_json = excluded.context_meta_json,
             active_segment_index = excluded.active_segment_index,
             total_segment_count = excluded.total_segment_count,
@@ -351,6 +360,7 @@ fn upsert_chat_history_header(
             input.model.trim(),
             session_id,
             cwd,
+            selected_model_json,
             input.context_meta_json.trim(),
             input.active_segment_index,
             input.total_segment_count,
@@ -362,6 +372,47 @@ fn upsert_chat_history_header(
     .map_err(|e| format!("写入聊天历史主表失败：{e}"))?;
 
     Ok(())
+}
+
+fn set_chat_history_model_sync(
+    conn: &Connection,
+    id: &str,
+    selected_model_json: &str,
+) -> Result<ChatHistorySummary, String> {
+    let chat_id = id.trim();
+    if chat_id.is_empty() {
+        return Err("历史对话 id 不能为空".to_string());
+    }
+
+    let payload = selected_model_json.trim();
+    let parsed: serde_json::Value =
+        serde_json::from_str(payload).map_err(|_| "会话模型选择格式无效".to_string())?;
+    let has_non_empty = |key: &str| {
+        parsed
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    };
+    if !has_non_empty("customProviderId") || !has_non_empty("model") {
+        return Err("会话模型选择格式无效".to_string());
+    }
+
+    let affected = conn
+        .execute(
+            "
+            UPDATE chatHistory
+            SET selected_model_json = ?1
+            WHERE id = ?2
+            ",
+            params![payload, chat_id],
+        )
+        .map_err(|e| format!("更新历史对话模型选择失败：{e}"))?;
+
+    if affected == 0 {
+        return Err("未找到对应的历史对话".to_string());
+    }
+
+    get_summary_by_id(conn, chat_id)
 }
 
 fn set_chat_history_pinned_sync(

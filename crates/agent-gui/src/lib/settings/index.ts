@@ -1325,6 +1325,22 @@ export function normalizeSelectedModel(input: unknown): SelectedModel | undefine
   return { customProviderId, model };
 }
 
+export function parseSelectedModelJson(json: string | null | undefined): SelectedModel | undefined {
+  if (!json?.trim()) return undefined;
+  try {
+    return normalizeSelectedModel(JSON.parse(json));
+  } catch {
+    return undefined;
+  }
+}
+
+export function serializeSelectedModelJson(
+  selectedModel: SelectedModel | undefined,
+): string | undefined {
+  const normalized = normalizeSelectedModel(selectedModel);
+  return normalized ? JSON.stringify(normalized) : undefined;
+}
+
 export function normalizeTheme(input: unknown): Theme {
   if (input === "dark") return "dark";
   if (input === "system" || input === "auto") return "system";
@@ -1472,7 +1488,7 @@ export function computeNextMemoryOrganizerRunAt(
   return candidate.getTime();
 }
 
-function normalizeSelectedModelForProviders(
+export function normalizeSelectedModelForProviders(
   selectedModel: SelectedModel | undefined,
   customProviders: CustomProvider[],
 ): SelectedModel | undefined {

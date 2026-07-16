@@ -132,6 +132,7 @@ pub async fn chat_history_get_active_segment(
             model: record.model,
             session_id: record.session_id,
             cwd: record.cwd,
+            selected_model_json: record.selected_model_json,
             context_meta_json,
             active_segment_index,
             total_segment_count,
@@ -160,6 +161,7 @@ pub(crate) async fn chat_history_upsert_inner(
             model: input.model.clone(),
             session_id: input.session_id.clone(),
             cwd: input.cwd.clone(),
+            selected_model_json: input.selected_model_json.clone(),
             context_meta_json: input.context_meta_json.clone(),
             active_segment_index: input.active_segment_index,
             total_segment_count: input.total_segment_count,
@@ -318,6 +320,31 @@ pub async fn chat_history_set_pinned(
     gateway_controller: tauri::State<'_, Arc<GatewayController>>,
 ) -> Result<ChatHistorySummary, String> {
     let summary = chat_history_set_pinned_inner(id, is_pinned).await?;
+    gateway_controller
+        .publish_history_sync(build_history_sync_upsert(&summary))
+        .await;
+    Ok(summary)
+}
+
+pub(crate) async fn chat_history_set_model_inner(
+    id: String,
+    selected_model_json: String,
+) -> Result<ChatHistorySummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = open_db()?;
+        set_chat_history_model_sync(&conn, &id, &selected_model_json)
+    })
+    .await
+    .map_err(|e| format!("chat_history_set_model join 失败：{e}"))?
+}
+
+#[tauri::command]
+pub async fn chat_history_set_model(
+    id: String,
+    selected_model_json: String,
+    gateway_controller: tauri::State<'_, Arc<GatewayController>>,
+) -> Result<ChatHistorySummary, String> {
+    let summary = chat_history_set_model_inner(id, selected_model_json).await?;
     gateway_controller
         .publish_history_sync(build_history_sync_upsert(&summary))
         .await;

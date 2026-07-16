@@ -77,11 +77,14 @@ import {
   isThinkingAlwaysOnForModel,
   normalizeChatRuntimeControlsForProvider,
   openRightDockSingletonTab,
+  parseSelectedModelJson,
   type RightDockFileTreeStatePatch,
   type RightDockProjectState,
   removeRightDockProjectState,
   resolveEffectiveTheme,
   resolveWorkspaceProjects,
+  type SelectedModel,
+  setSelectedModel,
   updateChatRuntimeControlsForProvider,
   updateCustomSettings,
   updateRightDockFileTreeState,
@@ -144,6 +147,7 @@ import {
   isChatEventTitleFinal,
   readChatEventTitle,
   readTunnelManagerToolChange,
+  resolveActiveModelSelection,
 } from "./chatEventUtils";
 import {
   CHAT_RUNTIME_FOREGROUND_PREPARE_TIMEOUT_MS,
@@ -223,6 +227,11 @@ export default function GatewayApp() {
   // currently authenticated browser-socket epoch.
   const [sidebarAgentStatusFresh, setSidebarAgentStatusFresh] = useState(false);
   const [conversationId, setConversationId] = useState("");
+  // 本地未持久化的会话模型切换（按会话 id 键）；发消息随 selected_model
+  // 落库后由 history-sync 回声在清理 effect 中收敛删除。
+  const [conversationModelOverrides, setConversationModelOverrides] = useState<
+    ReadonlyMap<string, SelectedModel>
+  >(new Map());
   const [chatError, setChatError] = useState<string | null>(null);
   // Sidebar errors raised outside the sidebar store (project removal flow).
   const [sidebarActionError, setSidebarActionError] = useState<string | null>(null);
@@ -812,9 +821,20 @@ export default function GatewayApp() {
           isPinned: existingNext?.isPinned ?? draftRow.isPinned,
           pinnedAt: existingNext ? existingNext.pinnedAt : draftRow.pinnedAt,
           isShared: existingNext?.isShared ?? draftRow.isShared,
+          selectedModelJson: existingNext?.selectedModelJson || draftRow.selectedModelJson,
           isPending: existingNext && existingNext.isPending !== true ? undefined : true,
         });
       }
+      // Re-key the local model override so the pick made on the draft keeps
+      // applying to the bound conversation.
+      setConversationModelOverrides((prev) => {
+        const override = prev.get(previousId);
+        if (!override) return prev;
+        const next = new Map(prev);
+        next.delete(previousId);
+        if (!next.has(nextId)) next.set(nextId, override);
+        return next;
+      });
     },
     [moveConversationUploads, sidebarStore, transcriptStoreRegistry],
   );
@@ -1436,6 +1456,47 @@ export default function GatewayApp() {
   // regardless of running state, which is what makes GUI queue auto-sends
   // race-free: the next run's events simply flow in).
   const displayedConversationId = resolveVisibleConversationId(selectedHistoryId, conversationId);
+
+  // 会话生效模型：本地 override > sidebar 行携带的持久化选择 > 全局默认。
+  const selectionForConversation = useCallback(
+    (targetConversationId: string) =>
+      resolveActiveModelSelection({
+        settings,
+        override: conversationModelOverrides.get(targetConversationId),
+        persistedSelectedModelJson: sidebarStore.peek(targetConversationId)?.selectedModelJson,
+      }),
+    [conversationModelOverrides, settings, sidebarStore],
+  );
+  const activeSelectedModel = useMemo(
+    () =>
+      resolveActiveModelSelection({
+        settings,
+        override: conversationModelOverrides.get(displayedConversationId),
+        persistedSelectedModelJson:
+          sidebarConversationsById.get(displayedConversationId)?.selectedModelJson,
+      }),
+    [conversationModelOverrides, displayedConversationId, settings, sidebarConversationsById],
+  );
+  // override 的持久化回声（本会话 selected_model 落库后随 history-sync 回流）
+  // 到达即清理，会话从此走服务器权威值。
+  useEffect(() => {
+    if (conversationModelOverrides.size === 0) return;
+    let changed = false;
+    const next = new Map(conversationModelOverrides);
+    for (const [id, override] of conversationModelOverrides) {
+      const persisted = parseSelectedModelJson(sidebarConversationsById.get(id)?.selectedModelJson);
+      if (
+        persisted &&
+        persisted.customProviderId === override.customProviderId &&
+        persisted.model === override.model
+      ) {
+        next.delete(id);
+        changed = true;
+      }
+    }
+    if (changed) setConversationModelOverrides(next);
+  }, [conversationModelOverrides, sidebarConversationsById]);
+
   const { transcript: displayedTranscript, busy: displayedConversationBusy } = useConversationChat({
     api,
     conversationId: displayedConversationId || null,
@@ -1765,6 +1826,7 @@ export default function GatewayApp() {
     if (isDisplayedConversation(activeConversationId)) {
       transcriptFollow.stickToBottom();
     }
+    const turnSelectedModel = selectionForConversation(activeConversationId);
     if (startedAsDraftConversation) {
       draftClientRequestsRef.current.set(clientRequestId, activeConversationId);
       // Optimistic pending sidebar row: survives authoritative reconciles
@@ -1772,8 +1834,8 @@ export default function GatewayApp() {
       sidebarStore.upsertLocal({
         id: activeConversationId,
         title: buildOptimisticConversationTitle(message),
-        providerId: settings.selectedModel?.customProviderId ?? "",
-        model: settings.selectedModel?.model ?? "",
+        providerId: turnSelectedModel?.customProviderId ?? "",
+        model: turnSelectedModel?.model ?? "",
         cwd: effectiveWorkdir || undefined,
         messageCount: 1,
         createdAt: startedAt,
@@ -1787,14 +1849,14 @@ export default function GatewayApp() {
       {
         providerId: currentChatProvider?.type,
         requestFormat: currentChatProvider?.requestFormat,
-        modelId: settings.selectedModel?.model,
+        modelId: turnSelectedModel?.model,
       },
     );
     const commandInput: GatewayChatCommandInput = {
       type: options?.editMessageRef ? "chat.edit_resend" : "chat.submit",
       message,
       conversationId: startedAsDraftConversation ? undefined : activeConversationId,
-      selectedModel: buildGatewaySelectedModel(settings.selectedModel, activeProviders),
+      selectedModel: buildGatewaySelectedModel(turnSelectedModel, activeProviders),
       systemSettings: buildGatewaySystemSettings(settings, effectiveWorkdir),
       uploadedFiles,
       clientRequestId,
@@ -1955,7 +2017,10 @@ export default function GatewayApp() {
           conversationId: isLocalDraftConversationId(conversationIdValue)
             ? undefined
             : conversationIdValue,
-          selectedModel: buildGatewaySelectedModel(settings.selectedModel, activeProviders),
+          selectedModel: buildGatewaySelectedModel(
+            selectionForConversation(conversationIdValue),
+            activeProviders,
+          ),
           systemSettings: buildGatewaySystemSettings(settings, workdirForTurn),
           uploadedFiles: materialized.uploadedFiles,
           clientRequestId: crypto.randomUUID(),
@@ -3055,65 +3120,63 @@ export default function GatewayApp() {
   );
 
   const currentModelLabel = useMemo(() => {
-    if (!settings.selectedModel) {
+    if (!activeSelectedModel) {
       return "选择模型";
     }
     const provider = activeProviders.find(
-      (item) => item.id === settings.selectedModel?.customProviderId,
+      (item) => item.id === activeSelectedModel.customProviderId,
     );
-    return provider
-      ? `${provider.name} / ${settings.selectedModel.model}`
-      : settings.selectedModel.model;
-  }, [activeProviders, settings.selectedModel]);
+    return provider ? `${provider.name} / ${activeSelectedModel.model}` : activeSelectedModel.model;
+  }, [activeProviders, activeSelectedModel]);
   const currentModelContextWindow = useMemo(() => {
-    if (!settings.selectedModel) {
+    if (!activeSelectedModel) {
       return undefined;
     }
     const provider = settings.customProviders.find(
-      (item) => item.id === settings.selectedModel?.customProviderId,
+      (item) => item.id === activeSelectedModel.customProviderId,
     );
     if (!provider) {
       return undefined;
     }
-    return findProviderModelConfig(provider, settings.selectedModel.model).contextWindow;
-  }, [settings.customProviders, settings.selectedModel]);
+    return findProviderModelConfig(provider, activeSelectedModel.model).contextWindow;
+  }, [settings.customProviders, activeSelectedModel]);
   const currentChatProvider = useMemo(() => {
-    if (!settings.selectedModel) {
+    if (!activeSelectedModel) {
       return undefined;
     }
     return settings.customProviders.find(
-      (item) => item.id === settings.selectedModel?.customProviderId,
+      (item) => item.id === activeSelectedModel.customProviderId,
     );
-  }, [settings.customProviders, settings.selectedModel]);
+  }, [settings.customProviders, activeSelectedModel]);
   const chatRuntimeReasoningOptions = useMemo(
     () =>
       getChatRuntimeReasoningLevelsForProvider({
         providerId: currentChatProvider?.type,
         requestFormat: currentChatProvider?.requestFormat,
-        modelId: settings.selectedModel?.model,
+        modelId: activeSelectedModel?.model,
       }),
-    [currentChatProvider?.requestFormat, currentChatProvider?.type, settings.selectedModel?.model],
+    [currentChatProvider?.requestFormat, currentChatProvider?.type, activeSelectedModel?.model],
   );
   const chatRuntimeThinkingAlwaysOn = useMemo(
     () =>
       isThinkingAlwaysOnForModel(
         currentChatProvider?.type ?? "claude_code",
-        settings.selectedModel?.model,
+        activeSelectedModel?.model,
       ),
-    [currentChatProvider?.type, settings.selectedModel?.model],
+    [currentChatProvider?.type, activeSelectedModel?.model],
   );
   const chatRuntimeControlsForCurrentProvider = useMemo(
     () =>
       normalizeChatRuntimeControlsForProvider(settings.chatRuntimeControls, {
         providerId: currentChatProvider?.type,
         requestFormat: currentChatProvider?.requestFormat,
-        modelId: settings.selectedModel?.model,
+        modelId: activeSelectedModel?.model,
       }),
     [
       currentChatProvider?.requestFormat,
       currentChatProvider?.type,
       settings.chatRuntimeControls,
-      settings.selectedModel?.model,
+      activeSelectedModel?.model,
     ],
   );
   const handleChatRuntimeControlsChange = useCallback(
@@ -3123,7 +3186,7 @@ export default function GatewayApp() {
         chatRuntimeControls: updateChatRuntimeControlsForProvider(prev.chatRuntimeControls, patch, {
           providerId: currentChatProvider?.type,
           requestFormat: currentChatProvider?.requestFormat,
-          modelId: settings.selectedModel?.model,
+          modelId: activeSelectedModel?.model,
         }),
       }));
     },
@@ -3131,7 +3194,7 @@ export default function GatewayApp() {
       currentChatProvider?.requestFormat,
       currentChatProvider?.type,
       setSettings,
-      settings.selectedModel?.model,
+      activeSelectedModel?.model,
     ],
   );
   const isAgentDevExecutionMode = isAgentDevMode(settings.system.executionMode);
@@ -3140,9 +3203,26 @@ export default function GatewayApp() {
     () => buildModelOptions(settings, { floatSelectedFirst: false }),
     [settings],
   );
-  const selectedValue = settings.selectedModel
-    ? toModelValue(settings.selectedModel.customProviderId, settings.selectedModel.model)
+  const selectedValue = activeSelectedModel
+    ? toModelValue(activeSelectedModel.customProviderId, activeSelectedModel.model)
     : undefined;
+
+  // 选择器切换：写当前会话的本地 override（下次发消息随 selected_model 落库），
+  // 并同步更新「新会话默认模型」（最近使用语义，走既有 settings 同步通道）。
+  const handleSelectModel = useCallback(
+    (selection: SelectedModel) => {
+      const targetConversationId = displayedConversationId.trim();
+      if (targetConversationId) {
+        setConversationModelOverrides((prev) => {
+          const next = new Map(prev);
+          next.set(targetConversationId, selection);
+          return next;
+        });
+      }
+      setSettings((prev) => setSelectedModel(prev, selection));
+    },
+    [displayedConversationId, setSettings],
+  );
 
   const skillsEnabled = settings.skills.enabled && isAgentMode;
   const selectedSkillNames = useMemo(
@@ -3812,7 +3892,7 @@ export default function GatewayApp() {
                     modelOptions={modelOptions}
                     selectedValue={selectedValue}
                     sidebarOpen={sidebarOpen}
-                    setSettings={setSettings}
+                    onSelectModel={handleSelectModel}
                     onOpenSettings={openSettings}
                     onToggleTheme={() =>
                       setSettings((prev) => ({

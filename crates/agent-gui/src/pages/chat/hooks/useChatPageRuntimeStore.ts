@@ -4,6 +4,7 @@ import {
   type ConversationViewState,
   createConversationStateFromContext,
 } from "../../../lib/chat/conversation/conversationState";
+import type { SelectedModel } from "../../../lib/settings";
 import {
   type ConversationRuntimeEntry,
   createConversationRuntimeEntry,
@@ -30,6 +31,7 @@ type UseChatPageRuntimeStoreParams = {
   hookWarning: string | null;
   currentConversationSessionId: string;
   currentConversationCreatedAt: number;
+  currentConversationSelectedModel: SelectedModel | undefined;
   setConversationState: Dispatch<SetStateAction<ConversationViewState>>;
   setCompactionStatus: Dispatch<SetStateAction<CompactionStatus>>;
   setIsSending: Dispatch<SetStateAction<boolean>>;
@@ -37,6 +39,7 @@ type UseChatPageRuntimeStoreParams = {
   setHookWarning: Dispatch<SetStateAction<string | null>>;
   setCurrentConversationSessionId: Dispatch<SetStateAction<string>>;
   setCurrentConversationCreatedAt: Dispatch<SetStateAction<number>>;
+  setCurrentConversationSelectedModel: Dispatch<SetStateAction<SelectedModel | undefined>>;
   setRunningConversationIds: Dispatch<SetStateAction<ReadonlySet<string>>>;
 };
 
@@ -52,6 +55,7 @@ export function useChatPageRuntimeStore(params: UseChatPageRuntimeStoreParams) {
     hookWarning,
     currentConversationSessionId,
     currentConversationCreatedAt,
+    currentConversationSelectedModel,
     setConversationState,
     setCompactionStatus,
     setIsSending,
@@ -59,6 +63,7 @@ export function useChatPageRuntimeStore(params: UseChatPageRuntimeStoreParams) {
     setHookWarning,
     setCurrentConversationSessionId,
     setCurrentConversationCreatedAt,
+    setCurrentConversationSelectedModel,
     setRunningConversationIds,
   } = params;
 
@@ -90,12 +95,14 @@ export function useChatPageRuntimeStore(params: UseChatPageRuntimeStoreParams) {
         sessionId: currentConversationSessionId,
         createdAt: currentConversationCreatedAt,
         workdir: conversationRuntimeCacheRef.current.get(currentConversationIdRef.current)?.workdir,
+        selectedModel: currentConversationSelectedModel,
       }),
     [
       compactionStatus,
       conversationState,
       currentConversationCreatedAt,
       currentConversationSessionId,
+      currentConversationSelectedModel,
       errorMessage,
       hookWarning,
       isSending,
@@ -112,11 +119,13 @@ export function useChatPageRuntimeStore(params: UseChatPageRuntimeStoreParams) {
       setHookWarning(entry.hookWarning);
       setCurrentConversationSessionId(entry.sessionId);
       setCurrentConversationCreatedAt(entry.createdAt);
+      setCurrentConversationSelectedModel(entry.selectedModel);
     },
     [
       setCompactionStatus,
       setConversationState,
       setCurrentConversationCreatedAt,
+      setCurrentConversationSelectedModel,
       setCurrentConversationSessionId,
       setErrorMessage,
       setHookWarning,
@@ -228,6 +237,7 @@ export function useChatPageRuntimeStore(params: UseChatPageRuntimeStoreParams) {
         sessionId: currentConversationSessionId,
         createdAt: currentConversationCreatedAt,
         workdir: conversationRuntimeCacheRef.current.get(currentConversationId)?.workdir,
+        selectedModel: currentConversationSelectedModel,
       }),
     );
   }, [
@@ -236,6 +246,7 @@ export function useChatPageRuntimeStore(params: UseChatPageRuntimeStoreParams) {
     currentConversationCreatedAt,
     currentConversationId,
     currentConversationSessionId,
+    currentConversationSelectedModel,
     errorMessage,
     hookWarning,
     isSending,

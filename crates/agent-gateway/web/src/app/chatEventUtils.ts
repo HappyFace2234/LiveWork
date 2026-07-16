@@ -1,5 +1,10 @@
 import type { ChatEvent, GatewaySelectedModel } from "@/lib/gatewayTypes";
-import type { AppSettings, SelectedModel } from "@/lib/settings";
+import {
+  type AppSettings,
+  normalizeSelectedModelForProviders,
+  parseSelectedModelJson,
+  type SelectedModel,
+} from "@/lib/settings";
 
 import type { ModelProviderSource, TunnelManagerToolChange } from "./types";
 
@@ -63,6 +68,25 @@ export function readTunnelManagerToolChange(event: ChatEvent): TunnelManagerTool
     event.workdir?.trim() ||
     "";
   return { action, projectPathKey };
+}
+
+// 会话生效模型的唯一派生点：本地未持久化的切换（override）>
+// history-sync 带回的会话持久化选择 > 全局默认（新会话语义）。
+// 前两级都按当前 providers 校验，失效则逐级回退。
+export function resolveActiveModelSelection(params: {
+  settings: AppSettings;
+  override?: SelectedModel;
+  persistedSelectedModelJson?: string;
+}): SelectedModel | undefined {
+  const { settings, override, persistedSelectedModelJson } = params;
+  return (
+    normalizeSelectedModelForProviders(override, settings.customProviders) ??
+    normalizeSelectedModelForProviders(
+      parseSelectedModelJson(persistedSelectedModelJson),
+      settings.customProviders,
+    ) ??
+    settings.selectedModel
+  );
 }
 
 export function buildGatewaySelectedModel(

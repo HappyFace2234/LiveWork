@@ -19,6 +19,7 @@ function conversation(id, overrides = {}) {
     isPinned: overrides.isPinned,
     pinnedAt: overrides.pinnedAt,
     isShared: overrides.isShared,
+    selectedModelJson: overrides.selectedModelJson,
     isPending: overrides.isPending,
   };
 }
@@ -161,4 +162,37 @@ test("scope matching: workdir, unscoped, none", () => {
 test("scope filter preserves identity when everything matches", () => {
   const items = [conversation("a", { cwd: "/p" }), conversation("b", { cwd: "/p" })];
   assert.equal(scope.filterConversationsForScope(items, { kind: "workdir", cwd: "/p" }), items);
+});
+
+test("merge keeps the existing selectedModelJson when the incoming row omits it", () => {
+  const existing = conversation("one", {
+    selectedModelJson: '{"customProviderId":"p1","model":"m1"}',
+  });
+  const merged = reconcile.mergeSidebarConversation(existing, conversation("one", { updatedAt: 2 }));
+  assert.equal(merged.selectedModelJson, '{"customProviderId":"p1","model":"m1"}');
+});
+
+test("merge replaces selectedModelJson with a non-empty incoming value", () => {
+  const existing = conversation("one", {
+    selectedModelJson: '{"customProviderId":"p1","model":"m1"}',
+  });
+  const merged = reconcile.mergeSidebarConversation(
+    existing,
+    conversation("one", {
+      updatedAt: 2,
+      selectedModelJson: '{"customProviderId":"p2","model":"m2"}',
+    }),
+  );
+  assert.equal(merged.selectedModelJson, '{"customProviderId":"p2","model":"m2"}');
+});
+
+test("merge keeps identity when selectedModelJson is unchanged", () => {
+  const existing = conversation("one", {
+    selectedModelJson: '{"customProviderId":"p1","model":"m1"}',
+  });
+  const merged = reconcile.mergeSidebarConversation(
+    existing,
+    conversation("one", { selectedModelJson: '{"customProviderId":"p1","model":"m1"}' }),
+  );
+  assert.equal(merged, existing);
 });

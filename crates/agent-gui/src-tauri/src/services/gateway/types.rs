@@ -176,6 +176,7 @@ pub struct GatewayHistorySyncConversation {
     pub model: Option<String>,
     pub session_id: Option<String>,
     pub cwd: Option<String>,
+    pub selected_model_json: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub message_count: i64,
