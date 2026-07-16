@@ -13,6 +13,7 @@ import { attachAnthropicLongContextBeta } from "./anthropicLongContext";
 import { attachCodexResponsesStorage } from "./codexStorage";
 import { attachGeminiThoughtSignatureGuard } from "./geminiToolPayload";
 import { attachProviderNativeWebSearch } from "./nativeSearchPayload";
+import { attachOpenAICompletionsFinishReasonCompatibility } from "./openAICompletionsStream";
 import type { StreamOptionsEx } from "./types";
 
 export type ProviderPayloadMiddleware = (
@@ -90,6 +91,12 @@ const finalizePayloadMiddlewares = composePayloadMiddlewares([
       context: params.context,
     }),
   (options, params) => attachCodexResponsesStorage(params.providerId, options),
+  (options, params) =>
+    attachOpenAICompletionsFinishReasonCompatibility(options, {
+      providerId: params.providerId,
+      baseUrl: params.baseUrl,
+      modelApi: params.model?.api,
+    }),
   (options, params) =>
     attachProviderNativeWebSearch(params.providerId, options, params.nativeWebSearch, {
       baseUrl: params.baseUrl,

@@ -49,4 +49,5 @@ export type StreamOptionsEx = SimpleStreamOptions & {
   deepSeekAnthropicPayloadToolBlockFlattening?: boolean;
   /** Escape hatch for the unified provider stream retry in streamByApi.ts. */
   streamRetry?: StreamRetryConfig;
+  recoverMissingFinishReason?: boolean;
 };
