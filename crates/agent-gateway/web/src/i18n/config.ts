@@ -3172,7 +3172,8 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.cronViewRunNow": "Run once now",
     "settings.cronViewRunningNow": "Task running",
     "settings.cronViewRunNowFailed": "Failed to run task",
-    "settings.cronViewRunNowTimeout": "Timed out waiting for this run; check the execution logs before retrying",
+    "settings.cronViewRunNowTimeout":
+      "Timed out waiting for this run; check the execution logs before retrying",
     "settings.cronViewNoDesc": "No description",
     "settings.cronViewNoConfig": "No configuration",
     "settings.cronViewHttpMethod": "Method",
