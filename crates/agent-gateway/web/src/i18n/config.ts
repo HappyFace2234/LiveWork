@@ -1005,7 +1005,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.chinese": "简体中文",
     "settings.english": "English",
     "settings.fontSize": "字体大小",
-    "settings.fontSizeDesc": "分别调整会话列表、聊天区域与工具面板的文字大小。",
     "settings.fontSizeSidebar": "会话列表",
     "settings.fontSizeChat": "聊天区域",
     "settings.fontSizeRightDock": "工具面板",
@@ -1015,8 +1014,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.fontSizeXLarge": "特大",
     "settings.fontSizeReset": "重置",
     "settings.executionMode": "执行模式",
-    "settings.executionModeDesc":
-      "选择当前对话的运行方式。Chat 模式仅输出文本，Agent 模式允许模型调用工具执行操作。",
     "settings.chatMode": "Chat 模式",
     "settings.chatModeDesc": "纯文本对话，模型只输出文本与 Markdown",
     "settings.agentMode": "Agent 模式",
@@ -2778,8 +2775,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.chinese": "简体中文",
     "settings.english": "English",
     "settings.fontSize": "Font Size",
-    "settings.fontSizeDesc":
-      "Adjust text size for the sidebar, chat area, and tools panel independently.",
     "settings.fontSizeSidebar": "Sidebar",
     "settings.fontSizeChat": "Chat Area",
     "settings.fontSizeRightDock": "Tools Panel",
@@ -2789,8 +2784,6 @@ export const translations: Record<Locale, Record<string, string>> = {
     "settings.fontSizeXLarge": "Extra Large",
     "settings.fontSizeReset": "Reset",
     "settings.executionMode": "Execution Mode",
-    "settings.executionModeDesc":
-      "Choose how the current conversation runs. Chat mode outputs text only; Agent mode allows the model to call tools.",
     "settings.chatMode": "Chat Mode",
     "settings.chatModeDesc": "Plain text conversation, model outputs text and Markdown only",
     "settings.agentMode": "Agent Mode",

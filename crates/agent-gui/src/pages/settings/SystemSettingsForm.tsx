@@ -83,9 +83,6 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
           <Terminal className="h-4 w-4 text-muted-foreground" />
           {t("settings.executionMode")}
         </div>
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {t("settings.executionModeDesc")}
-        </p>
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <button
@@ -291,14 +288,9 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
       </div>
 
       <section className="space-y-3 rounded-2xl border border-border/60 bg-card p-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-            <Minimize2 className="h-4 w-4 text-muted-foreground" />
-            {t("settings.closeWindowBehavior")}
-          </div>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {t("settings.closeWindowBehaviorDesc")}
-          </p>
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Minimize2 className="h-4 w-4 text-muted-foreground" />
+          {t("settings.closeWindowBehavior")}
         </div>
 
         <div className="grid gap-2 sm:grid-cols-2">
@@ -357,14 +349,9 @@ export function SystemSettingsForm(props: SettingsSectionProps) {
 
       <section className="space-y-3 rounded-2xl border border-border/60 bg-card p-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-              <ScanText className="h-4 w-4 text-muted-foreground" />
-              {t("settings.fontSize")}
-            </div>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {t("settings.fontSizeDesc")}
-            </p>
+          <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+            <ScanText className="h-4 w-4 text-muted-foreground" />
+            {t("settings.fontSize")}
           </div>
           <button
             type="button"
