@@ -619,6 +619,11 @@ function appendTextLikeBlock(
 }
 
 function rebalanceHostedSearchTextBoundaries(blocks: UiRoundContentBlock[]): UiRoundContentBlock[] {
+  // Boundary rebalancing only matters around hostedSearch blocks; the common
+  // round has none, and this runs on every streamed text delta.
+  if (!blocks.some((block) => block.kind === "hostedSearch")) {
+    return blocks;
+  }
   const out: UiRoundContentBlock[] = [];
   for (let index = 0; index < blocks.length; index += 1) {
     const current = blocks[index];

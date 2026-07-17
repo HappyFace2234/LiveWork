@@ -249,10 +249,6 @@ export type RunAgentConversationTurnParams = {
   compaction: CompactionController;
   cancellation: TurnCancellation;
   resetLiveTranscript: (store: LiveTranscriptStore) => void;
-  updateLiveRounds: (
-    updater: (prev: LiveRound[]) => LiveRound[],
-    store: LiveTranscriptStore,
-  ) => void;
   batchLiveRoundsUpdate: (
     updater: (prev: LiveRound[]) => LiveRound[],
     store: LiveTranscriptStore,
@@ -310,7 +306,6 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     compaction,
     cancellation,
     resetLiveTranscript,
-    updateLiveRounds,
     batchLiveRoundsUpdate,
     updateToolStatus,
     commitVisibleAbortedConversation,
@@ -629,7 +624,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
           protectionCheckChars = 0;
           sawToolCallInRound = false;
           hookLifecycle.startTurn(round);
-          updateLiveRounds(
+          batchLiveRoundsUpdate(
             (prev) => [
               ...prev,
               {
@@ -945,7 +940,7 @@ export async function runAgentConversationTurn(params: RunAgentConversationTurnP
     const extraction = await runPostTurnMemoryExtraction({
       roundOffset: memoryRoundOffset,
       onTurnStart: (round) => {
-        updateLiveRounds(
+        batchLiveRoundsUpdate(
           (prev) => [
             ...prev,
             {
