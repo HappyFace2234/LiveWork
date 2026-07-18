@@ -143,10 +143,9 @@ impl AutomationScheduler {
         self.ensure_scheduler().await?;
 
         let store = Arc::clone(&self.store);
-        let (workdir, tasks) =
-            tauri::async_runtime::spawn_blocking(move || store.runnable_cron_tasks())
-                .await
-                .map_err(|e| format!("automation reload join 失败：{e}"))??;
+        let tasks = tauri::async_runtime::spawn_blocking(move || store.runnable_cron_tasks())
+            .await
+            .map_err(|e| format!("automation reload join 失败：{e}"))??;
 
         let desired: HashMap<String, CronTask> = tasks
             .into_iter()
@@ -192,14 +191,16 @@ impl AutomationScheduler {
             let cron_expr = task.cron.trim().to_string();
             let job = {
                 let manager = Arc::clone(self);
-                let task = task.clone();
-                let workdir = workdir.clone();
+                let task_id = task_id.clone();
+                // Only the id is captured: the task itself (and its workdir)
+                // is re-read from the store at fire time, so edits that keep
+                // the cron expression apply to the next fire without a job
+                // rebuild.
                 Job::new_async_tz(cron_expr.as_str(), Local, move |_job_id, _lock| {
                     let manager = Arc::clone(&manager);
-                    let task = task.clone();
-                    let workdir = workdir.clone();
+                    let task_id = task_id.clone();
                     Box::pin(async move {
-                        manager.fire(task, workdir);
+                        manager.fire(task_id).await;
                     })
                 })
             };
@@ -250,9 +251,38 @@ impl AutomationScheduler {
         });
     }
 
-    fn fire(self: &Arc<Self>, task: CronTask, workdir: String) {
-        if !self.start_fire(task.clone(), workdir, RunTrigger::Scheduled) {
-            self.record_run_detached(skipped_run(&task.id));
+    async fn fire(self: &Arc<Self>, task_id: String) {
+        let fresh = {
+            let store = Arc::clone(&self.store);
+            let task_id = task_id.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                store.cron_task_for_scheduled_fire(&task_id)
+            })
+            .await
+        };
+        match fresh {
+            Ok(Ok(Some((workdir, task)))) => {
+                if !self.start_fire(task.clone(), workdir, RunTrigger::Scheduled) {
+                    self.record_run_detached(skipped_run(&task.id));
+                }
+            }
+            // Task deleted since the job was registered; the next reload
+            // drops the job.
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => {
+                self.record_run_detached(failed_run(
+                    &task_id,
+                    format!("Cron task fire read failed: {error}"),
+                    false,
+                ));
+            }
+            Err(error) => {
+                self.record_run_detached(failed_run(
+                    &task_id,
+                    format!("Cron task fire read join failed: {error}"),
+                    false,
+                ));
+            }
         }
     }
 
@@ -329,12 +359,38 @@ impl AutomationScheduler {
             }
         }
 
+        // A pinned workspace must exist before any execution; a vanished pin
+        // fails this run and disables the task so it stops re-firing into a
+        // directory that no longer exists. Follow-global tasks keep the
+        // legacy behavior (bash/prompt fail the run without disabling).
+        let workdir = match task.workdir.as_deref().map(str::trim) {
+            Some(pin) if !pin.is_empty() => {
+                match resolve_workdir(Some(pin.to_string())) {
+                    Ok(resolved) => resolved.display().to_string(),
+                    Err(error) => {
+                        let message =
+                            format!("Cron task workspace is unavailable ({pin}): {error}");
+                        self.record_run_detached(failed_run(
+                            &task_id,
+                            message.clone(),
+                            trigger.counted(),
+                        ));
+                        self.disable_task_detached(&task_id, message);
+                        self.clear_active(&task_id);
+                        return;
+                    }
+                }
+            }
+            _ => workdir,
+        };
+
         if task.kind == "prompt" {
             let store = Arc::clone(&self.store);
             let queue_task = task.clone();
+            let queue_workdir = workdir.clone();
             let result =
                 tauri::async_runtime::spawn_blocking(move || {
-                    store.queue_prompt_run(&queue_task, trigger.counted())
+                    store.queue_prompt_run(&queue_task, &queue_workdir, trigger.counted())
                 })
                 .await;
             match result {
@@ -379,6 +435,22 @@ impl AutomationScheduler {
         if let Ok(mut active) = self.active_runs.lock() {
             active.remove(task_id);
         }
+    }
+
+    fn disable_task_detached(&self, task_id: &str, error: String) {
+        let store = Arc::clone(&self.store);
+        let task_id = task_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                store.disable_task_with_error(&task_id, &error)
+            })
+            .await;
+            match result {
+                Ok(Err(error)) => eprintln!("禁用 cron 任务失败：{error}"),
+                Err(error) => eprintln!("禁用 cron 任务 join 失败：{error}"),
+                _ => {}
+            }
+        });
     }
 
     fn record_run_detached(&self, run: CompletedRun) {

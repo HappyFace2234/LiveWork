@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -20,7 +21,7 @@ import {
   useAutomation,
 } from "../../lib/automation";
 import { buildModelOptions } from "../../lib/chat/page/chatPageHelpers";
-import { isAgentExecutionMode } from "../../lib/settings";
+import { isAgentExecutionMode, workspaceProjectPathKey } from "../../lib/settings";
 import { type CronTaskFormData, CronTaskModal } from "./CronTaskModal";
 import { CronTaskViewModal } from "./CronTaskViewModal";
 import { AgentActivationSwitch, ConfirmDeletePopover } from "./shared";
@@ -79,9 +80,24 @@ export function CronSection(props: SettingsSectionProps) {
         value: option.value,
         label: option.label,
         providerName: option.providerName,
+        providerId: option.providerId,
+        providerType: option.providerType,
       })),
     [settings],
   );
+  // Archived/hidden workspaces are not offered for pinning; a task already
+  // pinned to one keeps its path (the modal shows it as unavailable).
+  const workspaceOptions = useMemo(() => {
+    const excludedPathKeys = new Set(
+      [
+        ...settings.system.archivedWorkspaceProjectPaths,
+        ...settings.system.hiddenWorkspaceProjectPaths,
+      ].map(workspaceProjectPathKey),
+    );
+    return settings.system.workspaceProjects
+      .filter((project) => !excludedPathKeys.has(workspaceProjectPathKey(project.path)))
+      .map((project) => ({ path: project.path, name: project.name || project.path }));
+  }, [settings]);
 
   function runOps(run: () => Promise<unknown>) {
     setActionError(null);
@@ -105,6 +121,14 @@ export function CronSection(props: SettingsSectionProps) {
 
   function handleDelete(id: string) {
     runOps(() => applyCronOps([{ op: "delete", id }]));
+  }
+
+  async function pickWorkdirDirectory(initialWorkdir: string): Promise<string | null> {
+    // The command is rename_all=snake_case: a camelCase key would silently
+    // deserialize the Option param as None (see memory: tauri-invoke-snake_case).
+    return await invoke<string | null>("system_pick_folder", {
+      initial_workdir: initialWorkdir || undefined,
+    });
   }
 
   function handleToggle(task: CronTask) {
@@ -307,7 +331,9 @@ export function CronSection(props: SettingsSectionProps) {
           mode={modal.mode}
           initialData={modal.task}
           modelOptions={modelOptions}
+          workspaceOptions={workspaceOptions}
           executionMode={settings.system.executionMode}
+          onPickWorkdir={pickWorkdirDirectory}
           onSave={modal.mode === "add" ? handleAdd : handleEdit}
           onClose={() => setModal({ open: false })}
         />

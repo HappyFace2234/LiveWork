@@ -168,6 +168,12 @@ fn task_config_json(task: &CronTask) -> Result<String, String> {
                 .map_err(|e| format!("序列化 cron selectedModel 失败：{e}"))?,
         );
     }
+    if let Some(reasoning) = &task.reasoning {
+        config.insert("reasoning".to_string(), Value::String(reasoning.clone()));
+    }
+    if let Some(workdir) = &task.workdir {
+        config.insert("workdir".to_string(), Value::String(workdir.clone()));
+    }
     serde_json::to_string(&Value::Object(config))
         .map_err(|e| format!("序列化 cron config 失败：{e}"))
 }
@@ -283,6 +289,8 @@ struct TaskConfig {
     requests: Option<Vec<HttpRequestSpec>>,
     prompt: Option<String>,
     selected_model: Option<SelectedModelRef>,
+    reasoning: Option<String>,
+    workdir: Option<String>,
 }
 
 fn parse_task_config(config_json: &str) -> TaskConfig {
@@ -310,6 +318,14 @@ fn parse_task_config(config_json: &str) -> TaskConfig {
             .get("selectedModel")
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
+        reasoning: map
+            .get("reasoning")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        workdir: map
+            .get("workdir")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
     }
 }
 
@@ -330,6 +346,8 @@ fn cron_task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronTask> {
         requests: config.requests,
         prompt: config.prompt,
         selected_model: config.selected_model,
+        reasoning: config.reasoning,
+        workdir: config.workdir,
         last_error: row.get("last_error")?,
     })
 }

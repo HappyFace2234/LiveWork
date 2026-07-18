@@ -5,6 +5,8 @@ import {
   Check,
   CheckCircle2,
   Clock3,
+  Folder,
+  FolderOpen,
   Globe,
   MessageSquare,
   Plus,
@@ -26,8 +28,9 @@ import { Textarea } from "../../components/ui/textarea";
 import { useLocale } from "../../i18n";
 import { type CronTask, type CronTaskType, validateCronExpression } from "../../lib/automation";
 import { parseModelValue, toModelValue } from "../../lib/providers/llm";
-import { type ExecutionMode, isAgentExecutionMode } from "../../lib/settings";
+import { type ExecutionMode, isAgentExecutionMode, type ProviderId } from "../../lib/settings";
 import { useModalMotion } from "../../lib/shared/modalMotion";
+import { CronModelPicker } from "./cronModelPicker";
 import {
   createEmptyRequestDraft,
   type HttpRequestDraft,
@@ -36,11 +39,51 @@ import {
   requestToDraft,
 } from "./httpRequestEditor";
 
-type CronPromptModelOption = {
+export type CronPromptModelOption = {
   value: string;
   label: string;
   providerName: string;
+  providerId?: string;
+  providerType?: ProviderId;
 };
+
+export type CronWorkspaceOption = {
+  path: string;
+  name: string;
+};
+
+/**
+ * Radix SelectItem rejects an empty-string value at runtime, so "follow the
+ * active workspace" (stored as an empty workdir) uses this sentinel in the
+ * select and is mapped back to "" on save.
+ */
+const FOLLOW_ACTIVE_WORKSPACE_VALUE = "__follow-active-workspace__";
+
+/**
+ * "Custom path" entry: the CronTaskManager tool can pin arbitrary paths, so
+ * the form offers a free-form path input alongside the workspace list.
+ */
+const CUSTOM_WORKDIR_VALUE = "__custom-workdir__";
+
+const CRON_REASONING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+type CronReasoningLevel = (typeof CRON_REASONING_LEVELS)[number];
+
+const DEFAULT_CRON_REASONING: CronReasoningLevel = "medium";
+
+const REASONING_LEVEL_I18N_KEYS: Record<CronReasoningLevel, string> = {
+  off: "settings.reasoning.off",
+  minimal: "settings.reasoning.minimal",
+  low: "settings.reasoning.low",
+  medium: "settings.reasoning.medium",
+  high: "settings.reasoning.high",
+  xhigh: "settings.reasoning.xhigh",
+  max: "settings.reasoning.max",
+};
+
+function isCronReasoningLevel(value: string): value is CronReasoningLevel {
+  return (CRON_REASONING_LEVELS as readonly string[]).includes(value);
+}
 
 /**
  * Fields the modal edits. `enabled` is deliberately not part of the payload:
@@ -53,7 +96,14 @@ type CronTaskModalProps = {
   mode: "add" | "edit";
   initialData?: CronTask;
   modelOptions: CronPromptModelOption[];
+  workspaceOptions: CronWorkspaceOption[];
   executionMode: ExecutionMode;
+  /**
+   * Platform directory picker injected by each end's CronSection (native
+   * dialog on desktop, remote path prompt on the WebUI). The browse button
+   * is hidden when absent.
+   */
+  onPickWorkdir?: (initialWorkdir: string) => Promise<string | null>;
   onSave: (data: CronTaskFormData) => void | Promise<void>;
   onClose: () => void;
 };
@@ -62,7 +112,9 @@ export function CronTaskModal({
   mode,
   initialData,
   modelOptions,
+  workspaceOptions,
   executionMode,
+  onPickWorkdir,
   onSave,
   onClose,
 }: CronTaskModalProps) {
@@ -84,6 +136,20 @@ export function CronTaskModal({
     return [createEmptyRequestDraft()];
   });
   const [prompt, setPrompt] = useState(initialData?.prompt ?? "");
+  const [reasoning, setReasoning] = useState<CronReasoningLevel>(() => {
+    const initial = initialData?.reasoning ?? "";
+    return isCronReasoningLevel(initial) ? initial : DEFAULT_CRON_REASONING;
+  });
+  const [workdir, setWorkdir] = useState(initialData?.workdir ?? "");
+  // A pinned path outside the workspace list (e.g. set by the CronTaskManager
+  // tool, or whose workspace was removed) opens in custom-path mode so the
+  // user sees and can edit the raw path.
+  const [customWorkdir, setCustomWorkdir] = useState(() => {
+    const initialWorkdir = initialData?.workdir ?? "";
+    return Boolean(
+      initialWorkdir && !workspaceOptions.some((option) => option.path === initialWorkdir),
+    );
+  });
   const [selectedModelValue, setSelectedModelValue] = useState(() =>
     initialData?.selectedModel
       ? toModelValue(initialData.selectedModel.customProviderId, initialData.selectedModel.model)
@@ -108,8 +174,9 @@ export function CronTaskModal({
         ]
       : modelOptions;
 
-  const selectedPromptModel =
-    promptModelOptions.find((option) => option.value === selectedModelValue) ?? null;
+  const selectedWorkspaceOption = customWorkdir
+    ? null
+    : (workspaceOptions.find((option) => option.path === workdir) ?? null);
 
   const formReady =
     Boolean(name.trim()) &&
@@ -168,6 +235,13 @@ export function CronTaskModal({
         requests: type === "http" ? parseHttpRequestDrafts(requests, t) : undefined,
         prompt: type === "prompt" ? trimmedPrompt : undefined,
         selectedModel: type === "prompt" ? (parsedSelectedModel ?? undefined) : undefined,
+        // Prompt tasks always carry a concrete level (default "medium");
+        // other kinds clear the field.
+        reasoning: type === "prompt" ? reasoning : "",
+        // Always carried: an empty string is the explicit "follow the active
+        // workspace" signal — omitting the key would make merge_patch keep a
+        // stale pin forever.
+        workdir: type === "http" ? "" : workdir.trim(),
       };
 
       await onSave(data);
@@ -413,6 +487,13 @@ export function CronTaskModal({
                 ) : null}
               </button>
             </div>
+
+            {/* Prompt-type run semantics belong to the type choice, not the config step */}
+            {type === "prompt" ? (
+              <div className="mt-3 rounded-xl border border-violet-500/15 bg-violet-500/[0.04] px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
+                {t("settings.cronPromptRunHint")}
+              </div>
+            ) : null}
           </div>
 
           {/* Step 3: Configuration */}
@@ -453,6 +534,131 @@ export function CronTaskModal({
               ) : null}
             </div>
 
+            {/* Workspace pin — first row of the config step; bash/prompt run
+                inside a directory, http does not */}
+            {type !== "http" ? (
+              <div className="mb-4 space-y-1.5">
+                <Label className="text-xs font-medium text-muted-foreground">
+                  {t("settings.cronWorkdirLabel")}
+                </Label>
+                <Select
+                  value={
+                    customWorkdir ? CUSTOM_WORKDIR_VALUE : workdir || FOLLOW_ACTIVE_WORKSPACE_VALUE
+                  }
+                  onValueChange={(value) => {
+                    setFormError(null);
+                    if (value === FOLLOW_ACTIVE_WORKSPACE_VALUE) {
+                      setCustomWorkdir(false);
+                      setWorkdir("");
+                    } else if (value === CUSTOM_WORKDIR_VALUE) {
+                      setCustomWorkdir(true);
+                    } else {
+                      setCustomWorkdir(false);
+                      setWorkdir(value);
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-10">
+                    <span className="flex min-w-0 flex-1 items-center gap-2 text-left">
+                      <span
+                        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
+                          customWorkdir || workdir
+                            ? "bg-amber-500/10 text-amber-500"
+                            : "bg-muted/60 text-muted-foreground"
+                        }`}
+                      >
+                        <Folder className="h-3.5 w-3.5" />
+                      </span>
+                      <SelectValue
+                        className="truncate"
+                        placeholder={t("settings.cronWorkdirFollowActive")}
+                      >
+                        {customWorkdir
+                          ? t("settings.cronWorkdirCustom")
+                          : selectedWorkspaceOption
+                            ? selectedWorkspaceOption.name
+                            : t("settings.cronWorkdirFollowActive")}
+                      </SelectValue>
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60">
+                    <SelectItem
+                      value={FOLLOW_ACTIVE_WORKSPACE_VALUE}
+                      className="py-2 text-muted-foreground focus:text-foreground data-[highlighted]:text-foreground"
+                    >
+                      {t("settings.cronWorkdirFollowActive")}
+                    </SelectItem>
+                    <SelectItem value={CUSTOM_WORKDIR_VALUE} className="py-2">
+                      {t("settings.cronWorkdirCustom")}
+                    </SelectItem>
+                    {workspaceOptions.length > 0 ? (
+                      <div className="mx-2 my-1 h-px bg-border/60" />
+                    ) : null}
+                    {workspaceOptions.map((option) => (
+                      <SelectItem
+                        key={option.path}
+                        value={option.path}
+                        title={option.path}
+                        description={<span className="font-mono">{option.path}</span>}
+                        className="py-2"
+                      >
+                        {option.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {customWorkdir ? (
+                  <div className="flex items-center gap-1.5">
+                    <Input
+                      value={workdir}
+                      placeholder={t("settings.cronWorkdirCustomPlaceholder")}
+                      className="flex-1 font-mono text-xs"
+                      onChange={(e) => {
+                        setFormError(null);
+                        setWorkdir(e.currentTarget.value);
+                      }}
+                    />
+                    {onPickWorkdir ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="h-9 w-9 shrink-0"
+                        title={t("settings.cronWorkdirBrowse")}
+                        aria-label={t("settings.cronWorkdirBrowse")}
+                        onClick={() => {
+                          void (async () => {
+                            try {
+                              const picked = await onPickWorkdir(workdir.trim());
+                              const path = picked?.trim();
+                              if (!path) return;
+                              setFormError(null);
+                              setWorkdir(path);
+                            } catch (err) {
+                              setFormError(err instanceof Error ? err.message : String(err));
+                            }
+                          })();
+                        }}
+                      >
+                        <FolderOpen className="h-4 w-4" />
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : workdir ? (
+                  <div
+                    className="truncate font-mono text-[11px] text-muted-foreground/80"
+                    title={workdir}
+                  >
+                    {workdir}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-muted-foreground/60">
+                    {t("settings.cronWorkdirHint")}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
             {/* Shell script config */}
             {type === "bash" ? (
               <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/20">
@@ -492,49 +698,58 @@ export function CronTaskModal({
             {/* Prompt config */}
             {type === "prompt" ? (
               <div className="space-y-3">
-                <div className="rounded-xl border border-violet-500/15 bg-violet-500/[0.04] px-3.5 py-3 text-xs leading-relaxed text-muted-foreground">
-                  {t("settings.cronPromptRunHint")}
-                </div>
-
                 {!autoPromptSupported ? (
                   <div className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] px-3.5 py-3 text-xs leading-relaxed text-amber-700 dark:text-amber-300">
                     {t("settings.cronPromptAgentModeOnlyHint")}
                   </div>
                 ) : null}
 
-                <div className="space-y-1.5">
-                  <Label className="text-xs font-medium text-muted-foreground">
-                    {t("settings.cronPromptModelLabel")}
-                  </Label>
-                  <Select
-                    value={selectedModelValue}
-                    onValueChange={(value) => {
-                      setFormError(null);
-                      setSelectedModelValue(value);
-                    }}
-                  >
-                    <SelectTrigger disabled={promptModelOptions.length === 0}>
-                      <SelectValue placeholder={t("settings.cronPromptModelPlaceholder")} />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60">
-                      {promptModelOptions.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.providerName} / {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {selectedPromptModel ? (
-                    <div className="text-[11px] text-muted-foreground/80">
-                      {selectedPromptModel.providerName} / {selectedPromptModel.label}
-                    </div>
-                  ) : null}
-                  {promptModelOptions.length === 0 ? (
-                    <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-                      {t("settings.cronPromptModelEmpty")}
-                    </div>
-                  ) : null}
+                <div className="settings-form-grid grid gap-4 sm:grid-cols-[minmax(0,1fr)_9rem]">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-muted-foreground">
+                      {t("settings.cronPromptModelLabel")}
+                    </Label>
+                    <CronModelPicker
+                      options={promptModelOptions}
+                      value={selectedModelValue}
+                      disabled={promptModelOptions.length === 0}
+                      onChange={(value) => {
+                        setFormError(null);
+                        setSelectedModelValue(value);
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs font-medium text-muted-foreground">
+                      {t("settings.cronReasoningLabel")}
+                    </Label>
+                    <Select
+                      value={reasoning}
+                      onValueChange={(value) => {
+                        setFormError(null);
+                        if (isCronReasoningLevel(value)) {
+                          setReasoning(value);
+                        }
+                      }}
+                    >
+                      <SelectTrigger className="h-10">
+                        <SelectValue>{t(REASONING_LEVEL_I18N_KEYS[reasoning])}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent className="max-h-60">
+                        {CRON_REASONING_LEVELS.map((level) => (
+                          <SelectItem key={level} value={level}>
+                            {t(REASONING_LEVEL_I18N_KEYS[level])}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
+                {promptModelOptions.length === 0 ? (
+                  <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                    {t("settings.cronPromptModelEmpty")}
+                  </div>
+                ) : null}
 
                 <div className="overflow-hidden rounded-xl border border-border/60 bg-muted/20">
                   <div className="flex items-center gap-1.5 border-b border-border/30 px-3 py-2 text-[11px] text-muted-foreground">

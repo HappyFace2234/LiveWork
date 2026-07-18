@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock3,
+  Folder,
   Globe,
   Loader2,
   MessageSquare,
@@ -191,6 +192,15 @@ function LeftPanel({
                 <span>{t("settings.cronRemainingExecutionsUnitShort")}</span>
               )}
             </div>
+            {task.workdir ? (
+              <div
+                className="inline-flex max-w-56 items-center gap-1.5 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground"
+                title={task.workdir}
+              >
+                <Folder className="h-3 w-3 shrink-0" />
+                <span className="truncate">{task.workdir}</span>
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={onRunNow}

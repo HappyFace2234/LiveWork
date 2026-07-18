@@ -10,6 +10,7 @@ import {
   Terminal,
   Trash2,
 } from "../../components/icons";
+import { useRemotePathPicker } from "../../components/RemotePathPickerModal";
 
 import { Button } from "../../components/ui/button";
 import { useLocale } from "../../i18n";
@@ -20,7 +21,7 @@ import {
   useAutomation,
 } from "../../lib/automation";
 import { buildModelOptions } from "../../lib/chat/chatPageHelpers";
-import { isAgentExecutionMode } from "../../lib/settings";
+import { isAgentExecutionMode, workspaceProjectPathKey } from "../../lib/settings";
 import { type CronTaskFormData, CronTaskModal } from "./CronTaskModal";
 import { CronTaskViewModal } from "./CronTaskViewModal";
 import { AgentActivationSwitch, ConfirmDeletePopover } from "./shared";
@@ -70,6 +71,7 @@ export function CronSection(props: SettingsSectionProps) {
   const { t } = useLocale();
   const [modal, setModal] = useState<ModalState>({ open: false });
   const [actionError, setActionError] = useState<string | null>(null);
+  const { pickPath, pathPickerElement } = useRemotePathPicker();
   const { cron } = useAutomation();
   const tasks = cron.tasks;
   const autoPromptSupported = isAgentExecutionMode(settings.system.executionMode);
@@ -79,9 +81,24 @@ export function CronSection(props: SettingsSectionProps) {
         value: option.value,
         label: option.label,
         providerName: option.providerName,
+        providerId: option.providerId,
+        providerType: option.providerType,
       })),
     [settings],
   );
+  // Archived/hidden workspaces are not offered for pinning; a task already
+  // pinned to one keeps its path (the modal shows it as unavailable).
+  const workspaceOptions = useMemo(() => {
+    const excludedPathKeys = new Set(
+      [
+        ...settings.system.archivedWorkspaceProjectPaths,
+        ...settings.system.hiddenWorkspaceProjectPaths,
+      ].map(workspaceProjectPathKey),
+    );
+    return settings.system.workspaceProjects
+      .filter((project) => !excludedPathKeys.has(workspaceProjectPathKey(project.path)))
+      .map((project) => ({ path: project.path, name: project.name || project.path }));
+  }, [settings]);
 
   function runOps(run: () => Promise<unknown>) {
     setActionError(null);
@@ -105,6 +122,10 @@ export function CronSection(props: SettingsSectionProps) {
 
   function handleDelete(id: string) {
     runOps(() => applyCronOps([{ op: "delete", id }]));
+  }
+
+  async function pickWorkdirDirectory(initialWorkdir: string): Promise<string | null> {
+    return await pickPath({ mode: "directory", initialPath: initialWorkdir });
   }
 
   function handleToggle(task: CronTask) {
@@ -307,7 +328,9 @@ export function CronSection(props: SettingsSectionProps) {
           mode={modal.mode}
           initialData={modal.task}
           modelOptions={modelOptions}
+          workspaceOptions={workspaceOptions}
           executionMode={settings.system.executionMode}
+          onPickWorkdir={pickWorkdirDirectory}
           onSave={modal.mode === "add" ? handleAdd : handleEdit}
           onClose={() => setModal({ open: false })}
         />
@@ -317,6 +340,8 @@ export function CronSection(props: SettingsSectionProps) {
       {modal.open && modal.mode === "view" ? (
         <CronTaskViewModal taskId={modal.taskId} onClose={() => setModal({ open: false })} />
       ) : null}
+
+      {pathPickerElement}
     </div>
   );
 }

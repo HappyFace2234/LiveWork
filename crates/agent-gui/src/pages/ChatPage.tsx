@@ -1064,7 +1064,7 @@ export function ChatPage(props: ChatPageProps) {
   const handleOpenCreateWorkspaceProject = useCallback(async () => {
     try {
       const picked = await invoke<string | null>("system_pick_folder", {
-        initialWorkdir: activeWorkspaceProjectPath || workdir,
+        initial_workdir: activeWorkspaceProjectPath || workdir,
       });
       const path = picked?.trim();
       if (!path) return;

@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::types::{
     http_method_can_have_body, CronTask, HookDef, HttpRequestSpec, SelectedModelRef,
-    CRON_TASK_KINDS, HOOK_EVENTS, HOOK_KINDS, HTTP_METHODS, MASKED_HEADER_VALUE,
+    CRON_REASONING_LEVELS, CRON_TASK_KINDS, HOOK_EVENTS, HOOK_KINDS, HTTP_METHODS,
+    MASKED_HEADER_VALUE,
 };
 
 pub const MIN_HOOK_TIMEOUT_MS: u64 = 1_000;
@@ -214,6 +215,8 @@ pub fn validate_cron_task(value: Value, label: &str) -> Result<CronTask, String>
         requests: None,
         prompt: None,
         selected_model: None,
+        reasoning: None,
+        workdir: None,
         last_error: None,
     };
 
@@ -227,8 +230,25 @@ pub fn validate_cron_task(value: Value, label: &str) -> Result<CronTask, String>
         "prompt" => {
             task.prompt = Some(required_string(&map, "prompt", label)?);
             task.selected_model = Some(parse_selected_model(map.get("selectedModel"), label)?);
+            // Empty/missing means the runtime default thinking level.
+            let reasoning = optional_string(&map, "reasoning");
+            if !reasoning.is_empty() {
+                if !CRON_REASONING_LEVELS.contains(&reasoning.as_str()) {
+                    return Err(format!("{label}.reasoning 不支持：{reasoning}"));
+                }
+                task.reasoning = Some(reasoning);
+            }
         }
         _ => unreachable!(),
+    }
+
+    // Empty/missing/null all mean "follow the active workspace"; http tasks
+    // never carry a workdir.
+    if kind != "http" {
+        let workdir = optional_string(&map, "workdir");
+        if !workdir.is_empty() {
+            task.workdir = Some(workdir);
+        }
     }
 
     Ok(task)

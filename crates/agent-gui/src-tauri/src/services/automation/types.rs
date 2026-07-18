@@ -15,6 +15,8 @@ pub const PROMPT_EXPIRED_EVENT: &str = "automation:prompt-expired";
 pub const MASKED_HEADER_VALUE: &str = "__liveagent-masked__";
 
 pub const CRON_TASK_KINDS: &[&str] = &["bash", "http", "prompt"];
+pub const CRON_REASONING_LEVELS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 pub const HOOK_KINDS: &[&str] = &["command", "http"];
 pub const HOOK_EVENTS: &[&str] = &[
     "agent_start",
@@ -73,6 +75,13 @@ pub struct CronTask {
     pub prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_model: Option<SelectedModelRef>,
+    /// Thinking level for prompt tasks; None/empty means the runtime default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Workspace path pinned for this task; None/empty means "follow the
+    /// globally active workspace" (the pre-existing behavior).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workdir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
 }
@@ -230,6 +239,14 @@ pub struct PromptRunRequest {
     pub lease_expires_at: i64,
     #[serde(default = "default_true")]
     pub counted: bool,
+    /// Resolved at queue time (task pin or global workdir). Empty on rows
+    /// queued before this field existed; the runner falls back to the global
+    /// workdir then.
+    #[serde(default)]
+    pub workdir: String,
+    /// Task thinking level; empty means the runner's default.
+    #[serde(default)]
+    pub reasoning: String,
 }
 
 fn default_true() -> bool {

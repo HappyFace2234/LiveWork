@@ -72,6 +72,11 @@ export type CronTask = {
   requests?: HttpRequestSpec[];
   prompt?: string;
   selectedModel?: SelectedModelRef;
+  /** Thinking level for prompt tasks; absent/empty = runtime default. */
+  reasoning?: string;
+  /** Workspace path pinned for this task; absent/empty = follow the globally
+   * active workspace. Never set on http tasks. */
+  workdir?: string;
   lastError?: string;
 };
 
@@ -155,6 +160,12 @@ export type PromptRunRequest = {
   startedAt: number;
   leaseExpiresAt: number;
   counted: boolean;
+  /** Resolved at queue time (task pin or global workdir). Empty on rows
+   * queued before this field existed; the runner falls back to the global
+   * workdir then. */
+  workdir: string;
+  /** Task thinking level; empty means the runner's default. */
+  reasoning: string;
 };
 
 export type CompletePromptRunInput = {
