@@ -153,66 +153,69 @@ function LeftPanel({
             {task.description || t("settings.cronViewNoDesc")}
           </p>
 
-          {/* Meta pills */}
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
-              <Clock3 className="h-3 w-3" />
-              <span className="font-mono">{task.cron}</span>
-            </div>
-            <div
-              className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium ${
-                task.enabled
-                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                  : "bg-muted text-muted-foreground"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${task.enabled ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
-              />
-              {task.enabled
-                ? t("settings.cronViewStatusEnabled")
-                : t("settings.cronViewStatusDisabled")}
-            </div>
-            <div
-              className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium ${
-                task.remainingExecutions === 0
-                  ? "bg-red-500/10 text-red-600 dark:text-red-400"
-                  : task.remainingExecutions == null
-                    ? "bg-muted text-muted-foreground"
-                    : "bg-sky-500/10 text-sky-600 dark:text-sky-400"
-              }`}
-              title={
-                task.remainingExecutions == null
-                  ? t("settings.cronRemainingExecutionsUnlimited")
-                  : `${task.remainingExecutions} ${t("settings.cronRemainingExecutionsUnit")}`
-              }
-            >
-              <span className="tabular-nums">
-                {task.remainingExecutions == null ? "∞" : task.remainingExecutions}
-              </span>
-              {task.remainingExecutions == null ? null : (
-                <span>{t("settings.cronRemainingExecutionsUnitShort")}</span>
-              )}
-            </div>
-            <div
-              className="inline-flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground"
-              title={t("settings.cronTimeoutSeconds")}
-            >
-              <Timer className="h-3 w-3" />
-              <span className="tabular-nums">
-                {task.timeoutSeconds ?? DEFAULT_CRON_TIMEOUT_SECONDS}
-                {t("settings.cronTimeoutSecondsUnitShort")}
-              </span>
-            </div>
-            {task.workdir ? (
-              <div
-                className="inline-flex max-w-56 items-center gap-1.5 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground"
-                title={task.workdir}
-              >
-                <Folder className="h-3 w-3 shrink-0" />
-                <span className="truncate">{task.workdir}</span>
+          {/* Meta pills. The run-now button sits outside the wrapping pill
+              container so a second pill row can never push it out of place. */}
+          <div className="mt-3 flex items-start gap-2">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2 py-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                <Clock3 className="h-3 w-3" />
+                <span className="font-mono">{task.cron}</span>
               </div>
-            ) : null}
+              <div
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium ${
+                  task.enabled
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : "bg-muted text-muted-foreground"
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${task.enabled ? "bg-emerald-500" : "bg-muted-foreground/40"}`}
+                />
+                {task.enabled
+                  ? t("settings.cronViewStatusEnabled")
+                  : t("settings.cronViewStatusDisabled")}
+              </div>
+              <div
+                className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium ${
+                  task.remainingExecutions === 0
+                    ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                    : task.remainingExecutions == null
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-sky-500/10 text-sky-600 dark:text-sky-400"
+                }`}
+                title={
+                  task.remainingExecutions == null
+                    ? t("settings.cronRemainingExecutionsUnlimited")
+                    : `${task.remainingExecutions} ${t("settings.cronRemainingExecutionsUnit")}`
+                }
+              >
+                <span className="tabular-nums">
+                  {task.remainingExecutions == null ? "∞" : task.remainingExecutions}
+                </span>
+                {task.remainingExecutions == null ? null : (
+                  <span>{t("settings.cronRemainingExecutionsUnitShort")}</span>
+                )}
+              </div>
+              <div
+                className="inline-flex items-center gap-1 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground"
+                title={t("settings.cronTimeoutSeconds")}
+              >
+                <Timer className="h-3 w-3" />
+                <span className="tabular-nums">
+                  {task.timeoutSeconds ?? DEFAULT_CRON_TIMEOUT_SECONDS}
+                  {t("settings.cronTimeoutSecondsUnitShort")}
+                </span>
+              </div>
+              {task.workdir ? (
+                <div
+                  className="inline-flex max-w-56 items-center gap-1.5 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground"
+                  title={task.workdir}
+                >
+                  <Folder className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{task.workdir}</span>
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={onRunNow}
@@ -221,7 +224,7 @@ function LeftPanel({
               aria-label={
                 isRunningNow ? t("settings.cronViewRunningNow") : t("settings.cronViewRunNow")
               }
-              className={`ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors ${cfg.accent} ${cfg.accentBg} ${cfg.accentBorder} hover:brightness-110 disabled:cursor-wait disabled:opacity-60`}
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors ${cfg.accent} ${cfg.accentBg} ${cfg.accentBorder} hover:brightness-110 disabled:cursor-wait disabled:opacity-60`}
             >
               {isRunningNow ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
