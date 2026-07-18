@@ -1,3 +1,4 @@
+// Deprecated: v1 JSON 协议的处理器/载荷塑形，已被 v2 信封直通（internal/protocol/pbws）取代；仅为旧客户端保留，流量归零后整体删除。
 package server
 
 import (
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/liveagent/agent-gateway/internal/chatcmd"
 	"github.com/liveagent/agent-gateway/internal/config"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
@@ -187,9 +189,9 @@ func (c *websocketConnection) handleChatPrepare(req websocketRequest) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), chatPrepareTimeout(c.cfg))
+	ctx, cancel := context.WithTimeout(context.Background(), chatcmd.PrepareTimeout(c.cfg))
 	defer cancel()
-	if err := probeChatRuntime(ctx, c.sm); err != nil {
+	if err := chatcmd.ProbeRuntime(ctx, c.sm); err != nil {
 		_ = c.writeError(req.ID, websocketErrorMessage(err))
 		return
 	}
@@ -200,7 +202,7 @@ func (c *websocketConnection) handleChatPrepare(req websocketRequest) {
 }
 
 func (c *websocketConnection) handleChatCommand(req websocketRequest) {
-	commandType, body, baseMessageRef, err := decodeChatCommandPayload(req.Payload)
+	commandType, body, baseMessageRef, err := chatcmd.DecodeCommandPayload(req.Payload)
 	if err != nil {
 		_ = c.writeError(req.ID, "invalid chat command payload")
 		return
@@ -214,7 +216,7 @@ func (c *websocketConnection) handleChatCommand(req websocketRequest) {
 			_ = c.writeError(req.ID, "base_message_ref is required")
 			return
 		}
-		if err := validateChatMessageRef(baseMessageRef); err != nil {
+		if err := chatcmd.ValidateMessageRef(baseMessageRef); err != nil {
 			_ = c.writeError(req.ID, err.Error())
 			return
 		}
@@ -226,7 +228,7 @@ func (c *websocketConnection) handleChatCommand(req websocketRequest) {
 		return
 	}
 
-	if err := normalizeChatRequestBody(&body); err != nil {
+	if err := chatcmd.NormalizeRequestBody(&body); err != nil {
 		_ = c.writeError(req.ID, err.Error())
 		return
 	}
@@ -241,9 +243,9 @@ func (c *websocketConnection) handleChatCommand(req websocketRequest) {
 		return
 	}
 	probeCtx, probeCancel := context.WithTimeout(
-		context.Background(), chatPrepareTimeout(c.cfg),
+		context.Background(), chatcmd.PrepareTimeout(c.cfg),
 	)
-	probeErr := probeChatRuntimeForCommand(probeCtx, c.sm)
+	probeErr := chatcmd.ProbeRuntimeForCommand(probeCtx, c.sm)
 	probeCancel()
 	if probeErr != nil {
 		_ = c.writeError(req.ID, websocketErrorMessage(probeErr))
@@ -256,7 +258,7 @@ func (c *websocketConnection) handleChatCommand(req websocketRequest) {
 		body.ConversationID,
 		body.Workdir,
 		body.ClientRequestID,
-		buildAcceptedChatCommandPayloads(body, baseMessageRef),
+		chatcmd.BuildAcceptedCommandPayloads(body, baseMessageRef),
 	)
 	if start.Deduped {
 		c.respondChatCommandDeduped(req.ID, start)
@@ -267,8 +269,8 @@ func (c *websocketConnection) handleChatCommand(req websocketRequest) {
 	_ = c.writeChatCommandAcceptedResponse(req.ID, start)
 
 	go c.forwardChatCommandUpdates(updates, cleanupWatch)
-	go dispatchAcceptedChatCommand(
-		context.Background(), c.cfg, c.sm, cleanupWatch, start, body, baseMessageRef, newChatTraceID(),
+	go chatcmd.DispatchAcceptedCommand(
+		context.Background(), c.cfg, c.sm, cleanupWatch, start, body, baseMessageRef, chatcmd.NewTraceID(),
 	)
 }
 
@@ -344,7 +346,7 @@ func cleanupChatCommandWatchAfter(cfg *config.Config, cleanup func()) {
 	if cleanup == nil {
 		return
 	}
-	timeout := chatStartTimeout(cfg) + chatRenderStartTimeout(cfg)
+	timeout := chatcmd.StartTimeout(cfg) + chatcmd.RenderStartTimeout(cfg)
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
@@ -404,7 +406,7 @@ func (c *websocketConnection) handleChatCancel(req websocketRequest) {
 	if err := c.sm.SendToAgentContext(ctx, &gatewayv1.GatewayEnvelope{
 		RequestId: runID,
 		Timestamp: time.Now().Unix(),
-		Payload:   buildChatCancelCommandPayload(payload.ConversationID),
+		Payload:   chatcmd.BuildCancelCommandPayload(payload.ConversationID),
 	}); err != nil {
 		_ = c.writeError(req.ID, websocketErrorMessage(err))
 		return

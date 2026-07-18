@@ -7,6 +7,7 @@ import (
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
+	"github.com/liveagent/agent-gateway/internal/transport/wscore"
 )
 
 // A congested data queue must shed the chat subscription (reset rides the
@@ -18,15 +19,17 @@ func TestForwardConversationEventsShedsSubscriptionOnQueueFull(t *testing.T) {
 	sm := session.NewManager()
 	sm.RecordAuthentication("desktop-agent", "0.9.0", "session-shed")
 	sm.SetSession(session.NewAgentSession(sm.LatestAuthSnapshot()))
+	core := wscore.NewConn(nil, wscore.Config{
+		QueueSize:    1,
+		WriteTimeout: 30 * time.Millisecond,
+	})
 	c := &websocketConnection{
-		sm:           sm,
-		outbox:       make(chan websocketEnvelope, 1),
-		ctrlOutbox:   make(chan websocketEnvelope, websocketControlQueueSize),
-		writeTimeout: 30 * time.Millisecond,
-		done:         make(chan struct{}),
+		sm:   sm,
+		core: core,
+		done: core.Done(),
 	}
 	// Congest the data queue with nothing draining it.
-	c.outbox <- websocketEnvelope{Type: "chat.event"}
+	core.Outbox <- wscore.Frame{Kind: "chat.event"}
 
 	sub := sm.SubscribeConversationStream("conv-shed", 0, "")
 	forwarderDone := make(chan struct{})
@@ -59,9 +62,9 @@ func TestForwardConversationEventsShedsSubscriptionOnQueueFull(t *testing.T) {
 	})
 
 	select {
-	case env := <-c.ctrlOutbox:
-		if env.Type != "chat.subscription_reset" {
-			t.Fatalf("control envelope type = %q, want chat.subscription_reset", env.Type)
+	case frame := <-core.CtrlOutbox:
+		if frame.Kind != "chat.subscription_reset" {
+			t.Fatalf("control frame kind = %q, want chat.subscription_reset", frame.Kind)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for chat.subscription_reset on the control queue")

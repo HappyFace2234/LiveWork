@@ -4,41 +4,9 @@ import (
 	"testing"
 
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
+	"github.com/liveagent/agent-gateway/internal/protocol/shared"
 	"github.com/liveagent/agent-gateway/internal/session"
 )
-
-func TestWebsocketTerminalInterestTrackerFiltersOutputBySession(t *testing.T) {
-	t.Parallel()
-
-	tracker := newWebsocketTerminalInterestTracker()
-	outputEvent := &gatewayv1.TerminalEvent{
-		Kind:           "output",
-		SessionId:      "session-1",
-		ProjectPathKey: "project-1",
-	}
-	metadataEvent := &gatewayv1.TerminalEvent{
-		Kind:           "created",
-		SessionId:      "session-1",
-		ProjectPathKey: "project-1",
-	}
-
-	if tracker.shouldForward(outputEvent) {
-		t.Fatal("output should not forward before a session is attached")
-	}
-	if !tracker.shouldForward(metadataEvent) {
-		t.Fatal("metadata should forward so project/session lists stay fresh")
-	}
-
-	tracker.rememberSession("session-1", "project-1")
-	if !tracker.shouldForward(outputEvent) {
-		t.Fatal("output should forward after attaching the session")
-	}
-
-	tracker.forget("session-1", "project-1")
-	if tracker.shouldForward(outputEvent) {
-		t.Fatal("output should stop forwarding after detaching the session")
-	}
-}
 
 func TestWebsocketTerminalPermissionsSeparateLocalAndSshSessions(t *testing.T) {
 	t.Parallel()
@@ -103,7 +71,7 @@ func TestWebsocketTerminalEventForwardingAllowsSshOnlyStatusEvents(t *testing.T)
 	manager.ApplySettingsJSON(`{"remote":{"enableWebTerminal":false,"enableWebSshTerminal":true}}`)
 	conn := &websocketConnection{
 		sm:               manager,
-		terminalInterest: newWebsocketTerminalInterestTracker(),
+		terminalInterest: shared.NewTerminalInterestTracker(),
 	}
 
 	if !conn.shouldForwardTerminalEvent(&gatewayv1.TerminalEvent{
