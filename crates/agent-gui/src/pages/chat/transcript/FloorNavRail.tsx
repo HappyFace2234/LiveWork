@@ -49,23 +49,25 @@ export function FloorNavRail(props: {
   const [expanded, setExpanded] = useState(false);
   const collapseTimerRef = useRef<number | null>(null);
   const panelScrollRef = useRef<HTMLDivElement | null>(null);
-  const navRef = useRef<HTMLElement | null>(null);
+  // nav 元素走 callback ref → state（与 ChatTranscript 绑定 scrollViewport 同一
+  // 模式）：楼层 <2 时 rail 渲染为 null，nav 在组件已挂载后才出现/消失，一次性
+  // 挂载 effect 会错过它——按元素身份重跑，观察器才始终挂在活着的节点上。
+  const [navEl, setNavEl] = useState<HTMLElement | null>(null);
 
   // 收起态标记数随聊天区可用高度自适应：矮视口（小窗口/高输入框）少放几根，
   // 保证最新楼层的标记不被裁掉。
   const [markerBudget, setMarkerBudget] = useState(MAX_COLLAPSED_MARKERS);
   useLayoutEffect(() => {
-    const nav = navRef.current;
-    if (!nav || typeof ResizeObserver === "undefined") return;
+    if (!navEl || typeof ResizeObserver === "undefined") return;
     const update = () => {
-      const budget = Math.floor((nav.clientHeight - 24) / MARKER_SLOT_PX);
+      const budget = Math.floor((navEl.clientHeight - 24) / MARKER_SLOT_PX);
       setMarkerBudget(Math.max(MIN_COLLAPSED_MARKERS, Math.min(MAX_COLLAPSED_MARKERS, budget)));
     };
     update();
     const observer = new ResizeObserver(update);
-    observer.observe(nav);
+    observer.observe(navEl);
     return () => observer.disconnect();
-  }, []);
+  }, [navEl]);
 
   // 展开时把当前楼层滚到面板中间，楼层很多时不必从头找。
   useLayoutEffect(() => {
@@ -169,7 +171,7 @@ export function FloorNavRail(props: {
 
   return (
     <nav
-      ref={navRef}
+      ref={setNavEl}
       aria-label={railLabel}
       className="pointer-events-none absolute right-2 top-2 z-10 flex items-center"
       style={{ bottom: Math.ceil(bottomReservePx) + 8 }}
