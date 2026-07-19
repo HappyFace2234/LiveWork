@@ -1,4 +1,7 @@
-package server
+// Package chatcmd 承载网关侧 chat 命令编排（请求体归一化、运行时探活、命令投递与启动看门狗、
+// proto 信封构造）；v1/v2 协议层共用（自 internal/server/chat_commands.go 平移，行为不变），
+// 协议层只做载荷编解码，编排逻辑一律收敛于此。
+package chatcmd
 
 import (
 	"bytes"
@@ -6,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -17,7 +20,8 @@ import (
 	"github.com/liveagent/agent-gateway/internal/session"
 )
 
-type chatCommandMessageRef struct {
+// MessageRef 是 chat.edit_resend 引用的既有消息定位（JSON 线格式与 v1 一致）。
+type MessageRef struct {
 	SegmentIndex int    `json:"segment_index"`
 	MessageIndex int    `json:"message_index"`
 	SegmentID    string `json:"segment_id"`
@@ -27,15 +31,18 @@ type chatCommandMessageRef struct {
 }
 
 const (
-	chatRuntimeWakeRequestPrefix = "chat-runtime-wake-"
-	chatRuntimeProbeReuseWindow  = 2 * time.Second
+	// runtimeWakeRequestPrefix 是探活请求 id 的约定前缀；桌面端识别到它会先唤醒 Chat WebView 运行时。
+	runtimeWakeRequestPrefix = "chat-runtime-wake-"
+	runtimeProbeReuseWindow  = 2 * time.Second
 )
 
-func newChatTraceID() string {
+// NewTraceID 生成 chat 命令链路的追踪 id。
+func NewTraceID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }
 
-func logChatCommandSpan(
+// LogCommandSpan 记录 chat 命令生命周期中的一个阶段（结构化日志）。
+func LogCommandSpan(
 	traceID string,
 	span string,
 	runID string,
@@ -43,24 +50,24 @@ func logChatCommandSpan(
 	clientRequestID string,
 	commandType string,
 ) {
-	log.Printf(
-		"chat_command_span span=%s trace_id=%s run_id=%q conversation_id=%q client_request_id=%q command_type=%q",
-		strings.TrimSpace(span),
-		strings.TrimSpace(traceID),
-		strings.TrimSpace(runID),
-		strings.TrimSpace(conversationID),
-		strings.TrimSpace(clientRequestID),
-		strings.TrimSpace(commandType),
+	slog.Info("chat_command_span",
+		"span", strings.TrimSpace(span),
+		"trace_id", strings.TrimSpace(traceID),
+		"run_id", strings.TrimSpace(runID),
+		"conversation_id", strings.TrimSpace(conversationID),
+		"client_request_id", strings.TrimSpace(clientRequestID),
+		"command_type", strings.TrimSpace(commandType),
 	)
 }
 
-func normalizeChatRequestBody(body *handler.ChatRequestBody) error {
+// NormalizeRequestBody 归一化并校验 chat 请求体（trim、默认值、必填项）。
+func NormalizeRequestBody(body *handler.ChatRequestBody) error {
 	body.Message = strings.TrimSpace(body.Message)
 	body.ConversationID = strings.TrimSpace(body.ConversationID)
 	body.ClientRequestID = strings.TrimSpace(body.ClientRequestID)
 	body.ExecutionMode = handler.NormalizeExecutionMode(body.ExecutionMode)
 	body.Workdir = handler.NormalizeWorkdir(body.Workdir)
-	body.QueuePolicy = normalizeChatQueuePolicy(body.QueuePolicy)
+	body.QueuePolicy = normalizeQueuePolicy(body.QueuePolicy)
 	body.SelectedSystemTools = handler.NormalizeSelectedSystemTools(body.SelectedSystemTools)
 	body.UploadedFiles = handler.NormalizeChatUploadedFiles(body.UploadedFiles)
 	body.RuntimeControls = handler.NormalizeChatRuntimeControls(body.RuntimeControls)
@@ -78,7 +85,7 @@ func normalizeChatRequestBody(body *handler.ChatRequestBody) error {
 	return nil
 }
 
-func normalizeChatQueuePolicy(value string) string {
+func normalizeQueuePolicy(value string) string {
 	switch strings.TrimSpace(value) {
 	case "append", "interrupt":
 		return strings.TrimSpace(value)
@@ -87,23 +94,22 @@ func normalizeChatQueuePolicy(value string) string {
 	}
 }
 
-// dispatchAcceptedChatCommand delivers the accepted command to the agent and
-// arms the startup watchdog. cleanupWatch closes the caller's command-update
-// watch once the command has either settled or been failed.
-func dispatchAcceptedChatCommand(
+// DispatchAcceptedCommand 把已接受的命令投递给桌面端并布防启动看门狗；
+// cleanupWatch 在命令落定或判失败后关闭调用方的命令更新观察流。
+func DispatchAcceptedCommand(
 	parent context.Context,
 	cfg *config.Config,
 	sm *session.Manager,
 	cleanupWatch func(),
 	start session.ChatCommandStart,
 	body handler.ChatRequestBody,
-	baseMessageRef *chatCommandMessageRef,
+	baseMessageRef *MessageRef,
 	traceID string,
 ) {
 	if cleanupWatch != nil {
 		defer cleanupWatch()
 	}
-	timeout := chatDeliveryTimeout(cfg)
+	timeout := DeliveryTimeout(cfg)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
@@ -111,7 +117,7 @@ func dispatchAcceptedChatCommand(
 	if baseMessageRef != nil {
 		commandType = "chat.edit_resend"
 	}
-	if err := sm.SendToAgentContext(ctx, buildChatCommandEnvelope(start.RunID, commandType, body, baseMessageRef)); err != nil {
+	if err := sm.SendToAgentContext(ctx, buildCommandEnvelope(start.RunID, commandType, body, baseMessageRef)); err != nil {
 		message := "chat command failed"
 		if err != nil && strings.TrimSpace(err.Error()) != "" {
 			message = strings.TrimSpace(err.Error())
@@ -119,15 +125,13 @@ func dispatchAcceptedChatCommand(
 		sm.FailChatCommand(start.RunID, "desktop_runtime_unavailable", message)
 		return
 	}
-	logChatCommandSpan(traceID, "command_delivered", start.RunID, start.ConversationID, body.ClientRequestID, commandType)
-	watchAcceptedChatCommandStartup(parent, cfg, sm, start.RunID)
+	LogCommandSpan(traceID, "command_delivered", start.RunID, start.ConversationID, body.ClientRequestID, commandType)
+	WatchAcceptedCommandStartup(parent, cfg, sm, start.RunID)
 }
 
-// probeChatRuntime verifies that the current desktop AgentConnect stream can
-// complete a real round trip. The special request-id prefix is also the native
-// desktop's signal to nudge the Chat WebView runtime before a command is
-// accepted.
-func probeChatRuntime(
+// ProbeRuntime 验证桌面端连接可完成真实往返；探活请求 id 的特殊前缀同时是唤醒
+// Chat WebView 运行时的信号。
+func ProbeRuntime(
 	ctx context.Context,
 	sm *session.Manager,
 ) error {
@@ -138,8 +142,8 @@ func probeChatRuntime(
 	if !online {
 		return session.ErrAgentOffline
 	}
-	requestID := chatRuntimeWakeRequestPrefix + uuid.NewString()
-	response, err := awaitAgentUnaryResponse(ctx, sm, requestID, &gatewayv1.GatewayEnvelope{
+	requestID := runtimeWakeRequestPrefix + uuid.NewString()
+	response, err := sm.AwaitUnaryResponse(ctx, requestID, &gatewayv1.GatewayEnvelope{
 		RequestId: requestID,
 		Timestamp: time.Now().Unix(),
 		Payload: &gatewayv1.GatewayEnvelope_Ping{
@@ -158,17 +162,16 @@ func probeChatRuntime(
 	return nil
 }
 
-func probeChatRuntimeForCommand(ctx context.Context, sm *session.Manager) error {
-	if sm != nil && sm.ChatRuntimeProbeFresh(chatRuntimeProbeReuseWindow) {
+// ProbeRuntimeForCommand 在近期已有成功探活时直接复用结果。
+func ProbeRuntimeForCommand(ctx context.Context, sm *session.Manager) error {
+	if sm != nil && sm.ChatRuntimeProbeFresh(runtimeProbeReuseWindow) {
 		return nil
 	}
-	return probeChatRuntime(ctx, sm)
+	return ProbeRuntime(ctx, sm)
 }
 
-// watchAcceptedChatCommandStartup fails a command whose run never settled
-// (started, finished, or parked in the desktop prompt queue) within the
-// configured startup window.
-func watchAcceptedChatCommandStartup(
+// WatchAcceptedCommandStartup 对启动窗口内未落定（开始、结束或进入桌面提示队列）的命令判失败。
+func WatchAcceptedCommandStartup(
 	parent context.Context,
 	cfg *config.Config,
 	sm *session.Manager,
@@ -177,13 +180,13 @@ func watchAcceptedChatCommandStartup(
 	if sm == nil || strings.TrimSpace(runID) == "" {
 		return
 	}
-	if !waitChatCommandWatchdog(parent, chatStartTimeout(cfg)) {
+	if !waitCommandWatchdog(parent, StartTimeout(cfg)) {
 		return
 	}
 	if sm.ChatCommandSettled(runID) {
 		return
 	}
-	if !waitChatCommandWatchdog(parent, chatRenderStartTimeout(cfg)) {
+	if !waitCommandWatchdog(parent, RenderStartTimeout(cfg)) {
 		return
 	}
 	if sm.ChatCommandSettled(runID) {
@@ -193,7 +196,7 @@ func watchAcceptedChatCommandStartup(
 		"The desktop app did not start the remote chat request. Please retry.")
 }
 
-func waitChatCommandWatchdog(ctx context.Context, timeout time.Duration) bool {
+func waitCommandWatchdog(ctx context.Context, timeout time.Duration) bool {
 	if timeout <= 0 {
 		return true
 	}
@@ -207,37 +210,41 @@ func waitChatCommandWatchdog(ctx context.Context, timeout time.Duration) bool {
 	}
 }
 
-func chatStartTimeout(cfg *config.Config) time.Duration {
+// StartTimeout / RenderStartTimeout / PrepareTimeout / DeliveryTimeout 返回各阶段超时
+// （未配置时取保守默认值）。
+func StartTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ChatStartTimeout > 0 {
 		return cfg.ChatStartTimeout
 	}
 	return 5 * time.Second
 }
 
-func chatRenderStartTimeout(cfg *config.Config) time.Duration {
+func RenderStartTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ChatRenderStartTimeout > 0 {
 		return cfg.ChatRenderStartTimeout
 	}
 	return 10 * time.Second
 }
 
-func chatPrepareTimeout(cfg *config.Config) time.Duration {
+func PrepareTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ChatPrepareTimeout > 0 {
 		return cfg.ChatPrepareTimeout
 	}
 	return 2 * time.Second
 }
 
-func chatDeliveryTimeout(cfg *config.Config) time.Duration {
+func DeliveryTimeout(cfg *config.Config) time.Duration {
 	if cfg != nil && cfg.ChatDeliveryTimeout > 0 {
 		return cfg.ChatDeliveryTimeout
 	}
 	return 5 * time.Second
 }
 
-func buildAcceptedChatCommandPayloads(
+// BuildAcceptedCommandPayloads 构造命令被接受时立即写入会话流的事件载荷
+// （edit_resend 先补一条 rebase 事件）。
+func BuildAcceptedCommandPayloads(
 	body handler.ChatRequestBody,
-	baseMessageRef *chatCommandMessageRef,
+	baseMessageRef *MessageRef,
 ) []map[string]any {
 	payloads := make([]map[string]any, 0, 2)
 	if baseMessageRef != nil {
@@ -253,7 +260,7 @@ func buildAcceptedChatCommandPayloads(
 
 func buildUserMessageAppendedPayload(
 	body handler.ChatRequestBody,
-	baseMessageRef *chatCommandMessageRef,
+	baseMessageRef *MessageRef,
 ) map[string]any {
 	payload := map[string]any{
 		"type":                  "user_message",
@@ -272,11 +279,11 @@ func buildUserMessageAppendedPayload(
 	return payload
 }
 
-func buildChatCommandEnvelope(
+func buildCommandEnvelope(
 	requestID string,
 	commandType string,
 	body handler.ChatRequestBody,
-	baseMessageRef *chatCommandMessageRef,
+	baseMessageRef *MessageRef,
 ) *gatewayv1.GatewayEnvelope {
 	return &gatewayv1.GatewayEnvelope{
 		RequestId: strings.TrimSpace(requestID),
@@ -284,14 +291,15 @@ func buildChatCommandEnvelope(
 		Payload: &gatewayv1.GatewayEnvelope_ChatCommand{
 			ChatCommand: &gatewayv1.ChatCommandRequest{
 				Type:           strings.TrimSpace(commandType),
-				Request:        buildProtoChatRequest(body),
-				BaseMessageRef: buildProtoChatMessageRef(baseMessageRef),
+				Request:        buildProtoRequest(body),
+				BaseMessageRef: BuildProtoMessageRef(baseMessageRef),
 			},
 		},
 	}
 }
 
-func buildChatCancelCommandPayload(conversationID string) *gatewayv1.GatewayEnvelope_ChatCommand {
+// BuildCancelCommandPayload 构造 chat.cancel 的 GatewayEnvelope 载荷臂。
+func BuildCancelCommandPayload(conversationID string) *gatewayv1.GatewayEnvelope_ChatCommand {
 	return &gatewayv1.GatewayEnvelope_ChatCommand{
 		ChatCommand: &gatewayv1.ChatCommandRequest{
 			Type: "chat.cancel",
@@ -302,7 +310,7 @@ func buildChatCancelCommandPayload(conversationID string) *gatewayv1.GatewayEnve
 	}
 }
 
-func buildProtoChatRequest(body handler.ChatRequestBody) *gatewayv1.ChatRequest {
+func buildProtoRequest(body handler.ChatRequestBody) *gatewayv1.ChatRequest {
 	return &gatewayv1.ChatRequest{
 		ConversationId:      body.ConversationID,
 		ClientRequestId:     body.ClientRequestID,
@@ -317,7 +325,8 @@ func buildProtoChatRequest(body handler.ChatRequestBody) *gatewayv1.ChatRequest 
 	}
 }
 
-func buildProtoChatMessageRef(ref *chatCommandMessageRef) *gatewayv1.ChatMessageRef {
+// BuildProtoMessageRef 把 MessageRef 转为 proto 表示（nil 安全）。
+func BuildProtoMessageRef(ref *MessageRef) *gatewayv1.ChatMessageRef {
 	if ref == nil {
 		return nil
 	}
@@ -331,7 +340,66 @@ func buildProtoChatMessageRef(ref *chatCommandMessageRef) *gatewayv1.ChatMessage
 	}
 }
 
-func validateChatMessageRef(ref *chatCommandMessageRef) error {
+// RequestBodyFromProto 把 v2 直带的 proto ChatRequest 还原为编排层请求体
+// （buildProtoRequest 的逆向；调用方随后统一走 NormalizeRequestBody）。
+func RequestBodyFromProto(req *gatewayv1.ChatRequest) handler.ChatRequestBody {
+	if req == nil {
+		return handler.ChatRequestBody{}
+	}
+	body := handler.ChatRequestBody{
+		ConversationID:      req.GetConversationId(),
+		ClientRequestID:     req.GetClientRequestId(),
+		Message:             req.GetMessage(),
+		ExecutionMode:       req.GetExecutionMode(),
+		Workdir:             req.GetWorkdir(),
+		SelectedSystemTools: req.GetSelectedSystemTools(),
+		QueuePolicy:         req.GetQueuePolicy(),
+	}
+	if selected := req.GetSelectedModel(); selected != nil {
+		body.SelectedModel = &handler.ChatSelectedModelBody{
+			CustomProviderID: selected.GetCustomProviderId(),
+			Model:            selected.GetModel(),
+			ProviderType:     selected.GetProviderType(),
+		}
+	}
+	if controls := req.GetRuntimeControls(); controls != nil {
+		thinking := controls.GetThinkingEnabled()
+		webSearch := controls.GetNativeWebSearchEnabled()
+		body.RuntimeControls = &handler.ChatRuntimeControlsBody{
+			ThinkingEnabled:        &thinking,
+			NativeWebSearchEnabled: &webSearch,
+			Reasoning:              controls.GetReasoning(),
+		}
+	}
+	for _, file := range req.GetUploadedFiles() {
+		body.UploadedFiles = append(body.UploadedFiles, handler.ChatUploadedFileBody{
+			RelativePath: file.GetRelativePath(),
+			AbsolutePath: file.GetAbsolutePath(),
+			FileName:     file.GetFileName(),
+			Kind:         file.GetKind(),
+			SizeBytes:    file.GetSizeBytes(),
+		})
+	}
+	return body
+}
+
+// MessageRefFromProto 把 proto 消息引用还原为编排层表示（nil 安全）。
+func MessageRefFromProto(ref *gatewayv1.ChatMessageRef) *MessageRef {
+	if ref == nil {
+		return nil
+	}
+	return &MessageRef{
+		SegmentIndex: int(ref.GetSegmentIndex()),
+		MessageIndex: int(ref.GetMessageIndex()),
+		SegmentID:    ref.GetSegmentId(),
+		MessageID:    ref.GetMessageId(),
+		Role:         ref.GetRole(),
+		ContentHash:  ref.GetContentHash(),
+	}
+}
+
+// ValidateMessageRef 校验并归一化消息引用（原地 trim）。
+func ValidateMessageRef(ref *MessageRef) error {
 	if ref == nil {
 		return nil
 	}
@@ -351,13 +419,15 @@ func validateChatMessageRef(ref *chatCommandMessageRef) error {
 	return nil
 }
 
-func decodeChatCommandPayload(raw json.RawMessage) (string, handler.ChatRequestBody, *chatCommandMessageRef, error) {
+// DecodeCommandPayload 解码 v1 JSON 线格式的 chat.command 载荷（{type, payload:{...}}）；
+// v2 直带 proto ChatCommandRequest，不经此路。
+func DecodeCommandPayload(raw json.RawMessage) (string, handler.ChatRequestBody, *MessageRef, error) {
 	type commandEnvelope struct {
 		Type    string          `json:"type"`
 		Payload json.RawMessage `json:"payload"`
 	}
 	type commandPayload struct {
-		BaseMessageRef *chatCommandMessageRef `json:"base_message_ref,omitempty"`
+		BaseMessageRef *MessageRef `json:"base_message_ref,omitempty"`
 		handler.ChatRequestBody
 	}
 

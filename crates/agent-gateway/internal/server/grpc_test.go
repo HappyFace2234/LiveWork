@@ -176,21 +176,18 @@ func TestAgentConnectDispatchesCorrelatedPong(t *testing.T) {
 	}
 
 	const requestID = "chat-runtime-wake-correlated"
-	responses, done, cleanup, err := sm.RegisterStream(requestID)
+	// RegisterStreamAndSendContext 在 gRPC 泵 Ack 送达后返回；服务端 AgentConnect 泵已在运行，可内联调用。
+	responses, done, cleanup, err := sm.RegisterStreamAndSendContext(ctx, requestID, &gatewayv1.GatewayEnvelope{
+		RequestId: requestID,
+		Timestamp: time.Now().Unix(),
+		Payload: &gatewayv1.GatewayEnvelope_Ping{
+			Ping: &gatewayv1.PingRequest{Timestamp: time.Now().Unix()},
+		},
+	})
 	if err != nil {
 		t.Fatalf("register correlated response stream: %v", err)
 	}
 	defer cleanup()
-	sendResult := make(chan error, 1)
-	go func() {
-		sendResult <- sm.SendToAgentContext(ctx, &gatewayv1.GatewayEnvelope{
-			RequestId: requestID,
-			Timestamp: time.Now().Unix(),
-			Payload: &gatewayv1.GatewayEnvelope_Ping{
-				Ping: &gatewayv1.PingRequest{Timestamp: time.Now().Unix()},
-			},
-		})
-	}()
 
 	probe, err := stream.Recv()
 	if err != nil {
@@ -218,13 +215,5 @@ func TestAgentConnectDispatchesCorrelatedPong(t *testing.T) {
 		t.Fatal("correlated response stream closed before Pong dispatch")
 	case <-ctx.Done():
 		t.Fatalf("timed out waiting for correlated Pong: %v", ctx.Err())
-	}
-	select {
-	case err := <-sendResult:
-		if err != nil {
-			t.Fatalf("send correlated probe: %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatalf("timed out waiting for probe delivery ack: %v", ctx.Err())
 	}
 }

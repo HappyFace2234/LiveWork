@@ -37,28 +37,6 @@ func receiveNoTerminalEnvelope(t *testing.T, _ *websocket.Conn) {
 	time.Sleep(150 * time.Millisecond)
 }
 
-func assertNoTerminalEnvelopeAtEnd(t *testing.T, conn *websocket.Conn) {
-	t.Helper()
-	for {
-		if err := conn.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
-			t.Fatalf("set websocket short deadline: %v", err)
-		}
-		var env wsEnvelope
-		err := conn.ReadJSON(&env)
-		if err == nil {
-			if env.Type == "tunnel.state" {
-				continue
-			}
-			t.Fatalf("unexpected websocket envelope = %#v", env)
-		}
-		var netErr net.Error
-		if !errors.As(err, &netErr) || !netErr.Timeout() {
-			t.Fatalf("receive websocket envelope returned %v, want timeout", err)
-		}
-		return
-	}
-}
-
 func assertTerminalEventKind(t *testing.T, env wsEnvelope, wantKind string) {
 	t.Helper()
 	if env.Type != "terminal.event" {

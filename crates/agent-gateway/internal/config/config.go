@@ -28,7 +28,11 @@ type Config struct {
 	WebSocketWriteQueueSize  int
 	GRPCMaxMessageBytes      int
 	RelayBufferSeconds       int
-	CommandQueueTimeout      time.Duration
+
+	// CommandQueueTimeout is accepted but unused.
+	//
+	// Deprecated: 离线命令队列（生产不可达路径）已随死代码清理移除；保留本 flag 仅为不破坏既有启动脚本，下个版本删除。
+	CommandQueueTimeout time.Duration
 }
 
 func Load() *Config {
@@ -51,7 +55,7 @@ func Load() *Config {
 	flag.IntVar(&cfg.WebSocketWriteQueueSize, "websocket-write-queue-size", getenvInt("LIVEAGENT_GATEWAY_WS_WRITE_QUEUE_SIZE", 512), "write queue buffer size for browser WebSocket connections")
 	flag.IntVar(&cfg.GRPCMaxMessageBytes, "grpc-max-message-bytes", getenvInt("LIVEAGENT_GATEWAY_GRPC_MAX_MESSAGE_BYTES", DefaultGRPCMaxMessageBytes), "maximum gRPC message size in bytes")
 	flag.IntVar(&cfg.RelayBufferSeconds, "relay-buffer-seconds", getenvInt("LIVEAGENT_GATEWAY_RELAY_BUFFER_SECONDS", 30), "seconds of chat events to buffer for brief reconnections")
-	flag.DurationVar(&cfg.CommandQueueTimeout, "command-queue-timeout", getenvDuration("LIVEAGENT_GATEWAY_COMMAND_QUEUE_TIMEOUT", 30*time.Second), "timeout for queuing commands when agent is temporarily offline")
+	flag.DurationVar(&cfg.CommandQueueTimeout, "command-queue-timeout", getenvDuration("LIVEAGENT_GATEWAY_COMMAND_QUEUE_TIMEOUT", 30*time.Second), "deprecated, no-op (kept for startup-script compatibility)")
 	flag.Parse()
 
 	cfg.Token = strings.TrimSpace(cfg.Token)

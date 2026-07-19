@@ -4,16 +4,22 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/liveagent/agent-gateway/internal/config"
+	"github.com/liveagent/agent-gateway/internal/observability"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/session"
 )
 
+// GRPCServer implements the v1 AgentGateway gRPC service for the desktop
+// agent link.
+//
+// Deprecated: v1 gRPC 链路已被 v2 /ws/v2/agent（WebSocket+Protobuf，internal/protocol/pbws）取代，仅为旧版桌面客户端保留；流量归零后连同 gRPC 监听与拦截器一并删除。
 type GRPCServer struct {
 	gatewayv1.UnimplementedAgentGatewayServer
 
@@ -21,6 +27,9 @@ type GRPCServer struct {
 	sm  *session.Manager
 }
 
+// NewGRPCServer constructs the v1 gRPC service implementation.
+//
+// Deprecated: 见 GRPCServer。
 func NewGRPCServer(cfg *config.Config, sm *session.Manager) *GRPCServer {
 	return &GRPCServer{
 		cfg: cfg,
@@ -48,6 +57,12 @@ func (s *GRPCServer) Authenticate(_ context.Context, req *gatewayv1.AuthRequest)
 }
 
 func (s *GRPCServer) AgentConnect(stream gatewayv1.AgentGateway_AgentConnectServer) error {
+	// v1 使用打点：gRPC agent 链路已被 /ws/v2/agent 取代，观察归零后删除。
+	observability.Usage.V1GRPCAgentConnectsTotal.Add(1)
+	observability.Usage.V1GRPCAgentActive.Add(1)
+	defer observability.Usage.V1GRPCAgentActive.Add(-1)
+	slog.Warn("deprecated v1 gRPC agent stream established")
+
 	authSnapshot := s.sm.LatestAuthSnapshot()
 	sess := session.NewAgentSession(authSnapshot)
 	toAgent := sess.Outbound()
@@ -149,6 +164,9 @@ func (s *GRPCServer) AgentConnect(stream gatewayv1.AgentGateway_AgentConnectServ
 }
 
 func (s *GRPCServer) AgentTerminalConnect(stream gatewayv1.AgentGateway_AgentTerminalConnectServer) error {
+	observability.Usage.V1GRPCTerminalConnectsTotal.Add(1)
+	slog.Warn("deprecated v1 gRPC terminal stream established")
+
 	toAgent := make(chan *gatewayv1.TerminalStreamFrame, 4096)
 	cleanup := s.sm.RegisterTerminalStreamToAgent(toAgent)
 	defer cleanup()

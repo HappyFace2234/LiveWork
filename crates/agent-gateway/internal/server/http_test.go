@@ -302,7 +302,6 @@ func TestPublicHistoryShareReturnsUnavailableWhenAgentOffline(t *testing.T) {
 	}
 }
 
-
 func TestOriginAllowedRequiresStrictOriginForPublicHosts(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://gateway.test:8080/api/chat/commands", nil)
 	req.Header.Set("Origin", "http://gateway.test:5173")
@@ -331,4 +330,3 @@ func TestOriginAllowedUsesForwardedProtoForSameOrigin(t *testing.T) {
 		t.Fatal("expected forwarded https origin to be allowed")
 	}
 }
-

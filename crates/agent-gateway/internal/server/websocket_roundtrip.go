@@ -1,3 +1,4 @@
+// Deprecated: v1 JSON 协议的处理器/载荷塑形，已被 v2 信封直通（internal/protocol/pbws）取代；仅为旧客户端保留，流量归零后整体删除。
 package server
 
 import (
@@ -19,37 +20,13 @@ func decodeWebSocketPayload(raw json.RawMessage, target any) error {
 	return decoder.Decode(target)
 }
 
-func waitForAgentEnvelope(
-	ctx context.Context,
-	ch <-chan *gatewayv1.AgentEnvelope,
-	done <-chan struct{},
-) (*gatewayv1.AgentEnvelope, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-done:
-		return nil, session.ErrAgentOffline
-	case env, ok := <-ch:
-		if !ok {
-			return nil, session.ErrAgentOffline
-		}
-		return env, nil
-	}
-}
-
 func awaitAgentUnaryResponse(
 	ctx context.Context,
 	sm *session.Manager,
 	requestID string,
 	envelope *gatewayv1.GatewayEnvelope,
 ) (*gatewayv1.AgentEnvelope, error) {
-	ch, done, cleanup, err := sm.RegisterStreamAndSendContext(ctx, requestID, envelope)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	return waitForAgentEnvelope(ctx, ch, done)
+	return sm.AwaitUnaryResponse(ctx, requestID, envelope)
 }
 
 func websocketErrorMessage(err error) string {

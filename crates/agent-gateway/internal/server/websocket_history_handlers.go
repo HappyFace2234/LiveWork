@@ -1,3 +1,4 @@
+// Deprecated: v1 JSON 协议的处理器/载荷塑形，已被 v2 信封直通（internal/protocol/pbws）取代；仅为旧客户端保留，流量归零后整体删除。
 package server
 
 import (
@@ -5,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/liveagent/agent-gateway/internal/chatcmd"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
 
@@ -239,9 +241,9 @@ func (c *websocketConnection) handleHistoryGet(req websocketRequest) {
 
 func (c *websocketConnection) handleHistoryPrefix(req websocketRequest) {
 	type payload struct {
-		ConversationID string                 `json:"conversation_id"`
-		MaxMessages    int32                  `json:"max_messages"`
-		BaseMessageRef *chatCommandMessageRef `json:"base_message_ref"`
+		ConversationID string              `json:"conversation_id"`
+		MaxMessages    int32               `json:"max_messages"`
+		BaseMessageRef *chatcmd.MessageRef `json:"base_message_ref"`
 	}
 
 	var body payload
@@ -258,7 +260,7 @@ func (c *websocketConnection) handleHistoryPrefix(req websocketRequest) {
 		_ = c.writeError(req.ID, "base_message_ref is required")
 		return
 	}
-	if err := validateChatMessageRef(body.BaseMessageRef); err != nil {
+	if err := chatcmd.ValidateMessageRef(body.BaseMessageRef); err != nil {
 		_ = c.writeError(req.ID, err.Error())
 		return
 	}
@@ -270,7 +272,7 @@ func (c *websocketConnection) handleHistoryPrefix(req websocketRequest) {
 			HistoryPrefix: &gatewayv1.HistoryPrefixRequest{
 				ConversationId: conversationID,
 				MaxMessages:    body.MaxMessages,
-				BaseMessageRef: buildProtoChatMessageRef(body.BaseMessageRef),
+				BaseMessageRef: chatcmd.BuildProtoMessageRef(body.BaseMessageRef),
 			},
 		},
 	})
@@ -352,8 +354,8 @@ func (c *websocketConnection) handleHistoryRename(req websocketRequest) {
 
 func (c *websocketConnection) handleHistoryBranch(req websocketRequest) {
 	type payload struct {
-		ConversationID string                 `json:"conversation_id"`
-		BaseMessageRef *chatCommandMessageRef `json:"base_message_ref"`
+		ConversationID string              `json:"conversation_id"`
+		BaseMessageRef *chatcmd.MessageRef `json:"base_message_ref"`
 	}
 
 	var body payload
@@ -370,7 +372,7 @@ func (c *websocketConnection) handleHistoryBranch(req websocketRequest) {
 		_ = c.writeError(req.ID, "base_message_ref is required")
 		return
 	}
-	if err := validateChatMessageRef(body.BaseMessageRef); err != nil {
+	if err := chatcmd.ValidateMessageRef(body.BaseMessageRef); err != nil {
 		_ = c.writeError(req.ID, err.Error())
 		return
 	}
@@ -381,7 +383,7 @@ func (c *websocketConnection) handleHistoryBranch(req websocketRequest) {
 		Payload: &gatewayv1.GatewayEnvelope_HistoryBranch{
 			HistoryBranch: &gatewayv1.HistoryBranchRequest{
 				ConversationId: conversationID,
-				BaseMessageRef: buildProtoChatMessageRef(body.BaseMessageRef),
+				BaseMessageRef: chatcmd.BuildProtoMessageRef(body.BaseMessageRef),
 			},
 		},
 	})

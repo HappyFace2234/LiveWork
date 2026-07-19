@@ -17,6 +17,7 @@ import (
 	"github.com/liveagent/agent-gateway/internal/config"
 	"github.com/liveagent/agent-gateway/internal/handler"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
+	"github.com/liveagent/agent-gateway/internal/protocol/pbws"
 	"github.com/liveagent/agent-gateway/internal/session"
 )
 
@@ -33,6 +34,13 @@ func NewHTTPServer(cfg *config.Config, sm *session.Manager) http.Handler {
 		webSocketServer.ServeHTTP(w, r)
 	}))
 	rootMux.Handle("/ws/terminal", terminalWebSocketServer)
+
+	// v2 统一协议（WebSocket+Protobuf）三链路；v1 路由保留服务旧客户端。
+	v2 := pbws.NewServer(cfg, sm)
+	rootMux.Handle("/ws/v2", v2.BrowserHandler())
+	rootMux.Handle("/ws/v2/agent", v2.AgentHandler())
+	rootMux.Handle("/ws/v2/terminal", v2.TerminalHandler())
+
 	rootMux.HandleFunc("/t/", publicTunnelProxy(sm))
 	rootMux.HandleFunc("GET /image-proxy", handler.ImageProxy(cfg.RequestTimeout))
 	rootMux.HandleFunc("GET /api/public/history-shares/{token}", publicHistoryShare(cfg, sm))

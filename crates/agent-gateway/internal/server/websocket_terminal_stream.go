@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,7 +14,9 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/liveagent/agent-gateway/internal/auth"
 	"github.com/liveagent/agent-gateway/internal/config"
+	"github.com/liveagent/agent-gateway/internal/observability"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
+	"github.com/liveagent/agent-gateway/internal/protocol/shared"
 	"github.com/liveagent/agent-gateway/internal/session"
 )
 
@@ -67,6 +70,10 @@ type terminalStreamWSConnection struct {
 	streams  map[string]struct{}
 }
 
+// NewTerminalWebSocketServer serves the v1 custom binary terminal stream on
+// /ws/terminal.
+//
+// Deprecated: v1 自定义二进制终端流（[ver][kind][len][JSON 头][数据]）已被 v2 /ws/v2/terminal（proto TerminalStreamFrame 帧）取代，仅为旧客户端保留；流量归零后删除。
 func NewTerminalWebSocketServer(cfg *config.Config, sm *session.Manager) http.Handler {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -135,6 +142,8 @@ func (c *terminalStreamWSConnection) authenticate() bool {
 		_ = c.conn.WriteJSON(map[string]any{"type": "error", "error": "unauthorized"})
 		return false
 	}
+	observability.Usage.V1TerminalWSConnectionsTotal.Add(1)
+	slog.Warn("deprecated v1 terminal websocket connection established")
 	_ = c.conn.WriteJSON(map[string]any{"type": "ready"})
 	return true
 }
@@ -146,7 +155,7 @@ func (c *terminalStreamWSConnection) handleFrame(frame *gatewayv1.TerminalStream
 			frame.GetStreamId(),
 			frame.GetSessionId(),
 			frame.GetProjectPathKey(),
-			terminalPermissionError(kind),
+			shared.TerminalPermissionError(kind),
 		))
 		return
 	}

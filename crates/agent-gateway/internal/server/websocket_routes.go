@@ -1,7 +1,13 @@
 package server
 
+// websocketRequestHandler is a v1 JSON protocol request handler.
+//
+// Deprecated: v1 JSON 协议的分发机制，已被 v2 的 GatewayEnvelope 直通 + 白名单校验（internal/protocol/pbws/guard.go）取代。
 type websocketRequestHandler func(*websocketConnection, websocketRequest)
 
+// websocketRequestHandlers maps v1 op strings to handlers.
+//
+// Deprecated: 见 websocketRequestHandler；随 v1 一并删除。
 var websocketRequestHandlers = map[string]websocketRequestHandler{
 	"status.get": func(c *websocketConnection, req websocketRequest) {
 		_ = c.writeResponse(req.ID, c.sm.Status())

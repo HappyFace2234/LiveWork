@@ -5,27 +5,35 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"github.com/liveagent/agent-gateway/internal/auth"
 	"github.com/liveagent/agent-gateway/internal/config"
+	"github.com/liveagent/agent-gateway/internal/observability"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
+	"github.com/liveagent/agent-gateway/internal/protocol/shared"
 	"github.com/liveagent/agent-gateway/internal/session"
+	"github.com/liveagent/agent-gateway/internal/transport/wscore"
 )
 
+// websocketRequest is the inbound envelope of the v1 JSON protocol.
+//
+// Deprecated: v1 JSON 协议信封，请改用 v2（WebSocket+Protobuf，internal/protocol/pbws）；v1 仅为旧客户端保留，流量归零后整体删除。
 type websocketRequest struct {
 	ID      string          `json:"id"`
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// websocketEnvelope is the outbound envelope of the v1 JSON protocol.
+//
+// Deprecated: v1 JSON 协议信封，随 v1 一并移除（见 websocketRequest）。
 type websocketEnvelope struct {
 	ID      string `json:"id,omitempty"`
 	Type    string `json:"type"`
@@ -97,34 +105,25 @@ type websocketGitRequestPayload struct {
 }
 
 const (
-	websocketWriteQueueDefault   = 512
-	websocketControlQueueSize    = 64
-	websocketMaxWriteRetries     = 2
-	websocketRetryBackoff        = 100 * time.Millisecond
-	websocketHeartbeatGraceFloor = 5 * time.Second
+	websocketControlQueueSize = wscore.DefaultCtrlQueueSize
 )
 
+// websocketConnection is one browser connection speaking the v1 JSON
+// protocol.
+//
+// Deprecated: v1 JSON 协议实现，v2 对应实现为 internal/protocol/pbws.browserConn；v1 流量归零后整体删除。
 type websocketConnection struct {
 	cfg *config.Config
 	sm  *session.Manager
 
-	conn         *websocket.Conn
-	req          *http.Request
-	writeMu      sync.Mutex
-	writeTimeout time.Duration
-	outbox       chan websocketEnvelope
-	// ctrlOutbox carries keep-alive and recovery envelopes past a congested
-	// data queue so a slow reader can be shed per-stream instead of losing
-	// the whole connection.
-	ctrlOutbox    chan websocketEnvelope
-	droppedFrames atomic.Int64
+	conn *websocket.Conn
+	req  *http.Request
 
-	closeOnce  sync.Once
-	done       chan struct{}
+	// core 承载传输运行时（写泵/双队列/掉帧/心跳/空闲驱逐），v1 层只做 JSON 信封编解码与分发；done 是 core.Done() 的只读别名，供各转发器 select。
+	core *wscore.Conn
+	done <-chan struct{}
+
 	authorized bool
-
-	lastInboundAt time.Time
-	lastInboundMu sync.Mutex
 
 	historyEvents             <-chan *gatewayv1.HistorySyncEvent
 	historyEventsCleanup      func()
@@ -146,9 +145,7 @@ type websocketConnection struct {
 	managedProcessEvents        <-chan *gatewayv1.ManagedProcessSnapshot
 	managedProcessEventsCleanup func()
 
-	heartbeatOnce sync.Once
-
-	terminalInterest *websocketTerminalInterestTracker
+	terminalInterest *shared.TerminalInterestTracker
 
 	chatStreamsMu sync.Mutex
 	chatStreams   map[string]*chatStreamSubscription
@@ -161,6 +158,9 @@ const maxHistoryListLimit = 200
 const defaultHistoryListPage = 1
 const defaultHistoryListPageSize = 80
 
+// NewWebSocketServer serves the v1 JSON protocol on /ws.
+//
+// Deprecated: v1 JSON 协议入口，仅服务未升级的旧客户端（如未刷新的浏览器标签页）；新客户端一律走 /ws/v2（internal/protocol/pbws.Server）。
 func NewWebSocketServer(cfg *config.Config, sm *session.Manager) http.Handler {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
@@ -174,31 +174,37 @@ func NewWebSocketServer(cfg *config.Config, sm *session.Manager) http.Handler {
 		}
 		conn.SetReadLimit(webSocketReadLimit(cfg))
 
-		queueSize := websocketWriteQueueDefault
-		if cfg.WebSocketWriteQueueSize > 0 {
-			queueSize = cfg.WebSocketWriteQueueSize
-		}
 		state := &websocketConnection{
 			cfg:              cfg,
 			sm:               sm,
 			conn:             conn,
 			req:              r,
-			writeTimeout:     cfg.WebSocketWriteTimeout,
-			outbox:           make(chan websocketEnvelope, queueSize),
-			ctrlOutbox:       make(chan websocketEnvelope, websocketControlQueueSize),
-			done:             make(chan struct{}),
-			terminalInterest: newWebsocketTerminalInterestTracker(),
+			terminalInterest: shared.NewTerminalInterestTracker(),
 		}
+		state.core = wscore.NewConn(conn, wscore.Config{
+			WriteTimeout:    cfg.WebSocketWriteTimeout,
+			QueueSize:       cfg.WebSocketWriteQueueSize,
+			CtrlQueueSize:   websocketControlQueueSize,
+			HeartbeatPeriod: cfg.WebSocketHeartbeatPeriod,
+			HeartbeatGrace:  cfg.WebSocketHeartbeatGrace,
+			Remote:          r.RemoteAddr,
+			OnClose:         state.releaseSubscriptions,
+		})
+		state.done = state.core.Done()
 		// Protocol-level pongs are produced by the browser's network stack
 		// even while the page's JS is throttled or frozen in a hidden tab, so
 		// they are the liveness signal that must count as inbound activity.
 		conn.SetPongHandler(func(string) error {
-			state.touchInboundActivity()
+			state.core.TouchInboundActivity()
 			return nil
 		})
-		_ = conn.SetReadDeadline(time.Now().Add(state.idleTimeout()))
+		_ = conn.SetReadDeadline(time.Now().Add(state.core.IdleTimeout()))
 		defer state.close()
 		state.serve()
+		// authorized 只在读循环内写、serve 返回后同 goroutine 读，无竞争；计数与 handleAuth 的 Active+1 配对。
+		if state.authorized {
+			observability.Usage.V1WSConnectionsActive.Add(-1)
+		}
 	})
 }
 
@@ -221,7 +227,7 @@ func (c *websocketConnection) serve() {
 
 		// Any inbound frame proves the client is alive — heartbeat pongs are
 		// not the only liveness evidence.
-		c.touchInboundActivity()
+		c.core.TouchInboundActivity()
 
 		req.ID = strings.TrimSpace(req.ID)
 		req.Type = strings.TrimSpace(req.Type)
@@ -273,50 +279,49 @@ func (c *websocketConnection) serve() {
 }
 
 func (c *websocketConnection) close() {
-	c.closeOnce.Do(func() {
-		close(c.done)
-		if c.historyEventsCleanup != nil {
-			c.historyEventsCleanup()
-			c.historyEventsCleanup = nil
-		}
-		if c.settingsEventsCleanup != nil {
-			c.settingsEventsCleanup()
-			c.settingsEventsCleanup = nil
-		}
-		if c.terminalEventsCleanup != nil {
-			c.terminalEventsCleanup()
-			c.terminalEventsCleanup = nil
-		}
-		if c.sftpEventsCleanup != nil {
-			c.sftpEventsCleanup()
-			c.sftpEventsCleanup = nil
-		}
-		if c.chatQueueEventsCleanup != nil {
-			c.chatQueueEventsCleanup()
-			c.chatQueueEventsCleanup = nil
-		}
-		if c.chatActivityEventsCleanup != nil {
-			c.chatActivityEventsCleanup()
-			c.chatActivityEventsCleanup = nil
-		}
-		if c.tunnelStateEventsCleanup != nil {
-			c.tunnelStateEventsCleanup()
-			c.tunnelStateEventsCleanup = nil
-		}
-		if c.statusEventsCleanup != nil {
-			c.statusEventsCleanup()
-			c.statusEventsCleanup = nil
-		}
-		if c.managedProcessEventsCleanup != nil {
-			c.managedProcessEventsCleanup()
-			c.managedProcessEventsCleanup = nil
-		}
-		c.cleanupChatStreamSubscriptions()
-		c.cleanupWorkspaceSubscriptions()
-		if c.conn != nil {
-			_ = c.conn.Close()
-		}
-	})
+	c.core.Close()
+}
+
+// releaseSubscriptions 由 core 关闭时回调（恰好一次），释放本连接持有的全部 session 层订阅与 chat/workspace 流。
+func (c *websocketConnection) releaseSubscriptions() {
+	if c.historyEventsCleanup != nil {
+		c.historyEventsCleanup()
+		c.historyEventsCleanup = nil
+	}
+	if c.settingsEventsCleanup != nil {
+		c.settingsEventsCleanup()
+		c.settingsEventsCleanup = nil
+	}
+	if c.terminalEventsCleanup != nil {
+		c.terminalEventsCleanup()
+		c.terminalEventsCleanup = nil
+	}
+	if c.sftpEventsCleanup != nil {
+		c.sftpEventsCleanup()
+		c.sftpEventsCleanup = nil
+	}
+	if c.chatQueueEventsCleanup != nil {
+		c.chatQueueEventsCleanup()
+		c.chatQueueEventsCleanup = nil
+	}
+	if c.chatActivityEventsCleanup != nil {
+		c.chatActivityEventsCleanup()
+		c.chatActivityEventsCleanup = nil
+	}
+	if c.tunnelStateEventsCleanup != nil {
+		c.tunnelStateEventsCleanup()
+		c.tunnelStateEventsCleanup = nil
+	}
+	if c.statusEventsCleanup != nil {
+		c.statusEventsCleanup()
+		c.statusEventsCleanup = nil
+	}
+	if c.managedProcessEventsCleanup != nil {
+		c.managedProcessEventsCleanup()
+		c.managedProcessEventsCleanup = nil
+	}
+	c.cleanupChatStreamSubscriptions()
+	c.cleanupWorkspaceSubscriptions()
 }
 
 func (c *websocketConnection) handleAuth(req websocketRequest) {
@@ -334,10 +339,17 @@ func (c *websocketConnection) handleAuth(req websocketRequest) {
 	}
 
 	c.authorized = true
+	// v1 使用打点：观察弃用链路流量归零后即可在后续版本删除 v1。
+	observability.Usage.V1WSConnectionsTotal.Add(1)
+	observability.Usage.V1WSConnectionsActive.Add(1)
+	slog.Warn("deprecated v1 websocket connection established",
+		"remote", c.req.RemoteAddr,
+	)
+	c.core.SetAuthorized()
 	// The pre-auth deadline was deliberately left un-refreshed; re-arm it now
 	// so a slow-to-auth client does not die moments after succeeding.
-	c.touchInboundActivity()
-	go c.writeLoop()
+	c.core.TouchInboundActivity()
+	c.core.StartWriteLoop()
 	c.startHistorySyncForwarder()
 	c.startSettingsSyncForwarder()
 	c.startTerminalEventForwarder()
@@ -347,7 +359,7 @@ func (c *websocketConnection) handleAuth(req websocketRequest) {
 	c.startTunnelStateForwarder()
 	c.startManagedProcessStateForwarder()
 	c.startStatusEventForwarder()
-	c.startWebSocketHeartbeat()
+	c.core.StartHeartbeat(c.buildHeartbeatPing)
 	if err := c.writeResponse(req.ID, map[string]any{"ok": true}); err != nil {
 		c.close()
 		return
@@ -599,100 +611,31 @@ func (c *websocketConnection) replayTerminalSessionSnapshot() {
 	}
 }
 
-func (c *websocketConnection) rememberTerminalProject(projectPathKey string) {
-	c.terminalInterest.rememberProject(projectPathKey)
-}
-
-func (c *websocketConnection) rememberTerminalSession(sessionID string, projectPathKey string) {
-	c.terminalInterest.rememberSession(sessionID, projectPathKey)
-}
-
-func (c *websocketConnection) forgetTerminalInterest(sessionID string, projectPathKey string) {
-	c.terminalInterest.forget(sessionID, projectPathKey)
-}
-
 func (c *websocketConnection) shouldForwardTerminalEvent(event *gatewayv1.TerminalEvent) bool {
-	return c.terminalEventAllowed(event) && c.terminalInterest.shouldForward(event)
+	return c.terminalEventAllowed(event) && c.terminalInterest.ShouldForward(event)
 }
 
-func (c *websocketConnection) startWebSocketHeartbeat() {
-	c.heartbeatOnce.Do(func() {
-		period := c.cfg.WebSocketHeartbeatPeriod
-		if period <= 0 {
-			period = 15 * time.Second
-		}
-		go func() {
-			ticker := time.NewTicker(period)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-c.done:
-					return
-				case <-ticker.C:
-					c.lastInboundMu.Lock()
-					lastInbound := c.lastInboundAt
-					c.lastInboundMu.Unlock()
-					if time.Since(lastInbound) > c.idleTimeout() {
-						c.close()
-						return
-					}
-					// Protocol ping first: browsers answer it from the network
-					// process with no JS involvement, so a throttled or frozen
-					// tab keeps proving liveness. WriteControl is documented
-					// safe concurrently with the write loop.
-					deadline := time.Now().Add(c.controlWriteTimeout())
-					_ = c.conn.WriteControl(websocket.PingMessage, nil, deadline)
-					// The JSON ping stays for the page's benefit: it is the
-					// only inbound activity the client's JS can observe, and
-					// its stall heuristics depend on it. Best-effort — the
-					// idle check above is the sole eviction authority.
-					_ = c.writeEnvelope(websocketEnvelope{
-						Type: "ping",
-						Payload: map[string]any{
-							"timestamp": time.Now().Unix(),
-						},
-					})
-				}
-			}
-		}()
+// buildHeartbeatPing 为 wscore 心跳循环构造 v1 JSON ping 信封帧。
+func (c *websocketConnection) buildHeartbeatPing() (wscore.Frame, bool) {
+	data, err := json.Marshal(websocketEnvelope{
+		Type: "ping",
+		Payload: map[string]any{
+			"timestamp": time.Now().Unix(),
+		},
 	})
-}
-
-// touchInboundActivity records liveness for every inbound frame and pushes the
-// read deadline forward accordingly. Pre-auth the initial deadline stands
-// un-refreshed: whatever a client sends, it gets one idleTimeout window to
-// authenticate. (authorized is only written on the read loop, and both this
-// function's callers — the read loop and gorilla's pong handler — run there.)
-func (c *websocketConnection) touchInboundActivity() {
-	c.lastInboundMu.Lock()
-	c.lastInboundAt = time.Now()
-	c.lastInboundMu.Unlock()
-	if !c.authorized {
-		return
+	if err != nil {
+		return wscore.Frame{}, false
 	}
-	_ = c.conn.SetReadDeadline(time.Now().Add(c.idleTimeout()))
-}
-
-func (c *websocketConnection) idleTimeout() time.Duration {
-	period := c.cfg.WebSocketHeartbeatPeriod
-	if period <= 0 {
-		period = 15 * time.Second
-	}
-	grace := c.cfg.WebSocketHeartbeatGrace
-	if grace <= 0 {
-		grace = websocketHeartbeatGraceFloor
-	}
-	return period*3 + grace
-}
-
-func (c *websocketConnection) controlWriteTimeout() time.Duration {
-	if c.writeTimeout > 0 {
-		return c.writeTimeout
-	}
-	return 10 * time.Second
+	return wscore.Frame{
+		Class:       wscore.FramePing,
+		Kind:        "ping",
+		MessageType: websocket.TextMessage,
+		Data:        data,
+	}, true
 }
 
 func (c *websocketConnection) dispatch(req websocketRequest) {
+	observability.Usage.V1WSRequestsTotal.Add(1)
 	handler := websocketRequestHandlers[req.Type]
 	if handler == nil {
 		_ = c.writeError(req.ID, "unsupported request type")
@@ -717,25 +660,6 @@ func (c *websocketConnection) awaitAgentResponse(
 	}()
 
 	return awaitAgentUnaryResponse(ctx, c.sm, requestID, envelope)
-}
-
-func (c *websocketConnection) sendToAgent(envelope *gatewayv1.GatewayEnvelope) error {
-	timeout := c.cfg.WebSocketWriteTimeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	go func() {
-		select {
-		case <-c.done:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	return c.sm.SendToAgentContext(ctx, envelope)
 }
 
 func (c *websocketConnection) writeResponse(requestID string, payload any) error {
@@ -770,7 +694,8 @@ func (c *websocketConnection) writeEvent(eventType string, payload any) error {
 	})
 }
 
-var errWriteQueueFull = errors.New("write queue full")
+// errWriteQueueFull 是 wscore 掉帧错误的包内别名，保持既有 errors.Is 判定。
+var errWriteQueueFull = wscore.ErrWriteQueueFull
 
 // isControlEnvelopeType reports envelopes that must reach the client even
 // when the data queue is congested: keep-alive pings and the signals a client
@@ -784,167 +709,31 @@ func isControlEnvelopeType(envelopeType string) bool {
 	}
 }
 
-// writeEnvelope queues an envelope for delivery. Control envelopes ride a
-// small priority queue; shed-able event/stream data reports errWriteQueueFull
-// without dropping the whole link. Correlated unary responses are different:
-// silently losing one leaves the browser pending until its much later timeout,
-// so a persistently full data queue closes the socket and lets the client
-// reconnect/retry instead. Direct-write failures likewise terminate it.
+// classifyEnvelope 将 v1 信封映射为 wscore 帧类别（拥塞策略），逐字保持原 writeEnvelope 的路由语义。
+func classifyEnvelope(envelope websocketEnvelope) wscore.FrameClass {
+	switch {
+	case envelope.Type == "ping":
+		return wscore.FramePing
+	case envelope.priority || isControlEnvelopeType(envelope.Type):
+		return wscore.FrameControl
+	case envelope.Type == "response" && envelope.ID != "":
+		return wscore.FrameResponse
+	default:
+		return wscore.FrameData
+	}
+}
+
+// writeEnvelope 编码 v1 JSON 信封并交给共享写泵；拥塞策略（控制帧优先、数据掉帧、关联响应关连接）由帧类别声明、wscore 统一执行。
 func (c *websocketConnection) writeEnvelope(envelope websocketEnvelope) error {
-	if envelope.priority || isControlEnvelopeType(envelope.Type) {
-		return c.enqueueControlEnvelope(envelope)
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		return err
 	}
-	err := c.enqueueEnvelope(envelope)
-	if errors.Is(err, errWriteQueueFull) {
-		c.noteDroppedEnvelope(envelope.Type)
-		if envelope.Type == "response" && envelope.ID != "" {
-			c.close()
-		}
-	}
-	return err
-}
-
-// enqueueEnvelope waits up to writeTimeout for a slot when the outbox is
-// momentarily full (token bursts to a slow reader); only a persistent backlog
-// reports errWriteQueueFull. The fast path allocates nothing.
-func (c *websocketConnection) enqueueEnvelope(envelope websocketEnvelope) error {
-	select {
-	case <-c.done:
-		return errors.New("connection closed")
-	case c.outbox <- envelope:
-		return nil
-	default:
-	}
-
-	timer := time.NewTimer(c.controlWriteTimeout())
-	defer timer.Stop()
-	select {
-	case <-c.done:
-		return errors.New("connection closed")
-	case c.outbox <- envelope:
-		return nil
-	case <-timer.C:
-		return errWriteQueueFull
-	}
-}
-
-func (c *websocketConnection) enqueueControlEnvelope(envelope websocketEnvelope) error {
-	select {
-	case <-c.done:
-		return errors.New("connection closed")
-	case c.ctrlOutbox <- envelope:
-		return nil
-	default:
-	}
-
-	if envelope.Type == "ping" {
-		// Keep-alive pings are periodic; when the control queue is full the
-		// next tick supersedes this one.
-		c.noteDroppedEnvelope(envelope.Type)
-		return nil
-	}
-
-	timer := time.NewTimer(c.controlWriteTimeout())
-	defer timer.Stop()
-	select {
-	case <-c.done:
-		return errors.New("connection closed")
-	case c.ctrlOutbox <- envelope:
-		return nil
-	case <-timer.C:
-		c.noteDroppedEnvelope(envelope.Type)
-		return errWriteQueueFull
-	}
-}
-
-func (c *websocketConnection) noteDroppedEnvelope(envelopeType string) {
-	dropped := c.droppedFrames.Add(1)
-	// Log the first drop and every 100th after it: enough to see shedding in
-	// production without a log line per frame during a burst.
-	if dropped == 1 || dropped%100 == 0 {
-		remote := ""
-		if c.req != nil {
-			remote = c.req.RemoteAddr
-		}
-		log.Printf(
-			"websocket: shed %q frame for slow client (dropped=%d remote=%s)",
-			envelopeType,
-			dropped,
-			remote,
-		)
-	}
-}
-
-// writeLoop drains the control queue ahead of the data queue (mirroring the
-// agent link's dedicated ping channel) so congestion cannot starve keep-alive
-// or stream-recovery envelopes.
-func (c *websocketConnection) writeLoop() {
-	for {
-		select {
-		case <-c.done:
-			return
-		case envelope := <-c.ctrlOutbox:
-			if !c.deliverEnvelope(envelope) {
-				return
-			}
-		case envelope := <-c.outbox:
-			if !c.deliverEnvelope(envelope) {
-				return
-			}
-			for drained := 0; drained < 64; drained++ {
-				select {
-				case extra := <-c.ctrlOutbox:
-					if !c.deliverEnvelope(extra) {
-						return
-					}
-					continue
-				default:
-				}
-				select {
-				case extra := <-c.outbox:
-					if !c.deliverEnvelope(extra) {
-						return
-					}
-				default:
-					goto batchDone
-				}
-			}
-		batchDone:
-		}
-	}
-}
-
-// deliverEnvelope writes one envelope with bounded retries; exhausting them
-// means the socket itself is unwritable (dead link), which is the only
-// congestion-adjacent condition allowed to close the connection.
-func (c *websocketConnection) deliverEnvelope(envelope websocketEnvelope) bool {
-	if err := c.writeEnvelopeDirect(envelope); err == nil {
-		return true
-	}
-	for attempt := 0; attempt < websocketMaxWriteRetries; attempt++ {
-		select {
-		case <-c.done:
-			return false
-		case <-time.After(websocketRetryBackoff):
-		}
-		if err := c.writeEnvelopeDirect(envelope); err == nil {
-			return true
-		}
-	}
-	c.close()
-	return false
-}
-
-func (c *websocketConnection) writeEnvelopeDirect(envelope websocketEnvelope) error {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	if c.writeTimeout > 0 {
-		if err := c.conn.SetWriteDeadline(time.Now().Add(c.writeTimeout)); err != nil {
-			return err
-		}
-		defer func() {
-			_ = c.conn.SetWriteDeadline(time.Time{})
-		}()
-	}
-	return c.conn.WriteJSON(envelope)
+	return c.core.Enqueue(wscore.Frame{
+		Class:       classifyEnvelope(envelope),
+		RequestID:   envelope.ID,
+		Kind:        envelope.Type,
+		MessageType: websocket.TextMessage,
+		Data:        data,
+	})
 }

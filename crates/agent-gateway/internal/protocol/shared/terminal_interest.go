@@ -1,4 +1,5 @@
-package server
+// Package shared 存放 v1/v2 协议层共用、且不属于 session 或 wscore 的连接级构件。
+package shared
 
 import (
 	"strings"
@@ -7,20 +8,24 @@ import (
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 )
 
-type websocketTerminalInterestTracker struct {
+// TerminalInterestTracker 记录单条连接的终端会话/项目关注集，决定事件是否转发：
+// 元数据事件广播，原始输出仅推给显式附着的连接。自 v1 平移，行为不变；并发安全。
+type TerminalInterestTracker struct {
 	mu       sync.RWMutex
 	projects map[string]struct{}
 	sessions map[string]struct{}
 }
 
-func newWebsocketTerminalInterestTracker() *websocketTerminalInterestTracker {
-	return &websocketTerminalInterestTracker{
+// NewTerminalInterestTracker 构造空关注集。
+func NewTerminalInterestTracker() *TerminalInterestTracker {
+	return &TerminalInterestTracker{
 		projects: make(map[string]struct{}),
 		sessions: make(map[string]struct{}),
 	}
 }
 
-func (t *websocketTerminalInterestTracker) rememberProject(projectPathKey string) {
+// RememberProject 登记对某项目终端列表的关注。
+func (t *TerminalInterestTracker) RememberProject(projectPathKey string) {
 	projectPathKey = strings.TrimSpace(projectPathKey)
 	if projectPathKey == "" {
 		return
@@ -30,7 +35,8 @@ func (t *websocketTerminalInterestTracker) rememberProject(projectPathKey string
 	t.mu.Unlock()
 }
 
-func (t *websocketTerminalInterestTracker) rememberSession(sessionID string, projectPathKey string) {
+// RememberSession 登记对某终端会话（及其项目）的附着。
+func (t *TerminalInterestTracker) RememberSession(sessionID string, projectPathKey string) {
 	sessionID = strings.TrimSpace(sessionID)
 	projectPathKey = strings.TrimSpace(projectPathKey)
 	if sessionID == "" && projectPathKey == "" {
@@ -46,7 +52,8 @@ func (t *websocketTerminalInterestTracker) rememberSession(sessionID string, pro
 	t.mu.Unlock()
 }
 
-func (t *websocketTerminalInterestTracker) forget(sessionID string, projectPathKey string) {
+// Forget 解除会话附着；仅给出项目键时解除项目关注。
+func (t *TerminalInterestTracker) Forget(sessionID string, projectPathKey string) {
 	sessionID = strings.TrimSpace(sessionID)
 	projectPathKey = strings.TrimSpace(projectPathKey)
 	t.mu.Lock()
@@ -59,7 +66,8 @@ func (t *websocketTerminalInterestTracker) forget(sessionID string, projectPathK
 	t.mu.Unlock()
 }
 
-func (t *websocketTerminalInterestTracker) shouldForward(event *gatewayv1.TerminalEvent) bool {
+// ShouldForward 判定终端事件是否应推送给本连接。
+func (t *TerminalInterestTracker) ShouldForward(event *gatewayv1.TerminalEvent) bool {
 	if event == nil {
 		return false
 	}
@@ -67,8 +75,7 @@ func (t *websocketTerminalInterestTracker) shouldForward(event *gatewayv1.Termin
 	projectPathKey := strings.TrimSpace(event.GetProjectPathKey())
 	kind := strings.TrimSpace(event.GetKind())
 
-	// Terminal metadata changes are broadcast so each browser tab can keep its
-	// project list fresh; raw output remains gated behind explicit attachment.
+	// 元数据变化广播给所有标签页保持列表新鲜；原始输出只推给显式附着的连接。
 	if kind != "output" {
 		return sessionID != "" || projectPathKey != ""
 	}

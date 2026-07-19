@@ -4,7 +4,12 @@ package liveagent.gateway.v1;
 
 option go_package = "github.com/liveagent/agent-gateway/internal/proto/v1;gatewayv1";
 
+// AgentGateway 是 v1 的桌面端 gRPC 服务。已弃用：v2 起由 /ws/v2/agent 与 /ws/v2/terminal
+// （见 proto/v2/gateway_ws.proto）承担，仅为旧版桌面客户端保留，流量归零后删除；
+// 本文件的消息是 v2 的业务载荷，全部保留、永不弃用。
 service AgentGateway {
+  option deprecated = true;
+
   rpc AgentConnect(stream AgentEnvelope) returns (stream GatewayEnvelope);
   rpc AgentTerminalConnect(stream TerminalStreamFrame) returns (stream TerminalStreamFrame);
   rpc Authenticate(AuthRequest) returns (AuthResponse);
@@ -599,6 +604,8 @@ message ChatMessageRef {
 
 message CancelChatRequest {
   string conversation_id = 1;
+  // 可选运行 id 提示：v2 浏览器链路用它消除同会话并发运行的歧义；桌面端可忽略。
+  string run_id = 2;
 }
 
 message ChatCommandRequest {

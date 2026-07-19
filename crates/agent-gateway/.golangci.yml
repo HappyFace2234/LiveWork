@@ -1,0 +1,35 @@
+# golangci-lint v2 —— 网关 Go 代码检查基线（此前无 linter，选务实检查集）：govet/staticcheck/unused
+# 管正确性与死代码（SA1019 兼作"调用已弃用 v1 符号"提示），errcheck/ineffassign/misspell 做基础卫生。
+# 生成代码（internal/proto/）不参与检查。
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - ineffassign
+    - misspell
+  exclusions:
+    generated: lax
+    rules:
+      # v1 协议实现、其组装点与测试引用弃用 v1 符号是预期行为（整层同生命周期弃用）：
+      # 对这些路径静默 SA1019，避免刷屏。
+      - path: internal/server/
+        linters: [staticcheck]
+        text: "SA1019"
+      - path: cmd/gateway/
+        linters: [staticcheck]
+        text: "SA1019"
+      - path: test/
+        linters: [staticcheck]
+        text: "SA1019"
+      # 测试代码允许忽略清理类调用的返回值。
+      - path: _test\.go
+        linters: [errcheck]
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -78,14 +78,19 @@
 | Gateway entry | `crates/agent-gateway/cmd/gateway/main.go` |
 | Shutdown helper | `crates/agent-gateway/cmd/gateway/shutdown.go` |
 | Config | `crates/agent-gateway/internal/config/config.go` |
-| gRPC server | `crates/agent-gateway/internal/server/grpc.go` |
+| v2 协议层（WebSocket+Protobuf） | `crates/agent-gateway/internal/protocol/pbws/*`（browser/agent/terminal 三链路、guard 白名单、seam 映射） |
+| WS 连接运行时（v1/v2 共用） | `crates/agent-gateway/internal/transport/wscore/*` |
+| 协议共用域逻辑 | `crates/agent-gateway/internal/protocol/shared/*`（Origin 校验、终端门控/后处理、终端兴趣跟踪） |
+| Chat 命令编排（v1/v2 共用） | `crates/agent-gateway/internal/chatcmd/chatcmd.go` |
+| 可观测性 | `crates/agent-gateway/internal/observability/*`（slog 初始化、v1/v2 使用计数） |
+| gRPC server（弃用） | `crates/agent-gateway/internal/server/grpc.go` |
 | HTTP routes | `crates/agent-gateway/internal/server/http.go` |
-| WebSocket server | `crates/agent-gateway/internal/server/websocket.go`、`websocket_routes.go`、`websocket_*_handlers.go`、`websocket_payloads.go`、`websocket_roundtrip.go`、`websocket_writer.go`、`websocket_connection_state.go` |
+| v1 WebSocket server（弃用） | `crates/agent-gateway/internal/server/websocket.go`、`websocket_routes.go`、`websocket_*_handlers.go`、`websocket_payloads.go`、`websocket_roundtrip.go`、`websocket_terminal_stream.go` |
 | Session manager | `crates/agent-gateway/internal/session/manager.go`、`agent_session.go`、`manager_state.go`、`manager_registry.go`、`manager_*_sync.go`、`manager_terminal.go`、`manager_chat_runs.go` |
 | Auth | `crates/agent-gateway/internal/auth/*` |
 | Handlers | `crates/agent-gateway/internal/handler/*` |
-| Proto source | `crates/agent-gateway/proto/v1/gateway.proto` |
-| Generated proto | `crates/agent-gateway/internal/proto/v1/*` |
+| Proto source | `crates/agent-gateway/proto/v1/gateway.proto`（业务消息）、`proto/v2/gateway_ws.proto`（v2 帧壳） |
+| Generated proto | `crates/agent-gateway/internal/proto/v1/*`、`internal/proto/v2/*` |
 
 ## WebUI
 

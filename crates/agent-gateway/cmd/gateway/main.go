@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +18,7 @@ import (
 
 	"github.com/liveagent/agent-gateway/internal/auth"
 	"github.com/liveagent/agent-gateway/internal/config"
+	"github.com/liveagent/agent-gateway/internal/observability"
 	gatewayv1 "github.com/liveagent/agent-gateway/internal/proto/v1"
 	"github.com/liveagent/agent-gateway/internal/server"
 	"github.com/liveagent/agent-gateway/internal/session"
@@ -25,18 +26,25 @@ import (
 
 const grpcShutdownTimeout = 3 * time.Second
 
+// fatal 记录错误并以非零码退出（slog 没有 Fatal 级别，集中在此处理）。
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
 func main() {
+	observability.SetupLogging()
 	cfg := config.Load()
 	sm := session.NewManager()
 
 	grpcServer, err := newGRPCServer(cfg, sm)
 	if err != nil {
-		log.Fatalf("create gRPC server: %v", err)
+		fatal("create gRPC server failed", "err", err)
 	}
 
 	grpcListener, err := net.Listen("tcp", cfg.GRPCAddr)
 	if err != nil {
-		log.Fatalf("listen gRPC: %v", err)
+		fatal("listen gRPC failed", "addr", cfg.GRPCAddr, "err", err)
 	}
 
 	httpServer := &http.Server{
@@ -48,14 +56,14 @@ func main() {
 	errCh := make(chan error, 2)
 
 	go func() {
-		log.Printf("gRPC listening on %s", cfg.GRPCAddr)
+		slog.Info("gRPC listening", "addr", cfg.GRPCAddr)
 		if serveErr := grpcServer.Serve(grpcListener); serveErr != nil && !errors.Is(serveErr, grpc.ErrServerStopped) {
 			errCh <- serveErr
 		}
 	}()
 
 	go func() {
-		log.Printf("HTTP listening on %s", cfg.HTTPAddr)
+		slog.Info("HTTP listening", "addr", cfg.HTTPAddr)
 		var serveErr error
 		if cfg.TLSCert != "" || cfg.TLSKey != "" {
 			serveErr = httpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
@@ -72,9 +80,9 @@ func main() {
 
 	select {
 	case sig := <-signalCh:
-		log.Printf("received signal %s, shutting down", sig)
+		slog.Info("received signal, shutting down", "signal", sig.String())
 	case err := <-errCh:
-		log.Fatalf("server error: %v", err)
+		fatal("server error", "err", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -86,11 +94,11 @@ func main() {
 	}()
 
 	if forced := shutdownGRPCServer(grpcServer, grpcShutdownTimeout); forced {
-		log.Printf("gRPC graceful shutdown timed out after %s, forcing stop", grpcShutdownTimeout)
+		slog.Warn("gRPC graceful shutdown timed out, forcing stop", "timeout", grpcShutdownTimeout)
 	}
 
 	if err := <-httpShutdownErrCh; err != nil {
-		log.Printf("http shutdown error: %v", err)
+		slog.Warn("http shutdown error", "err", err)
 	}
 }
 

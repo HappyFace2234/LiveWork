@@ -1,4 +1,4 @@
-package server
+package chatcmd
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"github.com/liveagent/agent-gateway/internal/session"
 )
 
-func newChatCommandTestManager(t *testing.T) (*session.Manager, *session.AgentSession) {
+func newCommandTestManager(t *testing.T) (*session.Manager, *session.AgentSession) {
 	t.Helper()
 	sm := session.NewManager()
 	sm.RecordAuthentication("desktop-agent", "test", "session-test")
@@ -23,24 +23,24 @@ func newChatCommandTestManager(t *testing.T) (*session.Manager, *session.AgentSe
 func TestChatTimeoutDefaultsAreShortAndDedicated(t *testing.T) {
 	t.Parallel()
 
-	if got := chatPrepareTimeout(nil); got != 2*time.Second {
-		t.Fatalf("chatPrepareTimeout(nil) = %s, want 2s", got)
+	if got := PrepareTimeout(nil); got != 2*time.Second {
+		t.Fatalf("PrepareTimeout(nil) = %s, want 2s", got)
 	}
-	if got := chatDeliveryTimeout(nil); got != 5*time.Second {
-		t.Fatalf("chatDeliveryTimeout(nil) = %s, want 5s", got)
+	if got := DeliveryTimeout(nil); got != 5*time.Second {
+		t.Fatalf("DeliveryTimeout(nil) = %s, want 5s", got)
 	}
-	if got := chatStartTimeout(nil); got != 5*time.Second {
-		t.Fatalf("chatStartTimeout(nil) = %s, want 5s", got)
+	if got := StartTimeout(nil); got != 5*time.Second {
+		t.Fatalf("StartTimeout(nil) = %s, want 5s", got)
 	}
-	if got := chatRenderStartTimeout(nil); got != 10*time.Second {
-		t.Fatalf("chatRenderStartTimeout(nil) = %s, want 10s", got)
+	if got := RenderStartTimeout(nil); got != 10*time.Second {
+		t.Fatalf("RenderStartTimeout(nil) = %s, want 10s", got)
 	}
 }
 
-func TestDispatchAcceptedChatCommandUsesDeliveryTimeout(t *testing.T) {
+func TestDispatchAcceptedCommandUsesDeliveryTimeout(t *testing.T) {
 	t.Parallel()
 
-	sm, _ := newChatCommandTestManager(t)
+	sm, _ := newCommandTestManager(t)
 	start := sm.StartChatCommand("run-delivery-timeout", "conv-1", "", "client-1", nil)
 	cfg := &config.Config{ChatDeliveryTimeout: 30 * time.Millisecond}
 	body := handler.ChatRequestBody{
@@ -50,7 +50,7 @@ func TestDispatchAcceptedChatCommandUsesDeliveryTimeout(t *testing.T) {
 	}
 
 	startedAt := time.Now()
-	dispatchAcceptedChatCommand(
+	DispatchAcceptedCommand(
 		context.Background(), cfg, sm, nil, start, body, nil, "trace-delivery-timeout",
 	)
 	elapsed := time.Since(startedAt)
@@ -73,7 +73,7 @@ func TestDispatchAcceptedChatCommandUsesDeliveryTimeout(t *testing.T) {
 func TestChatStartupWatchdogUsesShortCombinedWindow(t *testing.T) {
 	t.Parallel()
 
-	sm, _ := newChatCommandTestManager(t)
+	sm, _ := newCommandTestManager(t)
 	sm.StartChatCommand("run-start-timeout", "conv-1", "", "client-1", nil)
 	cfg := &config.Config{
 		ChatStartTimeout:       15 * time.Millisecond,
@@ -81,7 +81,7 @@ func TestChatStartupWatchdogUsesShortCombinedWindow(t *testing.T) {
 	}
 
 	startedAt := time.Now()
-	watchAcceptedChatCommandStartup(context.Background(), cfg, sm, "run-start-timeout")
+	WatchAcceptedCommandStartup(context.Background(), cfg, sm, "run-start-timeout")
 	elapsed := time.Since(startedAt)
 	if elapsed < 25*time.Millisecond || elapsed > 500*time.Millisecond {
 		t.Fatalf("startup watchdog elapsed = %s, want about 35ms", elapsed)
