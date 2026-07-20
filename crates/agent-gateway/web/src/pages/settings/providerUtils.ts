@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { prepareProxyRequest } from "../../lib/providers/proxy";
+import { isGatewayWebuiRuntime } from "../../lib/runtimeEnv";
 import {
   createProviderModelConfig,
   normalizeProviderModelConfigs,
@@ -8,18 +9,13 @@ import {
 } from "../../lib/settings";
 import { normalizeBaseUrl } from "../../lib/settings/normalize";
 
-const GATEWAY_WEBUI_MARKER = "gateway";
 const GATEWAY_TOKEN_STORAGE_KEY = "liveagent.gateway.token";
 const CODEX_MODELS_SUFFIXES = ["/chat/completions", "/responses", "/response"];
 const GEMINI_GENERATE_SUFFIXES = [":streamGenerateContent", ":generateContent"];
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
-export function isGatewayWebuiRuntime() {
-  return (
-    typeof document !== "undefined" &&
-    document.documentElement.dataset.liveagentWebui === GATEWAY_WEBUI_MARKER
-  );
-}
+// Gateway WebUI 判定移至 lib/runtimeEnv 单一真源；此处再导出保持既有调用方不变。
+export { isGatewayWebuiRuntime };
 
 function normalizeModelBaseUrl(type: ProviderId, baseUrl: string) {
   let normalizedUrl = normalizeBaseUrl(baseUrl);
