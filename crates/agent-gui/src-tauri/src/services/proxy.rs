@@ -437,6 +437,11 @@ fn build_target_url(
         .strip_prefix(&prefix)
         .ok_or_else(|| "Invalid proxy path prefix".to_string())?;
     let resolved = if suffix.is_empty() { "/" } else { suffix };
+    // “//” 开头的后缀会被 Url::join 当作 scheme-relative 引用改写目标主机，
+    // 显式拒绝，防止请求被重定向到 upstream origin 之外的主机。
+    if resolved.starts_with("//") {
+        return Err("Proxy request path must not begin with //".to_string());
+    }
 
     origin
         .join(resolved)
@@ -584,6 +589,22 @@ mod tests {
             target.as_str(),
             "https://ark.cn-beijing.volces.com/api/coding/v1/messages?stream=true"
         );
+    }
+
+    #[test]
+    fn rejects_scheme_relative_proxy_suffix() {
+        let err = build_target_url("hub", "/proxy/hub//servers/foo", "https://api.smithery.ai")
+            .expect_err("scheme-relative suffix must be rejected");
+
+        assert!(err.contains("//"));
+    }
+
+    #[test]
+    fn builds_target_url_for_origin_root_with_query() {
+        let target = build_target_url("hub", "/proxy/hub?probe=1", "https://clawhub.ai")
+            .expect("root query target url should be built");
+
+        assert_eq!(target.as_str(), "https://clawhub.ai/?probe=1");
     }
 
     #[test]

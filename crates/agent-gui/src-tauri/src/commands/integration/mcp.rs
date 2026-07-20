@@ -340,6 +340,11 @@ impl StdioTransport {
             .stderr(Stdio::piped());
         maybe_augment_macos_path(&mut command);
         configure_child_process_group(&mut command);
+        // 应用代理 env 先注入（含 NO_PROXY 环回豁免），server 配置的 env 后写保持更高优先级；
+        // 代理配置异常时 fail fast，不静默直连。
+        for (key, value) in crate::services::system_proxy::shell_proxy_envs()? {
+            command.env(key, value);
+        }
         if let Some(env) = &config.env {
             command.envs(env);
         }
@@ -533,7 +538,9 @@ impl HttpTransport {
 
         let headers = build_header_map(&config.headers)?;
 
-        let client = HttpClient::builder()
+        // 经 system_proxy 构建：应用代理启用时走代理（环回地址豁免），异常配置 fail fast。
+        let client = crate::services::system_proxy::blocking_client_builder()
+            .map_err(|e| format!("创建 HTTP client 失败：{e}"))?
             .connect_timeout(Duration::from_secs(10))
             .timeout(config.timeout())
             .build()
@@ -736,12 +743,15 @@ impl SseTransport {
             }
         };
 
-        let client_get = HttpClient::builder()
+        // 两个 client 均经 system_proxy 构建（GET 长连接不设总超时），语义同 HttpTransport。
+        let client_get = crate::services::system_proxy::blocking_client_builder()
+            .map_err(|e| format!("创建 SSE http client 失败：{e}"))?
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| format!("创建 SSE http client 失败：{e}"))?;
 
-        let client_post = HttpClient::builder()
+        let client_post = crate::services::system_proxy::blocking_client_builder()
+            .map_err(|e| format!("创建 POST http client 失败：{e}"))?
             .connect_timeout(Duration::from_secs(10))
             .timeout(config.timeout())
             .build()
@@ -1063,6 +1073,10 @@ impl McpTransport {
 #[derive(Debug)]
 struct McpClient {
     config: McpServerConfig,
+    /// spawn 时的应用代理配置 revision。transport 的 reqwest client 与
+    /// stdio 子进程 env 都在 spawn 时固化，ensure_client 据此在代理配置
+    /// 变更后重建连接。
+    proxy_revision: u64,
     transport: McpTransport,
     next_id: u64,
     initialized: bool,
@@ -1070,6 +1084,9 @@ struct McpClient {
 
 impl McpClient {
     fn spawn(config: McpServerConfig) -> Result<Self, String> {
+        // 在建 transport 之前取 revision：若 spawn 期间代理配置变更，
+        // 记录的旧值会在下次 ensure_client 触发重建，宁可多建一次。
+        let proxy_revision = crate::services::system_proxy::revision();
         let transport = match config.transport().trim() {
             "http" => McpTransport::Http(HttpTransport::spawn(&config)?),
             "sse" => McpTransport::Sse(SseTransport::spawn(&config)?),
@@ -1078,6 +1095,7 @@ impl McpClient {
 
         Ok(Self {
             config,
+            proxy_revision,
             transport,
             next_id: 1,
             initialized: false,
@@ -1410,19 +1428,40 @@ impl McpRuntimeManager {
             .map_err(|_| "MCP 状态锁失败".to_string())?
             .get(&id)
             .cloned();
-        if let Some(existing) = existing {
+        if let Some(existing) = existing.as_ref() {
             // Restart if config changed. Same-id calls serialize on the client
             // lock (protocol streams cannot be shared), other servers do not.
+            // 应用代理配置变更（revision 变化）同样视作配置变化重建连接。
+            let proxy_revision = crate::services::system_proxy::revision();
             let same_config = existing
                 .lock()
-                .map(|client| client.config == cfg)
+                .map(|client| client.config == cfg && client.proxy_revision == proxy_revision)
                 .unwrap_or(false);
             if same_config {
-                return Ok(existing);
+                return Ok(existing.clone());
             }
         }
 
-        let client = McpClient::spawn(cfg)?;
+        let client = match McpClient::spawn(cfg) {
+            Ok(client) => client,
+            Err(error) => {
+                // 重建失败必须逐出已判定过期的旧 client：mcp_call_tool 直读 map
+                // 不经本函数，留着旧 client 会让失效配置（如无效应用代理）下的
+                // 调用继续走旧通道，违背 fail fast 不静默直连的语义。
+                // 仅在 map 里仍是同一个 Arc 时移除，避免误杀并发换上的新 client。
+                if let Some(stale) = existing {
+                    if let Ok(mut map) = self.clients.lock() {
+                        if map
+                            .get(&id)
+                            .is_some_and(|current| Arc::ptr_eq(current, &stale))
+                        {
+                            map.remove(&id);
+                        }
+                    }
+                }
+                return Err(error);
+            }
+        };
         let arc = Arc::new(Mutex::new(client));
         self.clients
             .lock()
@@ -1573,6 +1612,8 @@ pub async fn mcp_list_tools(
     run_blocking("mcp_list_tools", move || {
         let mut out: Vec<McpToolInfo> = Vec::new();
 
+        let mut succeeded = 0usize;
+        let mut failures: Vec<String> = Vec::new();
         for cfg in servers.into_iter().filter(|s| s.enabled) {
             let server_id = cfg.id.clone();
             let tools = match manager.ensure_client(cfg.clone()) {
@@ -1584,14 +1625,27 @@ pub async fn mcp_list_tools(
             };
 
             match tools {
-                Ok(tools) => out.extend(tools),
+                Ok(tools) => {
+                    succeeded += 1;
+                    out.extend(tools);
+                }
                 Err(err) => {
                     eprintln!(
                         "[MCP] 跳过 server `{}` 的 tools/list，继续对话流程：{}",
                         server_id, err
                     );
+                    failures.push(format!("{server_id}: {err}"));
                 }
             }
+        }
+
+        // 部分失败沿用跳过语义；全军覆没（如应用代理配置异常一次性击毁全部
+        // server）必须让前端可见（onLoadError/throw），否则工具静默消失无从排查。
+        if succeeded == 0 && !failures.is_empty() {
+            return Err(format!(
+                "所有已启用的 MCP server 都不可用：\n{}",
+                failures.join("\n")
+            ));
         }
 
         Ok(out)
@@ -1816,6 +1870,28 @@ mod tests {
             .ensure_client(url_config("srv", "http", Some("http://127.0.0.1:9/mcp2")))
             .expect("changed ensure");
         assert!(!Arc::ptr_eq(&first, &changed));
+    }
+
+    #[test]
+    fn ensure_client_evicts_stale_client_when_respawn_fails() {
+        let manager = McpRuntimeManager::default();
+        manager
+            .ensure_client(offline_http_config("srv"))
+            .expect("initial ensure");
+
+        // 换成必然 spawn 失败的配置（URL 通过存在性校验但解析失败）：
+        // 旧 client 必须被逐出，否则 mcp_call_tool 直读 map 会继续走失效通道。
+        manager
+            .ensure_client(url_config("srv", "http", Some("::not-a-url::")))
+            .expect_err("respawn must fail");
+        assert!(
+            !manager
+                .clients
+                .lock()
+                .expect("clients lock")
+                .contains_key("srv"),
+            "stale client must be evicted after failed respawn"
+        );
     }
 
     #[test]

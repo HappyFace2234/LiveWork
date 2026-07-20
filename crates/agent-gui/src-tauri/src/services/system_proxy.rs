@@ -1,5 +1,6 @@
 //! 系统代理单一真源：设置保存/启动初始化时写入，shell env 注入与
-//! 各 reqwest 出网点（本地反代、更新检查、技能下载）按需读取。
+//! 各 reqwest 出网点（本地反代、更新检查、技能下载、MCP http/sse transport）按需读取。
+//! reqwest 侧与 shell env 共用 NO_PROXY_DEFAULT：环回地址永不走代理。
 //! 凭据绝不进入日志与错误信息（只输出 host:port）。
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
@@ -85,7 +86,7 @@ fn host_is_valid(host: &str) -> bool {
     !host.contains(':') || host.parse::<Ipv6Addr>().is_ok()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum ProxyMode {
     Disabled,
     Enabled(SystemProxyConfig),
@@ -153,6 +154,11 @@ pub fn set_config(raw: Option<&Value>) {
         .snapshot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // 设置保存每次都会刷新代理状态；只有配置真实变化才 bump revision，
+    // 否则按 revision 重建的消费方（client 缓存、MCP 运行时）会被无关保存误伤。
+    if snapshot.mode == mode {
+        return;
+    }
     snapshot.revision = snapshot.revision.wrapping_add(1);
     snapshot.mode = mode;
     drop(snapshot);
@@ -160,6 +166,17 @@ pub fn set_config(raw: Option<&Value>) {
         .async_client
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+/// 当前代理配置的变更计数。长驻连接（如 MCP client）在建立时记录，
+/// 复用前与当前值比较即可感知代理配置变更并重建。
+/// 直接在读锁下拷贝 u64，不克隆整个快照（本函数在 MCP 命令路径上高频调用）。
+pub fn revision() -> u64 {
+    state()
+        .snapshot
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .revision
 }
 
 fn current_snapshot() -> ProxySnapshot {
@@ -200,6 +217,9 @@ pub fn shell_proxy_envs() -> Result<Vec<(String, String)>, String> {
 
 fn build_proxy(config: &SystemProxyConfig) -> Result<reqwest::Proxy, String> {
     reqwest::Proxy::all(config.proxy_url())
+        // 环回地址豁免须与 shell env 注入的 NO_PROXY 一致，
+        // 否则本地上游（如 127.0.0.1 的 MCP server）会被错误送进代理。
+        .map(|proxy| proxy.no_proxy(reqwest::NoProxy::from_string(NO_PROXY_DEFAULT)))
         .map_err(|_| format!("应用代理地址无效：{}", config.display_target()))
 }
 
@@ -330,6 +350,27 @@ mod tests {
             assert!(blocking_client_builder_for_mode(&mode).is_err());
             assert!(shell_proxy_envs_for_mode(&mode).is_err());
         }
+    }
+
+    #[test]
+    fn proxy_mode_equality_drives_set_config_dedupe() {
+        let config = json!({
+            "enabled": true, "type": "http", "host": "proxy.local", "port": 8080
+        });
+        // set_config 以 ProxyMode 相等与否决定是否 bump revision：
+        // 同配置重复保存必须判等，任一字段变化必须判不等。
+        assert_eq!(
+            parse_proxy_mode(Some(&config)),
+            parse_proxy_mode(Some(&config))
+        );
+        let changed_port = json!({
+            "enabled": true, "type": "http", "host": "proxy.local", "port": 8081
+        });
+        assert_ne!(
+            parse_proxy_mode(Some(&config)),
+            parse_proxy_mode(Some(&changed_port))
+        );
+        assert_eq!(parse_proxy_mode(None), ProxyMode::Disabled);
     }
 
     #[test]
