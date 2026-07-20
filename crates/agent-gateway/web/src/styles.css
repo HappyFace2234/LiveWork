@@ -503,10 +503,12 @@ html[data-liveagent-webui="gateway"] .composer-dropdown-description {
   white-space: nowrap;
 }
 
-button,
-input,
-textarea,
-select {
+/*
+ * Do NOT add input/textarea/select here: Tailwind preflight already applies
+ * font: inherit in @layer base, and an unlayered copy would override every
+ * text-* utility on form fields (unlayered CSS beats @layer utilities).
+ */
+button {
   font: inherit;
 }
 
