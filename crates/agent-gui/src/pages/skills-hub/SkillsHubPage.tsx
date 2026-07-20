@@ -1,4 +1,12 @@
-import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { GlassPanel, HubBackdrop, HubHeader } from "../../components/hub/HubChrome";
 import {
@@ -77,6 +85,12 @@ import {
   type ClawHubCategorySlug,
   classifyClawHubSkill,
 } from "../../lib/skills/clawHubCategories";
+import {
+  DEFAULT_INSTALLED_SKILL_SORT,
+  type InstalledSkillSort,
+  isInstalledSkillSort,
+  sortInstalledSkillItems,
+} from "../../lib/skills/installedSort";
 
 type SkillsHubView = "installed" | "store" | "import";
 
@@ -96,6 +110,12 @@ const STORE_SORT_OPTIONS: Array<{ value: ClawHubSort; labelKey: string }> = [
   { value: "installs", labelKey: "settings.skillsStoreSortMostInstalled" },
   { value: "updated", labelKey: "settings.skillsStoreSortRecentlyUpdated" },
   { value: "newest", labelKey: "settings.skillsStoreSortNewest" },
+];
+
+const INSTALLED_SORT_OPTIONS: Array<{ value: InstalledSkillSort; labelKey: string }> = [
+  { value: "name-asc", labelKey: "settings.skillsInstalledSortNameAsc" },
+  { value: "name-desc", labelKey: "settings.skillsInstalledSortNameDesc" },
+  { value: "installed-desc", labelKey: "settings.skillsInstalledSortNewest" },
 ];
 
 type StoreCategoryValue = "all" | ClawHubCategorySlug;
@@ -383,11 +403,260 @@ function buildSkillDiscoverySignature(rootDir: string, skills: SkillSummary[]) {
           skill.skillFile,
           skill.source?.registry ?? "",
           skill.source?.slug ?? "",
+          skill.installedAt ?? "",
           skill.source?.version ?? "",
         ].join("\0"),
       )
       .sort(),
   ].join("\n");
+}
+
+const INSTALLED_SORT_STORAGE_KEY = "skillsHub.installedSort";
+const FLIP_HERO_DURATION_MS = 380;
+const FLIP_BATCH_HERO_DELAY_MS = 90;
+const FLIP_BATCH_STAGGER_LIMIT = 8;
+const FLIP_WAVE_DURATION_MS = 280;
+const FLIP_WAVE_DELAY_MS = 30;
+const FLIP_WAVE_MAX_DELAY_MS = 400;
+const FLIP_HERO_TRANSITION = `translate ${FLIP_HERO_DURATION_MS}ms cubic-bezier(0.34, 1.3, 0.64, 1)`;
+const FLIP_WAVE_TRANSITION = `translate ${FLIP_WAVE_DURATION_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`;
+
+type FlipMode = "single" | "wave" | "batch";
+type FlipPosition = { left: number; top: number };
+type FlipRequest = {
+  mode: FlipMode;
+  heroKeys: ReadonlySet<string>;
+  followKeys: ReadonlySet<string>;
+};
+
+function readInstalledSortPreference(): InstalledSkillSort {
+  if (typeof window === "undefined") return DEFAULT_INSTALLED_SKILL_SORT;
+  try {
+    const stored = window.localStorage.getItem(INSTALLED_SORT_STORAGE_KEY);
+    return isInstalledSkillSort(stored) ? stored : DEFAULT_INSTALLED_SKILL_SORT;
+  } catch {
+    return DEFAULT_INSTALLED_SKILL_SORT;
+  }
+}
+
+function resetFlipStyles(element: HTMLElement) {
+  element.style.transition = "";
+  element.style.translate = "";
+  element.style.willChange = "";
+  element.style.zIndex = "";
+}
+
+function useFlipGrid() {
+  const gridRef = useRef<HTMLDivElement>(null);
+  const previousRectsRef = useRef<Map<string, FlipPosition>>(new Map());
+  const previousOrderRef = useRef<string[]>([]);
+  const pendingRequestRef = useRef<FlipRequest | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const phaseTimerRef = useRef<number | null>(null);
+  const cleanupTimerRef = useRef<number | null>(null);
+  const activeElementsRef = useRef<HTMLElement[]>([]);
+
+  const requestFlip = useCallback(
+    (mode: FlipMode, heroKeys: readonly string[], followKeys: readonly string[] = heroKeys) => {
+      pendingRequestRef.current = {
+        mode,
+        heroKeys: new Set(heroKeys),
+        followKeys: new Set(followKeys),
+      };
+    },
+    [],
+  );
+
+  const captureVisibleKey = useCallback(() => {
+    const grid = gridRef.current;
+    if (!grid) return null;
+    let scrollParent = grid.parentElement;
+    while (scrollParent) {
+      const overflowY = window.getComputedStyle(scrollParent).overflowY;
+      if (/auto|scroll|overlay/.test(overflowY)) break;
+      scrollParent = scrollParent.parentElement;
+    }
+    const viewport = scrollParent?.getBoundingClientRect();
+    const viewportTop = viewport?.top ?? 0;
+    const viewportBottom = viewport?.bottom ?? window.innerHeight;
+    const elements = grid.querySelectorAll<HTMLElement>("[data-flip-key]");
+    for (const element of elements) {
+      const rect = element.getBoundingClientRect();
+      if (rect.bottom > viewportTop && rect.top < viewportBottom) {
+        return element.dataset.flipKey ?? null;
+      }
+    }
+    return null;
+  }, []);
+
+  const clearAnimation = useCallback(() => {
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
+    if (phaseTimerRef.current !== null) {
+      window.clearTimeout(phaseTimerRef.current);
+      phaseTimerRef.current = null;
+    }
+    if (cleanupTimerRef.current !== null) {
+      window.clearTimeout(cleanupTimerRef.current);
+      cleanupTimerRef.current = null;
+    }
+    for (const element of activeElementsRef.current) {
+      resetFlipStyles(element);
+    }
+    activeElementsRef.current = [];
+  }, []);
+
+  useLayoutEffect(() => {
+    clearAnimation();
+    const grid = gridRef.current;
+    if (!grid) {
+      previousRectsRef.current.clear();
+      previousOrderRef.current = [];
+      pendingRequestRef.current = null;
+      return;
+    }
+
+    const elements = Array.from(grid.querySelectorAll<HTMLElement>("[data-flip-key]"));
+    const nextOrder = elements.map((element) => element.dataset.flipKey ?? "");
+    const request = pendingRequestRef.current;
+    pendingRequestRef.current = null;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    const followElement = request
+      ? elements.find((element) => {
+          const key = element.dataset.flipKey;
+          return key ? request.followKeys.has(key) : false;
+        })
+      : undefined;
+
+    followElement?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+
+    const gridRect = grid.getBoundingClientRect();
+    const nextRects = new Map<string, FlipPosition>();
+    for (const element of elements) {
+      const key = element.dataset.flipKey;
+      if (!key) continue;
+      const rect = element.getBoundingClientRect();
+      nextRects.set(key, {
+        left: rect.left - gridRect.left,
+        top: rect.top - gridRect.top,
+      });
+    }
+
+    const previousRects = previousRectsRef.current;
+    const previousOrder = previousOrderRef.current;
+    const orderChanged =
+      previousOrder.length !== nextOrder.length ||
+      nextOrder.some((key, index) => key !== previousOrder[index]);
+    previousRectsRef.current = nextRects;
+    previousOrderRef.current = nextOrder;
+
+    if (previousRects.size === 0 || previousOrder.length === 0 || !orderChanged || reducedMotion) {
+      return;
+    }
+
+    const movedElements: Array<{ element: HTMLElement; hero: boolean }> = [];
+    for (const element of elements) {
+      const key = element.dataset.flipKey;
+      const previousRect = key ? previousRects.get(key) : undefined;
+      const nextRect = key ? nextRects.get(key) : undefined;
+      if (!previousRect || !nextRect) continue;
+      const deltaX = previousRect.left - nextRect.left;
+      const deltaY = previousRect.top - nextRect.top;
+      if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) continue;
+      element.style.transition = "none";
+      element.style.translate = `${deltaX}px ${deltaY}px`;
+      element.style.willChange = "translate";
+      const hero = key ? (request?.heroKeys.has(key) ?? false) : false;
+      if (hero) element.style.zIndex = "30";
+      movedElements.push({ element, hero });
+    }
+
+    if (movedElements.length === 0) return;
+    activeElementsRef.current = movedElements.map(({ element }) => element);
+    void grid.offsetWidth;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = null;
+      const mode = request?.mode ?? "wave";
+      const heroElements = movedElements.filter(({ hero }) => hero);
+      const waveElements = movedElements.filter(({ hero }) => !hero);
+      const maxWaveDelay = Math.min(
+        Math.max(0, waveElements.length - 1) * FLIP_WAVE_DELAY_MS,
+        FLIP_WAVE_MAX_DELAY_MS,
+      );
+      const startWave = () => {
+        waveElements.forEach(({ element }, index) => {
+          const delay = Math.min(index * FLIP_WAVE_DELAY_MS, FLIP_WAVE_MAX_DELAY_MS);
+          element.style.transition = `${FLIP_WAVE_TRANSITION} ${delay}ms`;
+          element.style.translate = "0 0";
+        });
+      };
+      const scheduleCleanup = (delay: number) => {
+        cleanupTimerRef.current = window.setTimeout(() => {
+          for (const { element } of movedElements) {
+            resetFlipStyles(element);
+          }
+          activeElementsRef.current = [];
+          cleanupTimerRef.current = null;
+        }, delay + 40);
+      };
+
+      if (mode === "batch") {
+        const staggerHeroes = (request?.heroKeys.size ?? 0) <= FLIP_BATCH_STAGGER_LIMIT;
+        heroElements.forEach(({ element }, index) => {
+          const delay = staggerHeroes ? index * FLIP_BATCH_HERO_DELAY_MS : 0;
+          element.style.transition = `${FLIP_HERO_TRANSITION} ${delay}ms`;
+          element.style.translate = "0 0";
+        });
+        const lastHeroDelay =
+          staggerHeroes && heroElements.length > 0
+            ? (heroElements.length - 1) * FLIP_BATCH_HERO_DELAY_MS
+            : 0;
+        const heroPhaseDuration =
+          heroElements.length > 0 ? lastHeroDelay + FLIP_HERO_DURATION_MS : 0;
+        if (waveElements.length > 0) {
+          if (heroPhaseDuration > 0) {
+            phaseTimerRef.current = window.setTimeout(() => {
+              phaseTimerRef.current = null;
+              startWave();
+            }, heroPhaseDuration);
+          } else {
+            startWave();
+          }
+        }
+        const wavePhaseDuration =
+          waveElements.length > 0 ? FLIP_WAVE_DURATION_MS + maxWaveDelay : 0;
+        scheduleCleanup(heroPhaseDuration + wavePhaseDuration);
+        return;
+      }
+
+      heroElements.forEach(({ element }) => {
+        element.style.transition = FLIP_HERO_TRANSITION;
+        element.style.translate = "0 0";
+      });
+      startWave();
+      const heroDuration = heroElements.length > 0 ? FLIP_HERO_DURATION_MS : 0;
+      const waveDuration = waveElements.length > 0 ? FLIP_WAVE_DURATION_MS + maxWaveDelay : 0;
+      scheduleCleanup(Math.max(heroDuration, waveDuration));
+    });
+  });
+
+  useLayoutEffect(
+    () => () => {
+      clearAnimation();
+      previousRectsRef.current.clear();
+      previousOrderRef.current = [];
+      pendingRequestRef.current = null;
+    },
+    [clearAnimation],
+  );
+
+  return { captureVisibleKey, gridRef, requestFlip };
 }
 
 type SkillsHubPageProps = {
@@ -415,10 +684,18 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
 
   const [skills, setSkills] = useState<SkillSummary[]>(initialSkills ?? []);
   const [rootDir, setRootDir] = useState(initialRootDir ?? "");
+  const {
+    captureVisibleKey: captureInstalledFlipKey,
+    gridRef: installedGridRef,
+    requestFlip: requestInstalledFlip,
+  } = useFlipGrid();
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [installedCategory, setInstalledCategory] = useState<StoreCategoryValue>("all");
+  const [installedSort, setInstalledSort] = useState<InstalledSkillSort>(
+    readInstalledSortPreference,
+  );
   // 批量选择模式：仅在「已安装」「本地导入」页可用。用于在大量技能中快速圈选
   // 一段连续区间（点首项、Shift+点末项）而不必逐个勾选。
   const [bulkMode, setBulkMode] = useState(false);
@@ -526,7 +803,22 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
   );
   const selectableSkills = useMemo(() => skills.filter(isUserSelectableSkill), [skills]);
   const selectedCount = selectableSkills.filter((skill) => selected.has(skill.name)).length;
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INSTALLED_SORT_STORAGE_KEY, installedSort);
+    } catch {
+      // The preference is non-critical when storage is unavailable.
+    }
+  }, [installedSort]);
   const installedSkillNames = useMemo(() => new Set(skills.map((skill) => skill.name)), [skills]);
+  const requestInstalledSkillFlip = useCallback(
+    (mode: FlipMode, names: readonly string[], followNames: readonly string[] = names) => {
+      const keys = names.map((name) => `${name}-${rootDir}`);
+      const followKeys = followNames.map((name) => `${name}-${rootDir}`);
+      requestInstalledFlip(mode, keys, followKeys);
+    },
+    [requestInstalledFlip, rootDir],
+  );
 
   const textFilteredInstalled = useMemo(() => {
     const text = filter.trim().toLowerCase();
@@ -568,9 +860,16 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
         : categorizedInstalled.filter(({ categories }) => categories.includes(installedCategory)),
     [categorizedInstalled, installedCategory],
   );
+  const sortedFiltered = useMemo(
+    () => sortInstalledSkillItems(filtered, installedSort, selected, ({ skill }) => skill),
+    [filtered, installedSort, selected],
+  );
   const filteredSelectableInstalledNames = useMemo(
-    () => filtered.map(({ skill }) => skill.name).filter((name) => !isAlwaysEnabledSkillName(name)),
-    [filtered],
+    () =>
+      sortedFiltered
+        .map(({ skill }) => skill.name)
+        .filter((name) => !isAlwaysEnabledSkillName(name)),
+    [sortedFiltered],
   );
   useEffect(() => {
     if (view === "installed" && !lockedByChatMode) return;
@@ -1123,6 +1422,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
     const next = new Set(settings.skills.selected);
     if (on) next.add(name);
     else next.delete(name);
+    requestInstalledSkillFlip("single", [name], on ? [name] : []);
     setSettings((prev) => updateSkills(prev, { selected: Array.from(next) }));
   }
 
@@ -1217,11 +1517,13 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
 
       const before = settings.skills.selected;
       const current = new Set(before);
-      const changed = names.filter((name) =>
+      const changedNames = names.filter((name) =>
         target ? !current.has(name) : current.has(name),
-      ).length;
+      );
+      const changed = changedNames.length;
       if (changed === 0) return;
 
+      requestInstalledSkillFlip("batch", changedNames, target ? changedNames : []);
       clearBulkUndoTimer();
       setBulkUndo({ selected: before, count: changed });
       bulkUndoTimerRef.current = window.setTimeout(() => {
@@ -1242,17 +1544,36 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
         });
       });
     },
-    [bulkSelection, clearBulkUndoTimer, setSettings, settings.skills.selected],
+    [
+      bulkSelection,
+      clearBulkUndoTimer,
+      requestInstalledSkillFlip,
+      setSettings,
+      settings.skills.selected,
+    ],
   );
 
   const undoBulkSelection = useCallback(() => {
     clearBulkUndoTimer();
     if (bulkUndo) {
       const restore = bulkUndo.selected;
+      const current = new Set(settings.skills.selected);
+      const restoreSet = new Set(restore);
+      const changedNames = [...new Set([...current, ...restoreSet])].filter(
+        (name) => !isAlwaysEnabledSkillName(name) && current.has(name) !== restoreSet.has(name),
+      );
+      const followNames = changedNames.filter((name) => restoreSet.has(name) && !current.has(name));
+      requestInstalledSkillFlip("batch", changedNames, followNames);
       setSettings((prev) => updateSkills(prev, { selected: restore }));
     }
     setBulkUndo(null);
-  }, [bulkUndo, clearBulkUndoTimer, setSettings]);
+  }, [
+    bulkUndo,
+    clearBulkUndoTimer,
+    requestInstalledSkillFlip,
+    setSettings,
+    settings.skills.selected,
+  ]);
 
   async function deleteBulkSelectedInstalledSkills() {
     if (lockedByChatMode || deletingSkillName || !bulkMode) return;
@@ -1567,8 +1888,8 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
               </div>
             </div>
 
-            <div className="hub-panel-enter flex items-center justify-between gap-3">
-              <div className="inline-flex shrink-0 rounded-2xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
+            <div className="hub-panel-enter flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch max-sm:gap-2">
+              <div className="inline-flex shrink-0 rounded-2xl border border-border/40 bg-background/60 p-1 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.5)_inset] max-sm:max-w-full max-sm:overflow-x-auto max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden dark:border-white/[0.06] dark:bg-white/[0.04] dark:shadow-[0_1px_0_rgba(255,255,255,0.04)_inset]">
                 {[
                   {
                     value: "installed" as const,
@@ -1597,7 +1918,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                       type="button"
                       onClick={() => setView(item.value)}
                       className={cn(
-                        "relative inline-flex h-9 items-center justify-center gap-2 rounded-xl px-4 text-[12.5px] font-medium transition-all",
+                        "relative inline-flex h-9 items-center justify-center gap-2 rounded-xl px-4 text-[12.5px] font-medium transition-all max-sm:shrink-0",
                         active
                           ? "bg-background/85 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_12px_-8px_rgba(15,23,42,0.18)] ring-1 ring-border/45 dark:bg-white/[0.08] dark:ring-white/[0.09] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_12px_-8px_rgba(0,0,0,0.55)]"
                           : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
@@ -1638,7 +1959,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                           : t("settings.skillsBulkImportHint")
                       }
                       className={cn(
-                        "inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border px-3.5 text-[12.5px] font-medium backdrop-blur-xl transition-all",
+                        "inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl border px-3.5 text-[12.5px] font-medium backdrop-blur-xl transition-all max-sm:px-2.5",
                         bulkMode
                           ? "border-primary/50 bg-primary/10 text-foreground shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_12px_-8px_rgba(15,23,42,0.18)] ring-1 ring-primary/30 dark:border-primary/40 dark:bg-primary/15"
                           : "border-border/40 bg-background/60 text-muted-foreground hover:bg-background/80 hover:text-foreground dark:border-white/[0.06] dark:bg-white/[0.04]",
@@ -1650,7 +1971,32 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                       </span>
                     </button>
                   ) : null}
-                  <div className="relative w-full min-w-0 max-w-md">
+                  {view === "installed" ? (
+                    <select
+                      value={installedSort}
+                      onChange={(event) => {
+                        const value = event.currentTarget.value;
+                        if (!isInstalledSkillSort(value) || value === installedSort) return;
+                        const followKey = captureInstalledFlipKey();
+                        requestInstalledFlip("wave", [], followKey ? [followKey] : []);
+                        setInstalledSort(value);
+                      }}
+                      aria-label={t("settings.skillsInstalledSortLabel")}
+                      title={t("settings.skillsInstalledSortLabel")}
+                      className="h-10 max-w-[11rem] shrink-0 cursor-pointer rounded-xl border border-border/40 bg-background/95 px-3 text-[12.5px] font-medium text-foreground outline-hidden [color-scheme:light] transition-all hover:bg-background focus:border-border/60 focus:ring-2 focus:ring-foreground/10 max-sm:max-w-[7.5rem] max-sm:px-2 dark:border-white/[0.06] dark:bg-popover/95 dark:[color-scheme:dark]"
+                    >
+                      {INSTALLED_SORT_OPTIONS.map((option) => (
+                        <option
+                          key={option.value}
+                          value={option.value}
+                          className="bg-background text-foreground"
+                        >
+                          {t(option.labelKey)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  <div className="relative w-full min-w-0 max-w-md max-sm:flex-1">
                     <Search className="absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                     <input
                       type="text"
@@ -1674,7 +2020,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                             ? t("settings.skillsStoreSearch")
                             : t("settings.skillsImportSearchPlaceholder")
                       }
-                      className="h-10 w-full rounded-xl border border-border/40 bg-background/60 pl-10 pr-3 text-[13px] outline-hidden backdrop-blur-xl transition-all placeholder:text-muted-foreground/60 focus:border-border/60 focus:bg-background/85 focus:ring-2 focus:ring-foreground/10"
+                      className="h-10 w-full rounded-xl border border-border/40 bg-background/95 pl-10 pr-3 text-[13px] outline-hidden transition-all placeholder:text-muted-foreground/60 focus:border-border/60 focus:bg-background focus:ring-2 focus:ring-foreground/10 dark:bg-popover/95"
                     />
                   </div>
                 </div>
@@ -1698,8 +2044,8 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                   {view === "installed" ? (
                     <div
                       className={cn(
-                        "h-full min-h-0 overflow-y-auto px-0.5 pr-1 pt-1.5",
-                        bulkMode ? "pb-24" : "pb-4",
+                        "h-full min-h-0 overflow-y-auto px-0.5 pr-1 pt-1.5 [overflow-anchor:none]",
+                        bulkMode ? "pb-[calc(10rem+env(safe-area-inset-bottom))] sm:pb-24" : "pb-4",
                       )}
                     >
                       <div className="flex flex-col gap-5">
@@ -1801,9 +2147,12 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                           </>
                         ) : null}
 
-                        {filtered.length > 0 ? (
-                          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                            {filtered.map(({ skill, categories }) => {
+                        {sortedFiltered.length > 0 ? (
+                          <div
+                            ref={installedGridRef}
+                            className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+                          >
+                            {sortedFiltered.map(({ skill, categories }) => {
                               const alwaysEnabled = isAlwaysEnabledSkillName(skill.name);
                               const checked = alwaysEnabled || selected.has(skill.name);
                               const bulkSelected = bulkSelection.has(skill.name);
@@ -2022,6 +2371,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                 return (
                                   <button
                                     key={key}
+                                    data-flip-key={key}
                                     type="button"
                                     aria-label={`${t("settings.skillsInstalledPreviewOpen")}: ${skill.name}`}
                                     onClick={() => {
@@ -2029,7 +2379,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                       openInstalledSkillPreview(skill);
                                     }}
                                     className={cn(
-                                      "hub-skill-card skill-card-enter group flex h-full w-full cursor-pointer flex-col rounded-2xl border border-border/50 bg-background/75 p-3.5 text-left backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_18px_-12px_rgba(15,23,42,0.16)] transition-all hover:-translate-y-0.5 hover:border-border/60 hover:bg-background/85 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.08] dark:bg-white/[0.05] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_4px_18px_-12px_rgba(0,0,0,0.5)] dark:hover:border-white/[0.12] dark:hover:bg-white/[0.07] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15",
+                                      "hub-skill-card skill-card-enter group flex h-full w-full cursor-pointer flex-col rounded-2xl border border-border/50 bg-background/75 p-3.5 text-left shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_18px_-12px_rgba(15,23,42,0.16)] transition-all hover:-translate-y-0.5 hover:border-border/60 hover:bg-background/85 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.08] dark:bg-white/[0.05] dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_4px_18px_-12px_rgba(0,0,0,0.5)] dark:hover:border-white/[0.12] dark:hover:bg-white/[0.07] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15",
                                       bulkMode ? "cursor-default hover:translate-y-0" : null,
                                     )}
                                   >
@@ -2042,6 +2392,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                 // biome-ignore lint/a11y/useSemanticElements: The card contains nested controls and cannot be a native button.
                                 <div
                                   key={key}
+                                  data-flip-key={key}
                                   role="button"
                                   tabIndex={0}
                                   aria-label={`${t("settings.skillsInstalledPreviewOpen")}: ${skill.name}`}
@@ -2049,7 +2400,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                     if (bulkMode) {
                                       handleBulkInstalledCardClick(
                                         skill.name,
-                                        filtered.map((entry) => entry.skill.name),
+                                        sortedFiltered.map((entry) => entry.skill.name),
                                         event.shiftKey,
                                       );
                                       return;
@@ -2065,7 +2416,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                       event.preventDefault();
                                       handleBulkInstalledCardClick(
                                         skill.name,
-                                        filtered.map((entry) => entry.skill.name),
+                                        sortedFiltered.map((entry) => entry.skill.name),
                                         event.shiftKey,
                                       );
                                       return;
@@ -2074,7 +2425,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                                   }}
                                   className={cn(
                                     "hub-skill-card skill-card-enter group relative flex h-full w-full flex-col rounded-2xl border p-3.5 text-left transition-all",
-                                    "cursor-pointer backdrop-blur-xl focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15",
+                                    "cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-foreground/15",
                                     // Enabled style always visible; bulk selection overlays primary ring.
                                     checked
                                       ? "border-emerald-500/35 bg-emerald-50/90 shadow-[0_1px_0_rgba(255,255,255,0.55)_inset,0_4px_14px_-12px_rgba(16,185,129,0.28)] dark:border-emerald-400/30 dark:bg-emerald-500/12 dark:shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_4px_14px_-12px_rgba(16,185,129,0.22)]"
@@ -2092,7 +2443,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                         ) : null}
 
                         {(filter.trim() || installedCategory !== "all") &&
-                        filtered.length === 0 &&
+                        sortedFiltered.length === 0 &&
                         skills.length > 0 ? (
                           <GlassPanel tone="muted" className="hub-panel-enter">
                             <p className="py-2 text-center text-sm text-muted-foreground">
@@ -2168,11 +2519,11 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
       ) : null}
 
       {bulkMode &&
-        view === "installed" &&
-        !lockedByChatMode &&
-        (!bulkUndo || bulkSelection.size > 0) ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-3">
-          <div className="hub-panel-enter pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-full border border-border/50 bg-background/90 py-2 pl-4 pr-2 text-[12.5px] shadow-[0_8px_24px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-white/[0.08]">
+      view === "installed" &&
+      !lockedByChatMode &&
+      (!bulkUndo || bulkSelection.size > 0) ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-3 max-sm:bottom-[calc(1rem+env(safe-area-inset-bottom))]">
+          <div className="hub-panel-enter pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-full border border-border/50 bg-background/95 py-2 pl-4 pr-2 text-[12.5px] shadow-[0_8px_24px_-12px_rgba(15,23,42,0.35)] max-sm:justify-center max-sm:rounded-3xl max-sm:whitespace-nowrap dark:border-white/[0.1] dark:bg-popover/95">
             {bulkSelection.size > 0 ? (
               <>
                 <span className="whitespace-nowrap text-foreground/85">
@@ -2184,7 +2535,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                     ? ` ${t("settings.skillsBulkNotInFilter").replace("{count}", String(bulkSelectedHiddenCount))}`
                     : ""}
                 </span>
-                <span className="text-muted-foreground/50" aria-hidden="true">
+                <span className="hidden text-muted-foreground/50 sm:inline" aria-hidden="true">
                   │
                 </span>
                 <button
@@ -2204,7 +2555,7 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
                 >
                   {t("settings.skillsBulkClear")}
                 </button>
-                <span className="text-muted-foreground/50" aria-hidden="true">
+                <span className="hidden text-muted-foreground/50 sm:inline" aria-hidden="true">
                   │
                 </span>
                 <button
@@ -2269,8 +2620,8 @@ export function SkillsHubPage(props: SkillsHubPageProps) {
       ) : null}
 
       {bulkUndo && bulkSelection.size === 0 ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center">
-          <div className="hub-panel-enter pointer-events-auto flex items-center gap-3 rounded-full border border-border/50 bg-background/90 py-2 pl-4 pr-2 text-[12.5px] shadow-[0_8px_24px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-white/[0.08]">
+        <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-3 max-sm:bottom-[calc(1rem+env(safe-area-inset-bottom))]">
+          <div className="hub-panel-enter pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-3 rounded-full border border-border/50 bg-background/95 py-2 pl-4 pr-2 text-[12.5px] shadow-[0_8px_24px_-12px_rgba(15,23,42,0.35)] dark:border-white/[0.1] dark:bg-popover/95">
             <span className="text-foreground/85">
               {t("settings.skillsBulkUpdated").replace("{count}", String(bulkUndo.count))}
             </span>
@@ -2390,12 +2741,12 @@ function SkillsImportView(props: {
     <div
       className={cn(
         "relative h-full min-h-0 overflow-y-auto px-0.5 pr-1 pt-1.5",
-        bulkMode ? "pb-24" : "pb-4",
+        bulkMode ? "pb-[calc(8rem+env(safe-area-inset-bottom))] sm:pb-24" : "pb-4",
       )}
     >
       {importToast ? (
         <div className="pointer-events-none sticky top-2 z-[80] flex justify-end px-1">
-          <div className="notify-toast-enter pointer-events-auto flex max-w-sm items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-50/95 px-3 py-2.5 text-sm shadow-lg backdrop-blur-xl dark:border-amber-500/25 dark:bg-amber-950/80">
+          <div className="notify-toast-enter pointer-events-auto flex max-w-sm items-start gap-2.5 rounded-lg border border-amber-500/30 bg-amber-50 px-3 py-2.5 text-sm shadow-lg dark:border-amber-500/25 dark:bg-amber-950">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
             <p className="min-w-0 flex-1 leading-relaxed text-amber-800 dark:text-amber-200">
               {importToast}
@@ -2703,8 +3054,8 @@ function SkillsImportView(props: {
       </div>
 
       {bulkMode ? (
-        <div className="pointer-events-none sticky bottom-3 z-20 flex justify-center px-1 pt-2">
-          <div className="hub-panel-enter pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-full border border-border/50 bg-background/90 py-2 pl-4 pr-2 text-[12.5px] shadow-[0_8px_24px_-12px_rgba(15,23,42,0.35)] backdrop-blur-xl dark:border-white/[0.1] dark:bg-white/[0.08]">
+        <div className="pointer-events-none sticky bottom-3 z-20 flex justify-center px-1 pt-2 max-sm:bottom-[calc(0.75rem+env(safe-area-inset-bottom))]">
+          <div className="hub-panel-enter pointer-events-auto flex max-w-full flex-wrap items-center gap-2 rounded-full border border-border/50 bg-background/95 py-2 pl-4 pr-2 text-[12.5px] shadow-[0_8px_24px_-12px_rgba(15,23,42,0.35)] max-sm:justify-center max-sm:rounded-3xl max-sm:whitespace-nowrap dark:border-white/[0.1] dark:bg-popover/95">
             {importableSelectedCount > 0 || importing ? (
               <>
                 <span className="whitespace-nowrap text-foreground/85">
@@ -2713,7 +3064,7 @@ function SkillsImportView(props: {
                     String(importableSelectedCount),
                   )}
                 </span>
-                <span className="text-muted-foreground/50" aria-hidden="true">
+                <span className="hidden text-muted-foreground/50 sm:inline" aria-hidden="true">
                   │
                 </span>
                 <button
@@ -2785,7 +3136,7 @@ function InstalledSkillPreviewDrawer(props: {
   return createPortal(
     <div
       className={cn(
-        "fixed inset-0 z-50 flex justify-end bg-background/35 backdrop-blur-[2px]",
+        "fixed inset-0 z-50 flex justify-end bg-background/55",
         closing ? "skills-drawer-backdrop-closing" : "skills-drawer-backdrop",
       )}
       role="dialog"
@@ -2798,7 +3149,7 @@ function InstalledSkillPreviewDrawer(props: {
     >
       <aside
         className={cn(
-          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover/95 dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
+          "flex h-full w-full flex-col border-l border-border/45 bg-background shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] md:w-2/5 md:max-w-[34rem]",
           closing ? "skills-drawer-panel-closing" : "skills-drawer-panel",
         )}
       >
@@ -3408,7 +3759,7 @@ function SkillsStoreView(props: {
                       }
                     }}
                     className={cn(
-                      "skill-card-enter group flex h-full cursor-pointer flex-col rounded-2xl border p-3.5 text-left backdrop-blur-xl transition-all focus:outline-none focus:ring-2 focus:ring-foreground/10",
+                      "skill-card-enter group flex h-full cursor-pointer flex-col rounded-2xl border p-3.5 text-left transition-all focus:outline-none focus:ring-2 focus:ring-foreground/10",
                       done
                         ? "border-border/55 bg-background/80 shadow-[0_1px_0_rgba(255,255,255,0.6)_inset,0_4px_18px_-12px_rgba(15,23,42,0.18)] dark:border-white/[0.10] dark:bg-white/[0.07] dark:shadow-[0_1px_0_rgba(255,255,255,0.07)_inset,0_4px_18px_-12px_rgba(0,0,0,0.55)]"
                         : "border-border/40 bg-background/60 hover:-translate-y-0.5 hover:border-border/55 hover:bg-background/75 hover:shadow-[0_4px_16px_-10px_rgba(15,23,42,0.18)] dark:border-white/[0.05] dark:bg-white/[0.03] dark:hover:border-white/[0.10] dark:hover:bg-white/[0.06] dark:hover:shadow-[0_4px_16px_-10px_rgba(0,0,0,0.55)]",
@@ -3658,7 +4009,7 @@ function SkillsStorePreviewDrawer(props: {
   return createPortal(
     <div
       className={cn(
-        "fixed inset-0 z-50 flex justify-end bg-background/35 backdrop-blur-[2px]",
+        "fixed inset-0 z-50 flex justify-end bg-background/55",
         closing ? "skills-drawer-backdrop-closing" : "skills-drawer-backdrop",
       )}
       role="dialog"
@@ -3671,7 +4022,7 @@ function SkillsStorePreviewDrawer(props: {
     >
       <aside
         className={cn(
-          "flex h-full w-full flex-col border-l border-border/45 bg-background/95 shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover/95 dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] backdrop-blur-xl md:w-2/5 md:max-w-[34rem]",
+          "flex h-full w-full flex-col border-l border-border/45 bg-background shadow-[-18px_0_45px_-28px_rgba(15,23,42,0.45)] dark:border-white/[0.08] dark:bg-popover dark:shadow-[-18px_0_45px_-28px_rgba(0,0,0,0.7)] md:w-2/5 md:max-w-[34rem]",
           closing ? "skills-drawer-panel-closing" : "skills-drawer-panel",
         )}
       >

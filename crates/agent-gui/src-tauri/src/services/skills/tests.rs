@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -403,6 +404,23 @@ fn list_installed_skills_skips_hidden_backup_dirs() {
             .collect::<Vec<_>>(),
         vec!["active-skill"]
     );
+}
+
+#[test]
+fn list_installed_skills_reports_install_timestamp() {
+    let tmp = TempDir::new("liveagent-skill-installed-at-test").expect("temp dir");
+    let root = tmp.path().join("skills");
+    write_skill(&root, "timestamped-skill", "Timestamped");
+
+    let (skills, invalid) = list_installed_skills(&root).expect("list skills");
+
+    assert!(invalid.is_empty(), "{invalid:?}");
+    let installed_at = skills[0].installed_at.expect("installed timestamp");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time after epoch");
+    let now_millis = u64::try_from(now.as_millis()).expect("current time fits u64");
+    assert!(installed_at <= now_millis);
 }
 
 #[test]
