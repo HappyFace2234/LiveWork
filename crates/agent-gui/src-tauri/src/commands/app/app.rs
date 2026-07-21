@@ -21,6 +21,19 @@ pub struct GlobalShortcutRegistry {
 #[derive(Default)]
 pub struct WindowPinState(pub AtomicBool);
 
+/// 前端查询当前置顶状态（webview 重载后恢复置顶指示器）。
+#[tauri::command]
+pub fn app_window_pinned(pin_state: State<'_, Arc<WindowPinState>>) -> bool {
+    pin_state.0.load(Ordering::SeqCst)
+}
+
+/// 前端主动切换置顶（置顶指示器点击取消）；状态变更仍经
+/// `global-shortcut:pin-changed` 事件广播回前端。
+#[tauri::command]
+pub fn app_toggle_window_pin(app: AppHandle) {
+    crate::toggle_main_window_pin(&app);
+}
+
 impl GlobalShortcutRegistry {
     pub fn lookup_action(&self, shortcut: &Shortcut) -> Option<String> {
         let entries = self.entries.lock().ok()?;
@@ -52,6 +65,9 @@ pub struct GlobalShortcutFailure {
     pub error: String,
 }
 
+/// 全量替换式注册：本命令是插件注册的唯一入口，`unregister_all` 会清掉
+/// 插件上的所有快捷键。日后若有其他模块要注册全局快捷键，必须并入本命令
+/// 的 bindings 走同一条替换路径，不能自行调用插件 register。
 #[tauri::command]
 pub fn app_set_global_shortcuts(
     app: AppHandle,

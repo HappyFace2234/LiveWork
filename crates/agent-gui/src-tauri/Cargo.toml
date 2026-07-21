@@ -55,7 +55,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 tauri-plugin-updater = "2.10.1"
-tauri-plugin-global-shortcut = "2"
+tauri-plugin-global-shortcut = "2.3.2"
 semver = "1.0.28"
 quick-xml = "0.41.0"
 portable-pty = "0.9.0"

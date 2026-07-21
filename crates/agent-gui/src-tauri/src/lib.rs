@@ -132,6 +132,8 @@ macro_rules! app_invoke_handler {
             commands::app::app_runtime_platform,
             commands::app::app_set_close_window_behavior,
             commands::app::app_set_global_shortcuts,
+            commands::app::app_window_pinned,
+            commands::app::app_toggle_window_pin,
             commands::app::app_confirmed_exit,
             commands::app::app_macos_traffic_light_metrics,
             // Hooks

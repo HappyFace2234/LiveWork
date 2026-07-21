@@ -9,11 +9,13 @@ import {
 } from "react";
 import { Keyboard, MonitorSmartphone, Pin, SquarePen, X, Zap } from "../../components/icons";
 import { useLocale } from "../../i18n";
+import { inferRuntimePlatform } from "../../lib/runtimePlatform";
 import {
   applyGlobalShortcuts,
   GLOBAL_SHORTCUT_ACTIONS,
   type GlobalShortcutAction,
   type GlobalShortcutBindings,
+  type GlobalShortcutFailure,
   isShortcutModifierToken,
   modifierFromEventCode,
   readGlobalShortcutBindings,
@@ -24,6 +26,9 @@ import {
 import { AgentActivationSwitch } from "./shared";
 
 /* ============================== 键盘布局数据 ============================== */
+
+// 布局行是模块级常量，平台分叉须在模块加载时判定（同步推断即可，无需等后端）。
+const IS_MAC = inferRuntimePlatform() === "macos";
 
 const KEY_UNIT = 40;
 const KEY_GAP = 6;
@@ -133,16 +138,28 @@ const ROW_Z: KeyDef[] = [
   k("/", "Slash"),
   k("Shift", "ShiftRight", 2.75),
 ];
-const ROW_CTL: KeyDef[] = [
-  k("Ctrl", "ControlLeft", 1.25),
-  k("Win", "MetaLeft", 1.25),
-  k("Alt", "AltLeft", 1.25),
-  k("", "Space", 6.25),
-  k("Alt", "AltRight", 1.25),
-  k("Fn", null, 1.25),
-  k("☰", "ContextMenu", 1.25),
-  k("Ctrl", "ControlRight", 1.25),
-];
+// 底排按平台分叉：macOS 用 fn ⌃ ⌥ ⌘ 排布与符号，其余平台用 Ctrl Win Alt。
+const ROW_CTL: KeyDef[] = IS_MAC
+  ? [
+      k("Fn", null, 1.25),
+      k("⌃", "ControlLeft", 1.25),
+      k("⌥", "AltLeft", 1.25),
+      k("⌘", "MetaLeft", 1.25),
+      k("", "Space", 6.25),
+      k("⌘", "MetaRight", 1.25),
+      k("⌥", "AltRight", 1.25),
+      k("⌃", "ControlRight", 1.25),
+    ]
+  : [
+      k("Ctrl", "ControlLeft", 1.25),
+      k("Win", "MetaLeft", 1.25),
+      k("Alt", "AltLeft", 1.25),
+      k("", "Space", 6.25),
+      k("Alt", "AltRight", 1.25),
+      k("Fn", null, 1.25),
+      k("☰", "ContextMenu", 1.25),
+      k("Ctrl", "ControlRight", 1.25),
+    ];
 
 const NAV_TOP: KeyDef[] = [
   k("PrtSc", "PrintScreen"),
@@ -251,8 +268,19 @@ function keyDisplayLabel(code: string): string {
   return CODE_DISPLAY[code] ?? code;
 }
 
+/** macOS 上修饰键按系统惯例显示为符号（⌃⇧⌥⌘），其余平台沿用文本。 */
+const MAC_MODIFIER_DISPLAY: Record<ShortcutModifier, string> = {
+  Ctrl: "⌃",
+  Shift: "⇧",
+  Alt: "⌥",
+  Super: "⌘",
+};
+
 function displayToken(token: string): string {
-  if (isShortcutModifierToken(token)) return token === "Super" ? "Win" : token;
+  if (isShortcutModifierToken(token)) {
+    if (IS_MAC) return MAC_MODIFIER_DISPLAY[token];
+    return token === "Super" ? "Win" : token;
+  }
   return keyDisplayLabel(token);
 }
 
@@ -422,6 +450,14 @@ export function GlobalShortcutsSection() {
     },
   ];
 
+  const formatRegisterFailures = useCallback(
+    (failures: GlobalShortcutFailure[]) =>
+      `${t("settings.shortcutRegisterFailed")}: ${failures
+        .map((failure) => failure.error)
+        .join("; ")}`,
+    [t],
+  );
+
   const commit = useCallback(
     (next: GlobalShortcutBindings) => {
       // 同步镜像到 ref：同一事件序列里（如 mousedown 隐式保存 + click 其他操作）
@@ -431,17 +467,27 @@ export function GlobalShortcutsSection() {
       writeGlobalShortcutBindings(next);
       void applyGlobalShortcuts(next).then((failures) => {
         if (failures.length > 0) {
-          setStatus({
-            kind: "error",
-            text: `${t("settings.shortcutRegisterFailed")}: ${failures
-              .map((failure) => failure.error)
-              .join("; ")}`,
-          });
+          setStatus({ kind: "error", text: formatRegisterFailures(failures) });
         }
       });
     },
-    [t],
+    [formatRegisterFailures],
   );
+
+  // 启动时 applyStoredGlobalShortcuts 的注册失败是静默的；进入本页时按当前
+  // 绑定重新注册一次（幂等的全量替换），把"被其他程序占用"等失败回显出来。
+  useEffect(() => {
+    // 录制期间注册处于挂起态（locale 变更会重跑本效果），此时绝不能重新注册。
+    if (recordingRef.current) return;
+    let disposed = false;
+    void applyGlobalShortcuts(bindingsRef.current).then((failures) => {
+      if (disposed || recordingRef.current || failures.length === 0) return;
+      setStatus({ kind: "error", text: formatRegisterFailures(failures) });
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [formatRegisterFailures]);
 
   const startRecording = useCallback((action: GlobalShortcutAction) => {
     setRecording(action);

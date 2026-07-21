@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { CronPromptRunner } from "./components/cron/CronPromptRunner";
+import { Pin } from "./components/icons";
 import { useNativeInputContextMenu } from "./components/input-context-menu/NativeInputContextMenu";
 import { MemoryOrganizerHost } from "./components/memory/useMemoryOrganizer";
 import { WindowsTitleBar } from "./components/WindowsTitleBar";
@@ -181,6 +182,40 @@ export default function App() {
   // 启动时恢复本机保存的全局快捷键（桌面端专属，非 Tauri 环境内部自动忽略）。
   useEffect(() => {
     void applyStoredGlobalShortcuts().catch(() => {});
+  }, []);
+
+  // 窗口置顶状态：Rust 侧是唯一事实源（快捷键或指示器切换都经它广播），
+  // 挂载时查询一次以覆盖 webview 重载后指示器丢失的情况。
+  const [windowPinned, setWindowPinned] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | null = null;
+    invoke<boolean>("app_window_pinned")
+      .then((pinned) => {
+        if (!cancelled) setWindowPinned(Boolean(pinned));
+      })
+      .catch(() => {
+        // 非 Tauri 环境或旧版桌面壳：忽略。
+      });
+    listen<boolean>("global-shortcut:pin-changed", (event) => {
+      setWindowPinned(Boolean(event.payload));
+    })
+      .then((nextUnlisten) => {
+        if (cancelled) {
+          nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      })
+      .catch(() => {
+        // 非 Tauri 环境忽略。
+      });
+    return () => {
+      cancelled = true;
+      if (unlisten) {
+        unlisten();
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -485,6 +520,19 @@ export default function App() {
               />
             </AppErrorBoundary>
           </div>
+        )}
+        {windowPinned && (
+          <button
+            type="button"
+            onClick={() => {
+              void invoke("app_toggle_window_pin").catch(() => {});
+            }}
+            title={translate("app.windowPinnedHint", settings.locale)}
+            className="absolute top-3 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-primary/30 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary shadow-sm backdrop-blur transition-colors hover:bg-primary/20"
+          >
+            <Pin className="h-3 w-3" />
+            {translate("app.windowPinned", settings.locale)}
+          </button>
         )}
       </AppChrome>
     </LocaleContext.Provider>
