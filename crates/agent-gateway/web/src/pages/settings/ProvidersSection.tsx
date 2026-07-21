@@ -833,16 +833,12 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
                                           "ring-1 ring-inset ring-destructive focus-visible:ring-destructive",
                                       )}
                                       value={editingModel.contextWindow}
-                                      onChange={(event) =>
+                                      onChange={(event) => {
+                                        const value = event.currentTarget.value;
                                         setEditingModel((prev) =>
-                                          prev
-                                            ? {
-                                                ...prev,
-                                                contextWindow: event.currentTarget.value,
-                                              }
-                                            : prev,
-                                        )
-                                      }
+                                          prev ? { ...prev, contextWindow: value } : prev,
+                                        );
+                                      }}
                                     />
                                   </div>
                                   <div className="space-y-1.5">
@@ -857,16 +853,12 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
                                           "ring-1 ring-inset ring-destructive focus-visible:ring-destructive",
                                       )}
                                       value={editingModel.maxOutputToken}
-                                      onChange={(event) =>
+                                      onChange={(event) => {
+                                        const value = event.currentTarget.value;
                                         setEditingModel((prev) =>
-                                          prev
-                                            ? {
-                                                ...prev,
-                                                maxOutputToken: event.currentTarget.value,
-                                              }
-                                            : prev,
-                                        )
-                                      }
+                                          prev ? { ...prev, maxOutputToken: value } : prev,
+                                        );
+                                      }}
                                     />
                                   </div>
                                 </div>
@@ -901,16 +893,12 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
                                             "ring-1 ring-inset ring-destructive focus-visible:ring-destructive",
                                         )}
                                         value={editingModel[field]}
-                                        onChange={(event) =>
+                                        onChange={(event) => {
+                                          const value = event.currentTarget.value;
                                           setEditingModel((prev) =>
-                                            prev
-                                              ? {
-                                                  ...prev,
-                                                  [field]: event.currentTarget.value,
-                                                }
-                                              : prev,
-                                          )
-                                        }
+                                            prev ? { ...prev, [field]: value } : prev,
+                                          );
+                                        }}
                                       />
                                     </div>
                                   ))}
