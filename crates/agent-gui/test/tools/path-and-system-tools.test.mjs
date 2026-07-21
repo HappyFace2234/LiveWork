@@ -256,6 +256,27 @@ test("ToolPathResolver resolves enabled Skill paths and gates external paths by 
   assert.equal(stagedUploadDir.scope, "uploads");
   assert.equal(stagedUploadDir.relativePath, "1721550000000");
 
+  const stagedUploadRoot = await resolver.resolvePath("/Users/me/.liveagent/uploads", {
+    label: "List.path",
+    intent: "list",
+    required: true,
+  });
+  assert.equal(stagedUploadRoot.scope, "uploads");
+  assert.equal(stagedUploadRoot.root, "/Users/me/.liveagent/uploads");
+  assert.equal(stagedUploadRoot.absolutePath, "/Users/me/.liveagent/uploads");
+  assert.equal(stagedUploadRoot.relativePath, undefined);
+  assert.equal(stagedUploadRoot.displayPath, "uploads");
+
+  await assert.rejects(
+    () =>
+      resolver.resolvePath("/Users/me/.liveagent/uploads", {
+        label: "Write.path",
+        intent: "write",
+        required: true,
+      }),
+    /only supports read access/,
+  );
+
   await assert.rejects(
     () =>
       resolver.resolvePath("/Users/me/.liveagent/uploads/1721550000000/report.pdf", {

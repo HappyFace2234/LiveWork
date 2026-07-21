@@ -485,8 +485,60 @@ fn rel_to_workdir_forward_slash(workdir: &Path, abs: &Path) -> Result<String, St
 
 /// 上传暂存区基目录（`~/.liveagent/uploads`）。上传的附件是会话资产而非
 /// 工作区文件：落到应用存储域，避免污染工作区的 git 状态与文件树。
+///
+/// 返回的是逻辑路径（不 canonicalize）：落盘、展示与消息里持久化的
+/// absolute_path 都用它，避免 Windows 上把 `\\?\` verbatim 路径暴露给
+/// 用户与模型。授权比较一律走 [`canonical_upload_staging_base`]。
 fn upload_staging_base() -> Result<PathBuf, String> {
-    Ok(app_storage_dir()?.join("uploads"))
+    #[cfg(test)]
+    {
+        Ok(test_upload_staging_base().to_path_buf())
+    }
+    #[cfg(not(test))]
+    {
+        Ok(app_storage_dir()?.join("uploads"))
+    }
+}
+
+/// 单测进程专用暂存根：所有暂存相关测试都写进系统临时目录，绝不触碰
+/// 真实的 `~/.liveagent/uploads`。Unix 上刻意让暂存根经过一层 symlink，
+/// 使走完整命令链的测试必然覆盖"逻辑路径 ≠ canonical 路径"的比较场景
+/// （对应 Windows 的 `\\?\` verbatim 前缀与 symlink home 的发行版）。
+#[cfg(test)]
+fn test_upload_staging_base() -> &'static Path {
+    use std::sync::OnceLock;
+    static BASE: OnceLock<PathBuf> = OnceLock::new();
+    BASE.get_or_init(|| {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "liveagent-upload-staging-test-{}-{unique}",
+            std::process::id()
+        ));
+        let real = root.join("real");
+        fs::create_dir_all(&real).expect("create test staging dir");
+        #[cfg(unix)]
+        {
+            let link = root.join("staging");
+            std::os::unix::fs::symlink(&real, &link).expect("symlink test staging dir");
+            link
+        }
+        #[cfg(not(unix))]
+        {
+            real
+        }
+    })
+}
+
+/// 授权比较用的暂存区根。附件读取的 target 一律来自 `fs::canonicalize`
+/// （Windows 上是 `\\?\C:\...` verbatim 形式，symlink 也已被解析），逻辑
+/// 路径与它按组件比较永远不相等，必须把暂存根也 canonicalize 成同构形式
+/// 再比。目录不存在（从未落过暂存文件）时返回 None，此时暂存分支不放行。
+fn canonical_upload_staging_base() -> Option<PathBuf> {
+    let base = upload_staging_base().ok()?;
+    fs::canonicalize(base).ok()
 }
 
 /// 暂存文件保留天数：过期批次由启动 GC 清理。附件路径持久化在历史消息里，
@@ -499,9 +551,24 @@ fn upload_import_root_in(base: &Path) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let root = base.join(batch.to_string());
-    fs::create_dir_all(&root).map_err(|e| format!("创建上传目录失败 {}: {e}", root.display()))?;
-    Ok(root)
+    fs::create_dir_all(base).map_err(|e| format!("创建上传目录失败 {}: {e}", base.display()))?;
+    // 批次目录是"单次导入"的语义单位：同批文件共享目录，GC 与清理都按
+    // 目录整删。同一毫秒的并发导入撞名时追加序号拿独立目录，绝不共享
+    // （create_dir 而非 create_dir_all，已存在即视为撞名）。
+    for suffix in 0u32..1000 {
+        let name = if suffix == 0 {
+            batch.to_string()
+        } else {
+            format!("{batch}-{suffix}")
+        };
+        let root = base.join(name);
+        match fs::create_dir(&root) {
+            Ok(()) => return Ok(root),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("创建上传目录失败 {}: {e}", root.display())),
+        }
+    }
+    Err(format!("创建上传目录失败：{} 下批次名冲突过多", base.display()))
 }
 
 fn upload_import_root() -> Result<PathBuf, String> {
@@ -548,14 +615,19 @@ fn build_readable_file_entry(
 ) -> Result<SystemReadableFileEntry, String> {
     // 工作区内的文件用真实相对路径；暂存区文件用 `uploads/<batch>/<name>`
     // 形式的展示路径（UI 徽标、粘贴引用与去重 key 都吃这个字段），模型侧
-    // 的读取路径始终以 absolute_path 为准。
+    // 的读取路径始终以 absolute_path 为准。调用方契约：暂存区 destination
+    // 由 upload_staging_base 的逻辑路径拼出（不 canonicalize），因此这里
+    // 用逻辑根 strip 即可对齐。
     let relative_path = match rel_to_workdir_forward_slash(workdir, destination) {
         Ok(relative) => relative,
         Err(_) => {
             let base = upload_staging_base()?;
-            let staged = destination
-                .strip_prefix(&base)
-                .map_err(|_| format!("路径超出工作目录：{}", destination.display()))?;
+            let staged = destination.strip_prefix(&base).map_err(|_| {
+                format!(
+                    "路径既不在工作目录也不在上传暂存区：{}",
+                    destination.display()
+                )
+            })?;
             format!("uploads/{}", staged.to_string_lossy().replace('\\', "/"))
         }
     };
@@ -595,11 +667,13 @@ fn canonicalize_uploaded_file_path(absolute_path: &str) -> Result<PathBuf, Strin
 }
 
 /// 附件读取的授权范围：当前工作目录，或应用上传暂存区。
+/// 调用方保证 `workdir` 与 `target` 都是 canonicalize 过的路径，
+/// 暂存分支因此必须用同样 canonicalize 过的根来比较。
 fn is_allowed_attachment_target(workdir: &Path, target: &Path) -> bool {
     if target.starts_with(workdir) {
         return true;
     }
-    upload_staging_base().is_ok_and(|base| target.starts_with(base))
+    canonical_upload_staging_base().is_some_and(|base| target.starts_with(base))
 }
 
 fn canonicalize_uploaded_attachment_path(
@@ -1704,6 +1778,32 @@ mod tests {
         .expect("staging attachment must be readable");
 
         assert_eq!(response.data, BASE64_STANDARD.encode(b"staged"));
+
+        let _ = fs::remove_dir_all(&batch);
+    }
+
+    #[test]
+    fn attachment_authorization_compares_canonical_staging_base() {
+        // 复现线上 bug 形态：授权时 target 一律是 canonicalize 产物（Windows
+        // 为 `\\?\` verbatim，symlink 已解析），而逻辑暂存根不是。测试暂存根
+        // 在 Unix 上刻意经过 symlink，若比较未按 canonical 同构进行，
+        // canonical 化后的 target 不会命中逻辑根，这里立即失败。越界拒绝由
+        // read_uploaded_native_attachment_reads_workspace_file_and_rejects_escape 覆盖。
+        let staging = upload_staging_base().expect("resolve staging base");
+        let batch = staging.join("test-batch-auth");
+        fs::create_dir_all(&batch).expect("create staging batch");
+        let staged = batch.join("auth.txt");
+        fs::write(&staged, b"auth").expect("write staged file");
+        let canonical_target = fs::canonicalize(&staged).expect("canonicalize staged file");
+
+        let temp = tempdir().expect("create temp dir");
+        let workdir = fs::canonicalize(temp.path()).expect("canonicalize workdir");
+
+        assert!(
+            is_allowed_attachment_target(&workdir, &canonical_target),
+            "canonicalized staging target must stay authorized: {}",
+            canonical_target.display()
+        );
 
         let _ = fs::remove_dir_all(&batch);
     }
