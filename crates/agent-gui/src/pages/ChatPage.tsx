@@ -2692,7 +2692,7 @@ export function ChatPage(props: ChatPageProps) {
           fail("invalid tool answer payload", "invalid_payload");
           return;
         }
-        const outcome = answerAskUserQuestion(itemId, rawAnswers);
+        const outcome = answerAskUserQuestion(itemId, rawAnswers, { conversationId });
         if (!outcome.ok) {
           fail(outcome.message || "question not pending", "not_found");
           return;

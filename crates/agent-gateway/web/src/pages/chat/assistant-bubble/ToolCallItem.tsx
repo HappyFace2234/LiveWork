@@ -8,6 +8,7 @@ import {
   ASK_USER_QUESTION_TOOL_NAME,
   type AskUserQuestionAnswer,
   parseAskUserQuestionResultDetails,
+  readAskUserQuestionDeadlineAt,
   sanitizeAskUserQuestionItems,
 } from "../../../lib/chat/askUserQuestion";
 import { submitAskUserQuestionAnswer } from "../../../lib/chat/askUserQuestionBridge";
@@ -78,6 +79,12 @@ function ToolCallItem({
   // 提问卡运行期强制展开等待作答；应答落定后自动收起（同 Todo 完成收起）。
   const shouldKeepAskOpen = !readOnly && isAskUser && (Boolean(isRunning) || !result);
   const shouldCloseAnsweredAsk = isAskUser && Boolean(result);
+  // 权威应答截止时间：桌面端在网关上报的工具参数上盖章，倒计时与桌面计时
+  // 同源；重连/迟开页面也显示真实剩余时间。
+  const askDeadlineAt =
+    isAskUser && isRunning && !result
+      ? (readAskUserQuestionDeadlineAt(item.toolCall.arguments) ?? undefined)
+      : undefined;
   const submitAskAnswers = useCallback(
     (answers: AskUserQuestionAnswer[]) => submitAskUserQuestionAnswer(item.toolCall.id, answers),
     [item.toolCall.id],
@@ -135,7 +142,9 @@ function ToolCallItem({
 
   const statusLabel = isRunning
     ? isAskUser
-      ? t("chat.askUser.waiting")
+      ? askQuestions.length > 0
+        ? t("chat.askUser.waiting")
+        : t("chat.askUser.preparing")
       : t("chat.tool.running")
     : result
       ? result.isError
@@ -257,6 +266,7 @@ function ToolCallItem({
               cancelled={askDetails?.cancelled === true}
               timedOut={askDetails?.timedOut === true}
               interactive={Boolean(isRunning) && !result && !readOnly}
+              deadlineAt={askDeadlineAt}
               onSubmit={submitAskAnswers}
             />
           ) : null}

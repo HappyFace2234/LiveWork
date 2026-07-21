@@ -24,6 +24,8 @@ type AskUserQuestionSettlement =
 type PendingAskUserQuestion = {
   conversationId: string;
   questions: AskUserQuestionItem[];
+  /** 权威应答截止时间戳（毫秒）；卡片倒计时与超时兜底同源。 */
+  deadlineAt: number;
   settle: (settlement: AskUserQuestionSettlement) => void;
 };
 
@@ -31,16 +33,59 @@ type PendingAskUserQuestion = {
 // gateway chat_queue.tool_answer 转发到桌面端后走同一入口。
 const pendingByToolCallId = new Map<string, PendingAskUserQuestion>();
 
+// 网关工具参数上报先于 execute 挂起：deadline 在首次上报时预置，execute 复用
+// 同一值，保证 WebUI 卡片倒计时与桌面权威计时对齐。已过期条目按需惰性清理
+// （执行从未开始的调用，如被 guard 拒执的截断调用，不会走 settle 清理）。
+const presetDeadlineByToolCallId = new Map<string, number>();
+
+function sweepStalePresetDeadlines(now: number) {
+  for (const [toolCallId, deadlineAt] of presetDeadlineByToolCallId) {
+    if (deadlineAt + 60_000 < now) {
+      presetDeadlineByToolCallId.delete(toolCallId);
+    }
+  }
+}
+
+/** 网关侧上报工具参数时取（必要时预置）应答截止时间；挂起后与工具内计时同源。 */
+export function ensureAskUserQuestionDeadlineAt(toolCallId: string): number {
+  const trimmed = toolCallId.trim();
+  const pending = pendingByToolCallId.get(trimmed);
+  if (pending) return pending.deadlineAt;
+  const now = Date.now();
+  sweepStalePresetDeadlines(now);
+  const preset = presetDeadlineByToolCallId.get(trimmed);
+  if (preset !== undefined) return preset;
+  const deadlineAt = now + ASK_USER_QUESTION_TIMEOUT_MS;
+  presetDeadlineByToolCallId.set(trimmed, deadlineAt);
+  return deadlineAt;
+}
+
+/** GUI 卡片读取权威截止时间；无挂起且无预置（已落定/历史数据）时返回 null。 */
+export function getAskUserQuestionDeadlineAt(toolCallId: string): number | null {
+  const trimmed = toolCallId.trim();
+  return (
+    pendingByToolCallId.get(trimmed)?.deadlineAt ?? presetDeadlineByToolCallId.get(trimmed) ?? null
+  );
+}
+
 export type AnswerAskUserQuestionOutcome = { ok: boolean; message?: string };
 
 /** 应答一个挂起的提问；answers 为 {questionId, selectedLabel}[] 的原始输入。 */
 export function answerAskUserQuestion(
   toolCallId: string,
   rawAnswers: unknown,
+  options?: {
+    /** 远端应答通道必须携带：与挂起提问的会话不一致时拒绝，防串会话应答。 */
+    conversationId?: string;
+  },
 ): AnswerAskUserQuestionOutcome {
   const pending = pendingByToolCallId.get(toolCallId.trim());
   if (!pending) {
     return { ok: false, message: "Question is not pending (already answered or cancelled)." };
+  }
+  const expectedConversationId = options?.conversationId?.trim();
+  if (expectedConversationId && expectedConversationId !== pending.conversationId) {
+    return { ok: false, message: "Question belongs to a different conversation." };
   }
   const answers = resolveAskUserQuestionAnswers(pending.questions, rawAnswers);
   if (!answers) {
@@ -156,6 +201,14 @@ export function createAskUserQuestionTools(params: {
 
     // 挂起等待用户在聊天卡片里作答；停止按钮（AbortSignal）以“未应答”落定，
     // 超过应答窗口则按推荐项（缺省第一项）自动落定继续执行。
+    // deadline 优先复用网关参数上报时的预置值（WebUI 倒计时与之同源）；
+    // 测试注入 timeoutMs 时忽略预置，始终以注入值为准。
+    const presetDeadlineAt = presetDeadlineByToolCallId.get(toolCall.id);
+    presetDeadlineByToolCallId.delete(toolCall.id);
+    const deadlineAt =
+      params.timeoutMs !== undefined || presetDeadlineAt === undefined
+        ? Date.now() + timeoutMs
+        : presetDeadlineAt;
     const settlement = await new Promise<AskUserQuestionSettlement>((resolve) => {
       const settle = (value: AskUserQuestionSettlement) => {
         pendingByToolCallId.delete(toolCall.id);
@@ -166,11 +219,12 @@ export function createAskUserQuestionTools(params: {
       const onAbort = () => settle({ kind: "cancelled" });
       const timeoutId = setTimeout(
         () => settle({ kind: "timeout", answers: buildDefaultAskUserQuestionAnswers(questions) }),
-        timeoutMs,
+        Math.max(0, deadlineAt - Date.now()),
       );
       pendingByToolCallId.set(toolCall.id, {
         conversationId: params.conversationId,
         questions,
+        deadlineAt,
         settle,
       });
       signal?.addEventListener("abort", onAbort, { once: true });

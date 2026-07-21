@@ -23,12 +23,14 @@ function formatCountdown(remainingMs: number) {
 }
 
 /**
- * 倒计时提示：以卡片挂载时刻近似应答窗口起点。权威计时在桌面端工具侧，
- * 超时后 tool_result 会把卡片切到只读态，因此这里仅作展示、无需精确对齐。
+ * 倒计时提示：优先使用调用方传入的权威截止时间（GUI 读工具挂起表，WebUI 读
+ * 网关参数上的 deadline 盖章），两端与桌面计时同源；缺失时（历史/降级数据）
+ * 回退为挂载时刻近似。超时后 tool_result 会把卡片切到只读态。
  */
-function useAnswerCountdown(active: boolean) {
-  const [deadline] = useState(() => Date.now() + ASK_USER_QUESTION_TIMEOUT_MS);
-  const [remainingMs, setRemainingMs] = useState(ASK_USER_QUESTION_TIMEOUT_MS);
+function useAnswerCountdown(active: boolean, deadlineAt?: number) {
+  const [fallbackDeadline] = useState(() => Date.now() + ASK_USER_QUESTION_TIMEOUT_MS);
+  const deadline = deadlineAt ?? fallbackDeadline;
+  const [remainingMs, setRemainingMs] = useState(() => deadline - Date.now());
 
   useEffect(() => {
     if (!active) return;
@@ -56,6 +58,7 @@ export function AskUserQuestionCard({
   cancelled = false,
   timedOut = false,
   interactive,
+  deadlineAt,
   onSubmit,
 }: {
   questions: AskUserQuestionItem[];
@@ -66,6 +69,8 @@ export function AskUserQuestionCard({
   timedOut?: boolean;
   /** 工具执行中且当前端可应答时为 true。 */
   interactive: boolean;
+  /** 权威应答截止时间戳（毫秒）；缺省以挂载时刻近似。 */
+  deadlineAt?: number;
   onSubmit?: (answers: AskUserQuestionAnswer[]) => Promise<AskUserQuestionSubmitOutcome>;
 }) {
   const { t } = useLocale();
@@ -85,7 +90,7 @@ export function AskUserQuestionCard({
   const isSettled = (answers?.length ?? 0) > 0;
   const selections = isSettled ? settledSelections : draftSelections;
   const canInteract = interactive && !isSettled && !cancelled && !submitting;
-  const remainingMs = useAnswerCountdown(interactive && !isSettled && !cancelled);
+  const remainingMs = useAnswerCountdown(interactive && !isSettled && !cancelled, deadlineAt);
 
   if (questions.length === 0) return null;
 

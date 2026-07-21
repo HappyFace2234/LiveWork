@@ -297,3 +297,77 @@ test("result details round-trip through the transcript parser", () => {
   assert.equal(shared.parseAskUserQuestionResultDetails({ kind: "todo_write" }), null);
   assert.equal(shared.parseAskUserQuestionResultDetails(null), null);
 });
+
+test("remote answers are rejected when the conversation does not match", async () => {
+  const { tools } = loadModules();
+  const bundle = tools.createAskUserQuestionTools({ conversationId: "conv-owner" });
+  const resultPromise = bundle.executeToolCall(createToolCall(buildQuestionsArgs(), "call-ask-conv"));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const answers = [
+    { questionId: "storage", selectedLabel: "应用数据目录" },
+    { questionId: "q2", selectedLabel: "不迁移" },
+  ];
+  // 携带会话上下文的应答（WebUI tool_answer 通道）必须命中挂起提问所属会话。
+  const mismatch = tools.answerAskUserQuestion("call-ask-conv", answers, {
+    conversationId: "conv-other",
+  });
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.message, /different conversation/);
+  assert.equal(tools.hasPendingAskUserQuestion("call-ask-conv"), true);
+
+  const accepted = tools.answerAskUserQuestion("call-ask-conv", answers, {
+    conversationId: "conv-owner",
+  });
+  assert.equal(accepted.ok, true);
+  const result = await resultPromise;
+  assert.equal(result.isError, false);
+});
+
+test("gateway deadline stamp is preset once and adopted by execute", async () => {
+  const { shared, tools } = loadModules();
+
+  // 网关参数上报先于 execute：首次 ensure 预置，之后幂等返回同一值。
+  const preset = tools.ensureAskUserQuestionDeadlineAt("call-ask-deadline");
+  assert.ok(preset > Date.now());
+  assert.equal(tools.ensureAskUserQuestionDeadlineAt("call-ask-deadline"), preset);
+  assert.equal(tools.getAskUserQuestionDeadlineAt("call-ask-deadline"), preset);
+
+  // execute 挂起后复用同一预置值作为权威 deadline（不重新计时）。
+  const bundle = tools.createAskUserQuestionTools({ conversationId: "conv-1" });
+  const resultPromise = bundle.executeToolCall(
+    createToolCall(buildQuestionsArgs(), "call-ask-deadline"),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(tools.getAskUserQuestionDeadlineAt("call-ask-deadline"), preset);
+  assert.equal(tools.ensureAskUserQuestionDeadlineAt("call-ask-deadline"), preset);
+
+  tools.answerAskUserQuestion("call-ask-deadline", [
+    { questionId: "storage", selectedLabel: "应用数据目录" },
+    { questionId: "q2", selectedLabel: "不迁移" },
+  ]);
+  await resultPromise;
+  // 落定后清理，读取回落 null（卡片此时已只读，无需倒计时）。
+  assert.equal(tools.getAskUserQuestionDeadlineAt("call-ask-deadline"), null);
+
+  // 参数上盖章的读取器：合法数值透传，缺失/非法回 null。
+  const stamped = { questions: [], [shared.ASK_USER_QUESTION_DEADLINE_ARG]: preset };
+  assert.equal(shared.readAskUserQuestionDeadlineAt(stamped), preset);
+  assert.equal(shared.readAskUserQuestionDeadlineAt({ questions: [] }), null);
+  assert.equal(
+    shared.readAskUserQuestionDeadlineAt({ [shared.ASK_USER_QUESTION_DEADLINE_ARG]: "soon" }),
+    null,
+  );
+  assert.equal(shared.readAskUserQuestionDeadlineAt(null), null);
+});
+
+test("injected test timeout overrides a preset deadline", async () => {
+  const { tools } = loadModules();
+  // 预置一个 3 分钟后的 deadline；注入 timeoutMs 必须无视它，避免测试悬挂。
+  tools.ensureAskUserQuestionDeadlineAt("call-ask-timeout-preset");
+  const bundle = tools.createAskUserQuestionTools({ conversationId: "conv-1", timeoutMs: 50 });
+  const result = await bundle.executeToolCall(
+    createToolCall(buildQuestionsArgs(), "call-ask-timeout-preset"),
+  );
+  assert.equal(result.details.timedOut, true);
+});

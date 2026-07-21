@@ -9,6 +9,11 @@ export const ASK_USER_QUESTION_MIN_OPTIONS = 2;
 export const ASK_USER_QUESTION_MAX_OPTIONS = 6;
 /** 每轮提问的应答窗口：超时后按推荐项（缺省第一项）自动落定继续执行。 */
 export const ASK_USER_QUESTION_TIMEOUT_MS = 3 * 60 * 1000;
+/**
+ * 桌面端在网关上报的工具参数上附带的权威应答截止时间戳（毫秒）。
+ * WebUI 卡片倒计时以它对齐桌面计时；模型参数里不存在该键（`__` 前缀防冲突）。
+ */
+export const ASK_USER_QUESTION_DEADLINE_ARG = "__askUserQuestionDeadlineAt";
 
 export type AskUserQuestionOption = {
   label: string;
@@ -42,6 +47,13 @@ export type AskUserQuestionResultDetails = {
 
 function normalizeText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+/** 读取工具参数上附带的应答截止时间戳（毫秒）；缺失或非法返回 null。 */
+export function readAskUserQuestionDeadlineAt(args: unknown): number | null {
+  if (!args || typeof args !== "object") return null;
+  const value = (args as Record<string, unknown>)[ASK_USER_QUESTION_DEADLINE_ARG];
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 /** 推荐项固定排在第一位展示；其余选项保持模型给出的顺序。 */

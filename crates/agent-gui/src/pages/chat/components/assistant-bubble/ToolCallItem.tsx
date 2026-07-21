@@ -26,7 +26,10 @@ import {
 } from "../../../../lib/chat/messages/uiMessages";
 import { cn } from "../../../../lib/shared/utils";
 import { isSubagentCardToolCall } from "../../../../lib/subagents/card";
-import { answerAskUserQuestion } from "../../../../lib/tools/askUserQuestionTools";
+import {
+  answerAskUserQuestion,
+  getAskUserQuestionDeadlineAt,
+} from "../../../../lib/tools/askUserQuestionTools";
 import {
   areStableValuesEqual,
   displayString,
@@ -346,6 +349,12 @@ function ToolCallItem({ item, isRunning }: { item: ToolTraceItem; isRunning?: bo
   // 提问卡运行期强制展开等待作答；应答落定后自动收起（同 Todo 完成收起）。
   const shouldKeepAskOpen = isAskUser && (Boolean(isRunning) || !result);
   const shouldCloseAnsweredAsk = isAskUser && Boolean(result);
+  // 权威应答截止时间来自工具挂起表；卡片倒计时与超时兜底同源，
+  // 会话切换重挂载也不会重置。
+  const askDeadlineAt =
+    isAskUser && isRunning && !result
+      ? (getAskUserQuestionDeadlineAt(item.toolCall.id) ?? undefined)
+      : undefined;
   const submitAskAnswers = useCallback(
     (answers: AskUserQuestionAnswer[]) =>
       Promise.resolve(answerAskUserQuestion(item.toolCall.id, answers)),
@@ -395,7 +404,9 @@ function ToolCallItem({ item, isRunning }: { item: ToolTraceItem; isRunning?: bo
 
   const statusLabel = isRunning
     ? isAskUser
-      ? t("chat.askUser.waiting")
+      ? askQuestions.length > 0
+        ? t("chat.askUser.waiting")
+        : t("chat.askUser.preparing")
       : t("chat.tool.running")
     : result
       ? result.isError
@@ -519,6 +530,7 @@ function ToolCallItem({ item, isRunning }: { item: ToolTraceItem; isRunning?: bo
                 cancelled={askDetails?.cancelled === true}
                 timedOut={askDetails?.timedOut === true}
                 interactive={Boolean(isRunning) && !result}
+                deadlineAt={askDeadlineAt}
                 onSubmit={submitAskAnswers}
               />
             ) : null}
