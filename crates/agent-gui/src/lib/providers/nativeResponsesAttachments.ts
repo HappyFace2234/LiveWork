@@ -201,12 +201,20 @@ async function readNativeAttachment(params: {
   workdir: string;
   file: PendingUploadedFile;
 }): Promise<NativeAttachmentCommandResponse> {
+  // 附件读取只走导入时返回的绝对路径；旧版本仅持久化 workdir 相对路径的
+  // 附件不再兼容，直接走各 adapter 的 Read-fallback 分支。
+  const absolutePath =
+    typeof params.file.absolutePath === "string" ? params.file.absolutePath.trim() : "";
+  if (!absolutePath) {
+    throw new Error(
+      `attachment ${params.file.relativePath} has no absolute path (legacy upload); re-upload it to inline natively`,
+    );
+  }
   const response = await invoke<NativeAttachmentCommandResponse>(
     "system_read_uploaded_native_attachment",
     {
       workdir: params.workdir,
-      absolute_path: params.file.absolutePath,
-      relative_path: params.file.relativePath,
+      absolute_path: absolutePath,
       kind: params.file.kind,
     },
   );

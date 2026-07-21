@@ -484,7 +484,7 @@ test("Gemini native attachment adapter follows Gemini image MIME support", async
   const calls = [];
   const loader = createLoader(async (command, args) => {
     calls.push({ command, args });
-    if (args.relative_path.endsWith(".heic")) {
+    if (args.absolute_path.endsWith(".heic")) {
       return { mimeType: "image/heic", data: "aGVpYw==", sizeBytes: 4 };
     }
     return { mimeType: "image/gif", data: "Z2lm", sizeBytes: 3 };

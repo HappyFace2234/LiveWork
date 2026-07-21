@@ -679,36 +679,15 @@ fn is_allowed_attachment_target(workdir: &Path, target: &Path) -> bool {
 fn canonicalize_uploaded_attachment_path(
     workdir: &Path,
     absolute_path: Option<&str>,
-    relative_path: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let target = if let Some(raw_absolute_path) = absolute_path
+    // 附件读取只认 absolute_path：新方案下工作区内文件原地引用、暂存区
+    // 文件落 ~/.liveagent/uploads，两者的入口都是导入时返回的绝对路径。
+    // 旧版本仅持久化 workdir 相对路径的附件不再兼容，需重新上传。
+    let raw_absolute_path = absolute_path
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        canonicalize_uploaded_file_path(raw_absolute_path)?
-    } else {
-        let raw_relative_path = relative_path
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| "附件路径不能为空".to_string())?;
-        let rel = Path::new(raw_relative_path);
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(format!(
-                "附件路径必须是工作目录内的相对路径：{raw_relative_path}"
-            ));
-        }
-        let candidate = workdir.join(rel);
-        let metadata = fs::metadata(&candidate)
-            .map_err(|_| format!("附件文件不存在或不可访问：{raw_relative_path}"))?;
-        if !metadata.is_file() {
-            return Err(format!("附件路径不是普通文件：{raw_relative_path}"));
-        }
-        fs::canonicalize(&candidate).map_err(|e| format!("无法解析附件路径：{e}"))?
-    };
+        .ok_or_else(|| "附件缺少绝对路径（旧版本导入的附件请重新上传）".to_string())?;
+    let target = canonicalize_uploaded_file_path(raw_absolute_path)?;
 
     if !is_allowed_attachment_target(workdir, &target) {
         return Err(format!(
@@ -1044,15 +1023,10 @@ pub(crate) fn system_read_uploaded_image_preview_sync(
 pub(crate) fn system_read_uploaded_native_attachment_sync(
     workdir: String,
     absolute_path: Option<String>,
-    relative_path: Option<String>,
     kind: Option<String>,
 ) -> Result<SystemUploadedNativeAttachmentResponse, String> {
     let workdir = canonicalize_upload_workdir(&workdir)?;
-    let target = canonicalize_uploaded_attachment_path(
-        &workdir,
-        absolute_path.as_deref(),
-        relative_path.as_deref(),
-    )?;
+    let target = canonicalize_uploaded_attachment_path(&workdir, absolute_path.as_deref())?;
     let metadata = fs::metadata(&target)
         .map_err(|e| format!("读取附件元数据失败 {}: {e}", target.display()))?;
     if metadata.len() > UPLOADED_NATIVE_ATTACHMENT_MAX_BYTES {
@@ -1353,11 +1327,10 @@ pub async fn system_read_uploaded_image_preview(
 pub async fn system_read_uploaded_native_attachment(
     workdir: String,
     absolute_path: Option<String>,
-    relative_path: Option<String>,
     kind: Option<String>,
 ) -> Result<SystemUploadedNativeAttachmentResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        system_read_uploaded_native_attachment_sync(workdir, absolute_path, relative_path, kind)
+        system_read_uploaded_native_attachment_sync(workdir, absolute_path, kind)
     })
     .await
     .map_err(|e| format!("system_read_uploaded_native_attachment join failed: {e}"))?
@@ -1732,8 +1705,7 @@ mod tests {
 
         let response = system_read_uploaded_native_attachment_sync(
             workdir.to_string_lossy().into_owned(),
-            None,
-            Some("uploads/batch/note.txt".to_string()),
+            Some(upload.to_string_lossy().into_owned()),
             Some("text".to_string()),
         )
         .expect("read native attachment");
@@ -1742,12 +1714,20 @@ mod tests {
         assert_eq!(response.data, BASE64_STANDARD.encode(b"hello"));
         assert_eq!(response.size_bytes, 5);
 
+        // 仅有 workdir 相对路径的旧附件不再兼容：绝对路径缺失直接拒绝。
+        let legacy = system_read_uploaded_native_attachment_sync(
+            workdir.to_string_lossy().into_owned(),
+            None,
+            Some("text".to_string()),
+        )
+        .expect_err("relative-only legacy attachments must be rejected");
+        assert!(legacy.contains("附件缺少绝对路径"), "error = {legacy}");
+
         let outside = temp.path().join("outside.txt");
         fs::write(&outside, b"outside").expect("write outside file");
         let error = system_read_uploaded_native_attachment_sync(
             workdir.to_string_lossy().into_owned(),
             Some(outside.to_string_lossy().into_owned()),
-            None,
             Some("text".to_string()),
         )
         .expect_err("outside file must be rejected");
@@ -1772,7 +1752,6 @@ mod tests {
         let response = system_read_uploaded_native_attachment_sync(
             workdir.to_string_lossy().into_owned(),
             Some(staged.to_string_lossy().into_owned()),
-            None,
             Some("text".to_string()),
         )
         .expect("staging attachment must be readable");

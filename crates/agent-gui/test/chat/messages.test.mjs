@@ -21,12 +21,14 @@ const fileA = {
 };
 const fileB = {
   relativePath: "assets/diagram.png",
+  absolutePath: "/workspace/assets/diagram.png",
   fileName: "diagram.png",
   kind: "image",
   sizeBytes: 3 * 1024 * 1024,
 };
 const fileC = {
   relativePath: "uploads/report.docx",
+  absolutePath: "/Users/me/.liveagent/uploads/1/report.docx",
   fileName: "report.docx",
   kind: "word",
   sizeBytes: 4096,
@@ -245,25 +247,41 @@ test("uploaded file helpers preserve office and archive attachment kinds", () =>
     fileC,
     {
       relativePath: "uploads/workbook.xlsx",
+      absolutePath: "/Users/me/.liveagent/uploads/1/workbook.xlsx",
       fileName: "workbook.xlsx",
       kind: "spreadsheet",
       sizeBytes: 8192,
     },
     {
       relativePath: "uploads/assets.zip",
+      absolutePath: "/Users/me/.liveagent/uploads/1/assets.zip",
       fileName: "assets.zip",
       kind: "archive",
       sizeBytes: 16384,
     },
   ]);
   assert.ok(message);
-  assert.match(message.content, /uploads\/report\.docx \(word\)/);
-  assert.match(message.content, /uploads\/workbook\.xlsx \(spreadsheet\)/);
-  assert.match(message.content, /uploads\/assets\.zip \(archive\)/);
+  assert.match(message.content, /\/\.liveagent\/uploads\/1\/report\.docx \(word\)/);
+  assert.match(message.content, /\/\.liveagent\/uploads\/1\/workbook\.xlsx \(spreadsheet\)/);
+  assert.match(message.content, /\/\.liveagent\/uploads\/1\/assets\.zip \(archive\)/);
   assert.deepEqual(
     uploadedFiles.getUserMessageAttachments(message).map((file) => file.kind),
     ["word", "spreadsheet", "archive"],
   );
+});
+
+test("legacy relative-only attachments are excluded from the model instruction", () => {
+  const legacyOnly = uploadedFiles.createUserMessageWithUploads("Check this", [
+    {
+      relativePath: "uploads/legacy.docx",
+      fileName: "legacy.docx",
+      kind: "word",
+      sizeBytes: 64,
+    },
+  ]);
+  assert.ok(legacyOnly);
+  assert.equal(legacyOnly.content, "Check this");
+  assert.doesNotMatch(legacyOnly.content, /uploads\/legacy\.docx/);
 });
 
 test("attachment-only messages instruct the model to inspect selected files first", () => {
@@ -280,6 +298,7 @@ test("pasted text uploads preserve display metadata and parse display references
   const pastedFile = uploadedFiles.withPastedTextDisplayMetadata(
     {
       relativePath: "uploads/pasted-text-1.txt",
+      absolutePath: "/Users/me/.liveagent/uploads/1/pasted-text-1.txt",
       fileName: "pasted-text-1.txt",
       kind: "text",
       sizeBytes: 12345,

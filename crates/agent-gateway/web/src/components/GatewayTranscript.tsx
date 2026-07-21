@@ -300,7 +300,6 @@ function useGatewayUploadedImagePreview(
 ) {
   const normalizedWorkspaceRoot = typeof workspaceRoot === "string" ? workspaceRoot.trim() : "";
   const absolutePath = typeof file?.absolutePath === "string" ? file.absolutePath.trim() : "";
-  const relativePath = typeof file?.relativePath === "string" ? file.relativePath.trim() : "";
   const cacheKey = file ? getUploadedImagePreviewCacheKey(normalizedWorkspaceRoot, file) : "";
   const [imageSrc, setImageSrc] = useState<string | null | undefined>(() => {
     if (!file || !normalizedWorkspaceRoot) return null;
@@ -337,7 +336,7 @@ function useGatewayUploadedImagePreview(
     return () => {
       cancelled = true;
     };
-  }, [absolutePath, cacheKey, file, loader, normalizedWorkspaceRoot, relativePath]);
+  }, [absolutePath, cacheKey, file, loader, normalizedWorkspaceRoot]);
 
   return {
     imageSrc: imageSrc ?? null,
