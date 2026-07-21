@@ -316,6 +316,65 @@ fn windows_cmd_command(cmd: &str) -> String {
     format!("chcp 65001>nul & {cmd}")
 }
 
+#[cfg(windows)]
+fn is_windows_system32_dir(dir: &Path) -> bool {
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        return false;
+    };
+    let normalize = |p: &Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_ascii_lowercase()
+    };
+    normalize(dir) == normalize(&Path::new(&root).join("System32"))
+}
+
+/// Git Bash 解析（对标 Claude Code）：env 覆盖 → PATH → Git for Windows 默认安装路径。
+#[cfg(windows)]
+fn find_git_bash() -> Option<PathBuf> {
+    for var in ["LIVEAGENT_GIT_BASH_PATH", "CLAUDE_CODE_GIT_BASH_PATH"] {
+        if let Ok(raw) = std::env::var(var) {
+            let trimmed = raw.trim().trim_matches('"');
+            if !trimmed.is_empty() {
+                let path = expand_tilde_path(trimmed);
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        // System32 下的 bash.exe 是 WSL 启动器，不是 Git Bash。
+        if is_windows_system32_dir(&dir) {
+            continue;
+        }
+        let candidate = dir.join("bash.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    let roots = ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|var| std::env::var_os(var).map(PathBuf::from))
+        .chain([
+            PathBuf::from(r"C:\Program Files"),
+            PathBuf::from(r"C:\Program Files (x86)"),
+        ]);
+    for root in roots {
+        // bin\bash.exe 是带 MSYS 环境注入的启动器，优先于 usr\bin 的裸 bash。
+        for rel in [r"Git\bin\bash.exe", r"Git\usr\bin\bash.exe"] {
+            let candidate = root.join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ShellExecutionProfile {
     pub platform: &'static str,
@@ -339,61 +398,75 @@ pub(crate) struct SpawnedPlatformShell {
 fn platform_shell_candidates(cmd: &str) -> Vec<ShellCandidate> {
     #[cfg(windows)]
     {
+        let mut candidates = Vec::new();
+        if let Some(bash) = find_git_bash() {
+            candidates.push(ShellCandidate {
+                profile: ShellExecutionProfile {
+                    platform: "windows",
+                    profile: "windows-git-bash",
+                    shell_family: "posix",
+                    display_shell: "bash",
+                },
+                program: bash,
+                // 非登录 -c：-lc 会执行 /etc/profile 并 cd $HOME，破坏 cwd 语义。
+                args: vec!["-c".to_string(), cmd.to_string()],
+                augment_macos_path: false,
+            });
+        }
         let powershell_command = windows_powershell_command(cmd);
-        return vec![
-            ShellCandidate {
-                profile: ShellExecutionProfile {
-                    platform: "windows",
-                    profile: "windows-pwsh",
-                    shell_family: "powershell",
-                    display_shell: "pwsh",
-                },
-                program: PathBuf::from("pwsh"),
-                args: vec![
-                    "-NoLogo".to_string(),
-                    "-NoProfile".to_string(),
-                    "-NonInteractive".to_string(),
-                    "-Command".to_string(),
-                    powershell_command.clone(),
-                ],
-                augment_macos_path: false,
+        candidates.push(ShellCandidate {
+            profile: ShellExecutionProfile {
+                platform: "windows",
+                profile: "windows-pwsh",
+                shell_family: "powershell",
+                display_shell: "pwsh",
             },
-            ShellCandidate {
-                profile: ShellExecutionProfile {
-                    platform: "windows",
-                    profile: "windows-powershell",
-                    shell_family: "powershell",
-                    display_shell: "powershell",
-                },
-                program: PathBuf::from("powershell.exe"),
-                args: vec![
-                    "-NoLogo".to_string(),
-                    "-NoProfile".to_string(),
-                    "-NonInteractive".to_string(),
-                    "-ExecutionPolicy".to_string(),
-                    "Bypass".to_string(),
-                    "-Command".to_string(),
-                    powershell_command,
-                ],
-                augment_macos_path: false,
+            program: PathBuf::from("pwsh"),
+            args: vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                powershell_command.clone(),
+            ],
+            augment_macos_path: false,
+        });
+        candidates.push(ShellCandidate {
+            profile: ShellExecutionProfile {
+                platform: "windows",
+                profile: "windows-powershell",
+                shell_family: "powershell",
+                display_shell: "powershell",
             },
-            ShellCandidate {
-                profile: ShellExecutionProfile {
-                    platform: "windows",
-                    profile: "windows-cmd",
-                    shell_family: "cmd",
-                    display_shell: "cmd",
-                },
-                program: PathBuf::from("cmd.exe"),
-                args: vec![
-                    "/D".to_string(),
-                    "/S".to_string(),
-                    "/C".to_string(),
-                    windows_cmd_command(cmd),
-                ],
-                augment_macos_path: false,
+            program: PathBuf::from("powershell.exe"),
+            args: vec![
+                "-NoLogo".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-Command".to_string(),
+                powershell_command,
+            ],
+            augment_macos_path: false,
+        });
+        candidates.push(ShellCandidate {
+            profile: ShellExecutionProfile {
+                platform: "windows",
+                profile: "windows-cmd",
+                shell_family: "cmd",
+                display_shell: "cmd",
             },
-        ];
+            program: PathBuf::from("cmd.exe"),
+            args: vec![
+                "/D".to_string(),
+                "/S".to_string(),
+                "/C".to_string(),
+                windows_cmd_command(cmd),
+            ],
+            augment_macos_path: false,
+        });
+        return candidates;
     }
 
     #[cfg(target_os = "macos")]
@@ -760,8 +833,12 @@ mod tests {
         let profile = default_platform_shell_profile();
         if cfg!(windows) {
             assert_eq!(profile.platform, "windows");
-            assert_eq!(profile.profile, "windows-pwsh");
-            assert_eq!(profile.shell_family, "powershell");
+            // 首候选取决于测试机是否装了 Git Bash。
+            match profile.profile {
+                "windows-git-bash" => assert_eq!(profile.shell_family, "posix"),
+                "windows-pwsh" => assert_eq!(profile.shell_family, "powershell"),
+                other => panic!("unexpected windows profile: {other}"),
+            }
         } else if cfg!(target_os = "macos") {
             assert_eq!(profile.platform, "macos");
             assert_eq!(profile.profile, "posix-zsh");
@@ -771,6 +848,49 @@ mod tests {
             assert_eq!(profile.profile, "posix-bash");
             assert_eq!(profile.shell_family, "posix");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_chain_orders_git_bash_before_powershell_fallbacks() {
+        let profiles: Vec<&'static str> = super::platform_shell_candidates("echo hi")
+            .iter()
+            .map(|candidate| candidate.profile.profile)
+            .collect();
+        let tail = ["windows-pwsh", "windows-powershell", "windows-cmd"];
+        match profiles.len() {
+            4 => {
+                assert_eq!(profiles[0], "windows-git-bash");
+                assert_eq!(profiles[1..], tail);
+            }
+            3 => assert_eq!(profiles[..], tail),
+            other => panic!("unexpected windows candidate count: {other}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn find_git_bash_env_override_prefers_liveagent_var() {
+        // 单个测试函数串行覆盖所有 env 场景，避免并行 env 竞态。
+        let dir = tempfile::tempdir().expect("tempdir");
+        let liveagent_bash = dir.path().join("liveagent-bash.exe");
+        let claude_bash = dir.path().join("claude-bash.exe");
+        fs::write(&liveagent_bash, b"").unwrap();
+        fs::write(&claude_bash, b"").unwrap();
+
+        std::env::set_var("LIVEAGENT_GIT_BASH_PATH", &liveagent_bash);
+        std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", &claude_bash);
+        assert_eq!(super::find_git_bash(), Some(liveagent_bash.clone()));
+
+        // LIVEAGENT 指向不存在的文件时回退 CLAUDE_CODE。
+        std::env::set_var(
+            "LIVEAGENT_GIT_BASH_PATH",
+            dir.path().join("missing-bash.exe"),
+        );
+        assert_eq!(super::find_git_bash(), Some(claude_bash.clone()));
+
+        std::env::remove_var("LIVEAGENT_GIT_BASH_PATH");
+        std::env::remove_var("CLAUDE_CODE_GIT_BASH_PATH");
     }
 
     #[test]

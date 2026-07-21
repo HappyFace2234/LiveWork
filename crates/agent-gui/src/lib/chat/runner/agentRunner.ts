@@ -295,10 +295,10 @@ export function buildToolsSuffix(
     const bashPlatformLines =
       runtimePlatform === "windows"
         ? [
-            `- Current platform: ${platformLabel}. Bash runs through Windows-native shells: pwsh, then Windows PowerShell, then cmd.`,
-            '- Use PowerShell syntax by default: `Write-Output`, `$env:NAME = "value"`, semicolon separators, and PowerShell quoting.',
-            "- Do not assume Git Bash or POSIX syntax on Windows: avoid `export`, `nohup`, `/dev/null`, and POSIX background detachment.",
-            "- For long-running Windows commands, dev servers, watchers, or detached processes, use ManagedProcess instead of background shell syntax.",
+            `- Current platform: ${platformLabel}. Bash runs through Git Bash with POSIX semantics; pwsh, Windows PowerShell, and cmd are fallbacks used only when Git Bash is not installed.`,
+            "- Write POSIX/bash-compatible commands by default: `export`, `&&`, `/dev/null`, forward-slash paths.",
+            "- Background commands using `&` must redirect stdout and stderr before detaching, for example `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`.",
+            "- If a Bash result header reports `shell_family: powershell` or `shell_family: cmd`, Git Bash is missing: switch to PowerShell syntax and suggest installing Git for Windows or setting `LIVEAGENT_GIT_BASH_PATH`.",
           ]
         : [
             `- Current platform: ${platformLabel}. Bash runs through POSIX shells.`,
@@ -349,9 +349,7 @@ export function buildToolsSuffix(
 
   if (has("ManagedProcess")) {
     const managedProcessPreference =
-      runtimePlatform === "windows"
-        ? "- Prefer ManagedProcess over Bash for `pnpm dev`, `deno run main.ts`, `vite`, file watchers, local web servers, or commands that otherwise require detached Windows process syntax."
-        : "- Prefer ManagedProcess over Bash for `pnpm dev`, `deno run main.ts`, `vite`, file watchers, local web servers, or commands that otherwise require `nohup` and log redirection.";
+      "- Prefer ManagedProcess over Bash for `pnpm dev`, `deno run main.ts`, `vite`, file watchers, local web servers, or commands that otherwise require `nohup` and log redirection.";
     sections.push(
       [
         "## ManagedProcess",

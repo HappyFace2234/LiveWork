@@ -322,12 +322,8 @@ function buildCancelledResult(params: {
     exit_code: -1,
     shell: params.shell || "unknown",
     platform: params.runtimePlatform,
-    profile: params.runtimePlatform === "windows" ? "windows-pwsh" : undefined,
-    shell_family: params.runtimePlatform
-      ? params.runtimePlatform === "windows"
-        ? "powershell"
-        : "posix"
-      : undefined,
+    profile: params.runtimePlatform === "windows" ? "windows-git-bash" : undefined,
+    shell_family: params.runtimePlatform ? "posix" : undefined,
     stdout: "",
     stderr: "Cancelled",
     stdout_truncated: false,
@@ -379,14 +375,12 @@ export function createShellTools(params: {
   const platformLabel = runtimePlatformLabel(runtimePlatform);
   const shellPolicy =
     runtimePlatform === "windows"
-      ? 'Windows runs Bash commands with the native Windows shell chain: pwsh first, then Windows PowerShell, then cmd. Use PowerShell syntax by default: `Write-Output`, `$env:NAME = "value"`, semicolon separators, and `Start-Process` when a process must be detached. Do not assume Git Bash, `export`, `nohup`, `/dev/null`, or POSIX background syntax.'
+      ? "Windows runs Bash commands with Git Bash (POSIX semantics) when available, falling back to pwsh, then Windows PowerShell, then cmd only if Git Bash is not installed. Write POSIX/bash syntax by default: `export NAME=value`, `&&`, `/dev/null`, forward-slash paths. If the result header reports `shell_family: powershell` or `shell_family: cmd`, Git Bash is missing on this machine — switch to PowerShell syntax and suggest installing Git for Windows or setting LIVEAGENT_GIT_BASH_PATH."
       : runtimePlatform === "macos"
         ? "macOS runs Bash commands with POSIX shell syntax: zsh first, then Bash, then sh."
         : "Linux runs Bash commands with POSIX shell syntax: Bash first, then zsh, then sh.";
   const backgroundPolicy =
-    runtimePlatform === "windows"
-      ? "For dev servers, watchers, or long-running commands on Windows, use ManagedProcess instead of detached shell syntax."
-      : "Background commands using `&` must detach stdout and stderr first, for example `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`; otherwise the tool rejects them because inherited pipes can keep Bash running forever.";
+    "Background commands using `&` must detach stdout and stderr first, for example `nohup command > /tmp/liveagent-task.log 2>&1 < /dev/null &`; otherwise the tool rejects them because inherited pipes can keep Bash running forever. Prefer ManagedProcess for dev servers, watchers, or anything long-running.";
   const workdir = params.workdir;
   const allowSkillsRoot = params.skillsRootEnabled === true;
   const allowManagedProcess = params.managedProcessEnabled !== false;
@@ -572,18 +566,19 @@ export function createShellTools(params: {
     command: string;
     stdout: string;
     stderr: string;
+    shellFamily?: string;
   }) {
     const combined = [params.command, params.stdout, params.stderr].join("\n");
     const hints: string[] = [];
 
     if (
       runtimePlatform === "windows" &&
-      /(^|[\s;&|])(?:export|nohup)\b|\/dev\/null|not recognized as|不是内部或外部命令|无法将.*识别为/i.test(
-        combined,
-      )
+      (params.shellFamily === "powershell" || params.shellFamily === "cmd")
     ) {
       hints.push(
-        'Hint: This Bash tool is running with Windows-native shells. Use PowerShell syntax such as `Write-Output`, `$env:NAME = "value"`, and `;`, or use ManagedProcess for long-running commands.',
+        `Hint: Git Bash was not found, so this command ran under ${
+          params.shellFamily === "cmd" ? "cmd" : "PowerShell"
+        } where POSIX syntax like \`export\`, \`nohup\`, and \`/dev/null\` fails. Rewrite the command in PowerShell syntax for now, and suggest installing Git for Windows or setting LIVEAGENT_GIT_BASH_PATH to restore Bash semantics.`,
       );
     }
 
@@ -772,7 +767,7 @@ export function createShellTools(params: {
         const command =
           typeof toolCall.arguments?.command === "string" ? toolCall.arguments.command.trim() : "";
         if (!command) throw new Error('ManagedProcess.command is required for action="start"');
-        if (runtimePlatform !== "windows" && scanShellSyntax(command).background) {
+        if (scanShellSyntax(command).background) {
           throw new Error(
             "ManagedProcess.command must be a foreground command. Remove `&`; ManagedProcess starts it in the background and captures logs automatically.",
           );
@@ -995,20 +990,18 @@ export function createShellTools(params: {
       };
     }
 
-    if (runtimePlatform !== "windows") {
-      try {
-        validateBashBackgroundStdio(command);
-      } catch (err) {
-        return {
-          role: "toolResult",
-          toolCallId: toolCall.id,
-          toolName: toolCall.name,
-          content: [{ type: "text", text: asErrorMessage(err) }],
-          details: {},
-          isError: true,
-          timestamp: now,
-        };
-      }
+    try {
+      validateBashBackgroundStdio(command);
+    } catch (err) {
+      return {
+        role: "toolResult",
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: [{ type: "text", text: asErrorMessage(err) }],
+        details: {},
+        isError: true,
+        timestamp: now,
+      };
     }
 
     const timeoutRaw = toolCall.arguments?.timeout_ms;
@@ -1073,6 +1066,7 @@ export function createShellTools(params: {
               command,
               stdout: res.stdout || "",
               stderr: res.stderr || "",
+              shellFamily: res.shell_family,
             })
           : "";
 
