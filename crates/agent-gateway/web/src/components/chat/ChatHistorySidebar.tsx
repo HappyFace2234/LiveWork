@@ -2018,7 +2018,7 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
             <>
               <div
                 ref={projectsHeaderRef}
-                className="group/workspace-header flex items-center justify-between px-2 pb-1 pt-2"
+                className="flex items-center justify-between px-2 pb-1 pt-2"
               >
                 <button
                   type="button"
@@ -2038,10 +2038,7 @@ export const ChatHistorySidebar = memo(function ChatHistorySidebar(props: ChatHi
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className={cn(
-                    PROJECT_ICON_BUTTON_CLASS,
-                    "pointer-events-none opacity-0 transition-opacity hover:!bg-transparent group-hover/workspace-header:pointer-events-auto group-hover/workspace-header:opacity-100 focus-visible:opacity-100",
-                  )}
+                  className={cn(PROJECT_ICON_BUTTON_CLASS, "hover:!bg-transparent")}
                   title={t("chat.workspaceCreate")}
                   aria-label={t("chat.workspaceCreate")}
                   onClick={handleCreateProject}
