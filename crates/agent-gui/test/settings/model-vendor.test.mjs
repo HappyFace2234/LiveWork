@@ -100,3 +100,22 @@ test("sortModelsByVendor sorts groups by size, ids Z to A, and other last", () =
     ],
   );
 });
+
+test("sortModelsByActiveStateAndVendor puts active models first before vendor sorting", () => {
+  const sorted = modelVendor.sortModelsByActiveStateAndVendor(
+    [
+      { id: "unknown-active" },
+      { id: "claude-z" },
+      { id: "gpt-a" },
+      { id: "claude-a" },
+      { id: "gpt-z" },
+      { id: "gemini-z" },
+    ],
+    new Set(["unknown-active", "gpt-a", "gpt-z"]),
+  );
+
+  assert.deepEqual(
+    sorted.map((model) => model.id),
+    ["gpt-z", "gpt-a", "unknown-active", "claude-z", "claude-a", "gemini-z"],
+  );
+});

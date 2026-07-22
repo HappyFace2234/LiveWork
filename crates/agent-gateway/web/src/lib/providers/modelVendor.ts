@@ -145,3 +145,15 @@ export function sortModelsByVendor<T extends ModelVendorInput>(models: readonly 
     })
     .flatMap(([, group]) => [...group].sort((left, right) => compareModelIds(right.id, left.id)));
 }
+
+export function sortModelsByActiveStateAndVendor<T extends ModelVendorInput>(
+  models: readonly T[],
+  activeModelIds: ReadonlySet<string>,
+): T[] {
+  const active: T[] = [];
+  const inactive: T[] = [];
+  for (const model of models) {
+    (activeModelIds.has(model.id) ? active : inactive).push(model);
+  }
+  return [...sortModelsByVendor(active), ...sortModelsByVendor(inactive)];
+}

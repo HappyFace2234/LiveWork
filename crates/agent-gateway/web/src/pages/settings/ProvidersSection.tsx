@@ -39,7 +39,7 @@ import {
   isValidCustomHeaderKey,
 } from "../../lib/providers/customHeaders";
 import { parseModelValue, toModelValue } from "../../lib/providers/llm";
-import { sortModelsByVendor } from "../../lib/providers/modelVendor";
+import { sortModelsByActiveStateAndVendor } from "../../lib/providers/modelVendor";
 import {
   CODEX_REQUEST_FORMAT_LABELS,
   type CodexRequestFormat,
@@ -190,11 +190,21 @@ function itemsByIdOrder<T extends { id: string }>(items: readonly T[], order: re
   });
 }
 
-function orderModels(models: readonly ProviderModelConfig[], order: readonly string[] | undefined) {
-  if (!order) return sortModelsByVendor(models);
+function orderModels(
+  models: readonly ProviderModelConfig[],
+  order: readonly string[] | undefined,
+  activeModelIds: ReadonlySet<string>,
+) {
+  if (!order) return sortModelsByActiveStateAndVendor(models, activeModelIds);
   const ordered = itemsByIdOrder(models, order);
   const included = new Set(ordered.map((model) => model.id));
-  return [...ordered, ...sortModelsByVendor(models.filter((model) => !included.has(model.id)))];
+  return [
+    ...ordered,
+    ...sortModelsByActiveStateAndVendor(
+      models.filter((model) => !included.has(model.id)),
+      activeModelIds,
+    ),
+  ];
 }
 
 function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProps) {
@@ -569,7 +579,10 @@ function ProviderModal({ providerType, initialData, onSave, onClose }: ModalProp
 
   const isEditing = Boolean(initialData);
   const typeLabel = getProviderLabel(providerType);
-  const orderedModels = useMemo(() => orderModels(models, modelOrder), [models, modelOrder]);
+  const orderedModels = useMemo(
+    () => orderModels(models, modelOrder, activeModels),
+    [models, modelOrder, activeModels],
+  );
   const modelSearchQuery = modelSearch.trim().toLowerCase();
   const visibleModels = useMemo(
     () =>
