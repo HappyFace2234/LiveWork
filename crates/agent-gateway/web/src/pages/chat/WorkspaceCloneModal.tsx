@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FolderOpen, GitBranch, Loader2, X } from "@/components/icons";
 import { useRemotePathPicker } from "@/components/RemotePathPickerModal";
@@ -63,11 +63,17 @@ export function WorkspaceCloneModal({
   const [branches, setBranches] = useState<string[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const branchRequestId = useRef(0);
-  const { modalState, requestClose } = useModalMotion(onClose);
 
   const canSubmit = Boolean(
-    cloningEnabled && remoteUrl.trim() && parent.trim() && name.trim() && !cloning,
+    cloningEnabled &&
+      remoteUrl.trim() &&
+      parent.trim() &&
+      name.trim() &&
+      branch &&
+      !branchesLoading &&
+      !cloning,
   );
+  const { modalState, requestClose } = useModalMotion(onClose);
 
   async function chooseParent() {
     const selected = await pickPath({
@@ -79,29 +85,46 @@ export function WorkspaceCloneModal({
     if (selected?.trim()) setParent(selected.trim());
   }
 
-  async function loadRemoteBranches() {
+  const loadRemoteBranches = useCallback(
+    async (url: string, requestId: number) => {
+      try {
+        const response = await onLoadBranches(url);
+        if (requestId !== branchRequestId.current) return;
+        const nextBranches = [
+          ...new Set(response.branches.map((value) => value.trim()).filter(Boolean)),
+        ];
+        setBranches(nextBranches);
+        setBranch((current) =>
+          current && nextBranches.includes(current)
+            ? current
+            : response.defaultBranch || nextBranches[0] || "",
+        );
+      } catch (reason) {
+        if (requestId === branchRequestId.current) setError(errorMessage(reason));
+      } finally {
+        if (requestId === branchRequestId.current) setBranchesLoading(false);
+      }
+    },
+    [onLoadBranches],
+  );
+
+  useEffect(() => {
     const url = remoteUrl.trim();
-    if (!url) return;
     const requestId = ++branchRequestId.current;
-    setBranchesLoading(true);
-    try {
-      const response = await onLoadBranches(url);
-      if (requestId !== branchRequestId.current) return;
-      const nextBranches = [
-        ...new Set(response.branches.map((value) => value.trim()).filter(Boolean)),
-      ];
-      setBranches(nextBranches);
-      setBranch((current) =>
-        current && nextBranches.includes(current)
-          ? current
-          : response.defaultBranch || nextBranches[0] || "",
-      );
-    } catch (reason) {
-      if (requestId === branchRequestId.current) setError(errorMessage(reason));
-    } finally {
-      if (requestId === branchRequestId.current) setBranchesLoading(false);
+    if (!url) {
+      setBranches([]);
+      setBranch("");
+      setBranchesLoading(false);
+      return;
     }
-  }
+
+    setBranchesLoading(true);
+    const timer = window.setTimeout(() => void loadRemoteBranches(url, requestId), 350);
+    return () => {
+      window.clearTimeout(timer);
+      if (requestId === branchRequestId.current) branchRequestId.current += 1;
+    };
+  }, [loadRemoteBranches, remoteUrl]);
 
   async function cloneRepository() {
     if (!canSubmit) return;
@@ -195,15 +218,15 @@ export function WorkspaceCloneModal({
                   value={remoteUrl}
                   onChange={(event) => {
                     const nextUrl = event.currentTarget.value;
-                    branchRequestId.current += 1;
                     setRemoteUrl(nextUrl);
                     setBranches([]);
                     setBranch("");
+                    setBranchesLoading(Boolean(nextUrl.trim()));
+                    setError("");
                     if (nameIsAutomatic) setName(workspaceNameFromRemoteUrl(nextUrl));
                   }}
                   placeholder={t("chat.workspaceCloneUrlPlaceholder")}
                   autoComplete="off"
-                  onBlur={() => void loadRemoteBranches()}
                 />
               </div>
               <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
