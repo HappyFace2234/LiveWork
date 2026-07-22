@@ -9,6 +9,7 @@ import { useLocale } from "../../../i18n";
 import type { AppUpdateController } from "../../../lib/appUpdates";
 import { normalizeConversationTitle } from "../../../lib/chat/page/chatPageHelpers";
 import type { WorkspaceProject } from "../../../lib/settings";
+import { deleteSidebarConversations } from "../../../lib/sidebar/batchDelete";
 import {
   selectConversations,
   selectListState,
@@ -154,6 +155,20 @@ export function ChatSidebarContainer(props: ChatSidebarContainerProps) {
     [onConversationDeleted, store],
   );
 
+  const handleDeleteConversations = useCallback(
+    async (ids: readonly string[]) => {
+      const result = await deleteSidebarConversations(ids, async (id) => {
+        store.clearMutationError(id);
+        return store.remove(id);
+      });
+      for (const id of result.deletedIds) {
+        onConversationDeleted(id);
+      }
+      return result;
+    },
+    [onConversationDeleted, store],
+  );
+
   const handleLoadMore = useCallback(() => {
     void store.loadMore();
   }, [store]);
@@ -229,6 +244,7 @@ export function ChatSidebarContainer(props: ChatSidebarContainerProps) {
       onShareConversation={props.onShareConversation}
       onOpenSharedConversations={props.onOpenSharedConversations}
       onDeleteConversation={handleDeleteConversation}
+      onDeleteConversations={handleDeleteConversations}
       onLoadMore={handleLoadMore}
       onCloseSidebar={props.onCloseSidebar}
       onOpenSettings={props.onOpenSettings}

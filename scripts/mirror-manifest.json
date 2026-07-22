@@ -57,6 +57,8 @@
     "lib/sidebar/types.ts",
     "lib/sidebar/scope.ts",
     "lib/sidebar/reconcile.ts",
+    "lib/sidebar/batchDelete.ts",
+    "lib/sidebar/selection.ts",
     "lib/sidebar/backend.ts",
     "lib/sidebar/store.ts",
     "lib/sidebar/selectors.ts",
