@@ -783,7 +783,15 @@ fn build_chat_event_envelope_preserves_user_message_payload() {
                     "sizeBytes": 12
                 }
             ],
-            "execution_mode": "agent"
+            "execution_mode": "agent",
+            "message_ref": {
+                "segment_index": 0,
+                "message_index": 3,
+                "segment_id": "segment-a",
+                "message_id": "user-9",
+                "role": "user",
+                "content_hash": "fnv1a32:00000000"
+            }
         }),
     )
     .expect("build user message event envelope");
@@ -804,6 +812,8 @@ fn build_chat_event_envelope_preserves_user_message_payload() {
     assert_eq!(data["uploaded_files"][0]["relativePath"], "notes.md");
     assert_eq!(data["uploaded_files"][0]["kind"], "text");
     assert_eq!(data["execution_mode"], "agent");
+    assert_eq!(data["message_ref"]["message_id"], "user-9");
+    assert_eq!(data["message_ref"]["content_hash"], "fnv1a32:00000000");
 }
 
 #[test]

@@ -66,6 +66,9 @@ export type ChatUserMessageEvent = {
   message_id?: string;
   message?: string;
   uploaded_files?: unknown;
+  // The new message's own persisted identity (desktop mints it at persist
+  // time) — lets subscribers bind the turn's messageRef immediately.
+  message_ref?: unknown;
   base_message_ref?: unknown;
   reason?: string;
 };

@@ -55,14 +55,23 @@ func (m *Manager) ingestChatEvent(agentID, requestID string, event *gatewayv2.Ch
 	if event.GetType() == gatewayv2.ChatEvent_USER_MESSAGE {
 		if record := s.runs[agentScopedKey(agentID, runID)]; record != nil && record.userMessageSeeded {
 			messageID, _ := payload["message_id"].(string)
+			if strings.TrimSpace(messageID) == "" {
+				// The full stable ref (edit-resend rebase anchoring) carries
+				// the same id; either field proves the echo has new identity.
+				if ref, ok := payload["message_ref"].(map[string]any); ok {
+					refMessageID, _ := ref["message_id"].(string)
+					messageID = refMessageID
+				}
+			}
 			if strings.TrimSpace(messageID) == "" || record.userMessageIdentityForwarded {
 				// The gateway already appended this run's user_message at accept
 				// time. A plain or replayed agent echo adds no new identity.
 				return
 			}
 			// Forward one authoritative desktop echo carrying the stable message
-			// id. WebUI upserts it into the run's single user slot, so this enriches
-			// identity without creating a second bubble.
+			// identity (message_id, plus message_ref so a follow-up edit-resend
+			// can anchor its rebase). WebUI upserts it into the run's single user
+			// slot, so this enriches identity without creating a second bubble.
 			record.userMessageIdentityForwarded = true
 		}
 	}
@@ -418,6 +427,7 @@ func (s *conversationStreamStore) bindPendingRunLocked(
 		stream, pending.runID, pending.clientRequestID, pending.seeded, now,
 	)
 	record.userMessageSeeded = seededPayloadsIncludeUserMessage(pending.seeded)
+	record.rebaseSeeded = seededPayloadsIncludeRebased(pending.seeded)
 	s.updateChatCommandDedupeLocked(
 		pending.agentID,
 		pending.clientRequestID,

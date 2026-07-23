@@ -494,6 +494,10 @@ pub(crate) fn build_chat_event_envelope(
                     .or_else(|| object.get("selectedModel"))
                     .cloned()
                     .unwrap_or(Value::Null),
+                "message_ref": object.get("message_ref")
+                    .or_else(|| object.get("messageRef"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 "base_message_ref": object.get("base_message_ref")
                     .or_else(|| object.get("baseMessageRef"))
                     .cloned()

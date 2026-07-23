@@ -1063,3 +1063,140 @@ func TestWebuiEditResendEchoSeedsNoSecondRebased(t *testing.T) {
 		t.Fatalf("user_message count = %d (types %v), want 1 (echo swallowed)", got, eventTypes(sub.Events))
 	}
 }
+
+func userMessageEventWithRef(conversationID string, message string, ref map[string]any) *gatewayv2.ChatEvent {
+	payload := map[string]any{"message": message}
+	if ref != nil {
+		payload["message_ref"] = ref
+	}
+	data, _ := json.Marshal(payload)
+	return &gatewayv2.ChatEvent{
+		Type:           gatewayv2.ChatEvent_USER_MESSAGE,
+		ConversationId: conversationID,
+		Data:           string(data),
+	}
+}
+
+func testNewMessageRef() map[string]any {
+	return map[string]any{
+		"segment_index": 0,
+		"message_index": 4,
+		"segment_id":    "seg-1",
+		"message_id":    "msg-9",
+		"role":          "user",
+		"content_hash":  "hash-9",
+	}
+}
+
+// The gateway-seeded user_message cannot carry the message's persisted
+// identity (ids are minted at desktop persist time). An echo whose identity
+// arrives only through message_ref (no bare message_id) is forwarded exactly
+// once, replay-safe, so subscribers can anchor a later edit-resend rebase.
+func TestSeededUserMessageForwardsRefIdentityOnce(t *testing.T) {
+	m := NewManager()
+	m.StartChatCommand(conversationTestAgentID, "run-1", "conv-1", "", "client-1", []map[string]any{
+		{"type": "user_message", "message": "prompt"},
+	})
+	m.ingestChatControl(conversationTestAgentID, "run-1", startedControl("run-1", "conv-1"))
+	m.ingestChatEvent(conversationTestAgentID, "run-1", userMessageEventWithRef("conv-1", "prompt", testNewMessageRef()))
+	// Reconnect replay redelivers the same echo: no third bubble.
+	m.ingestChatEvent(conversationTestAgentID, "run-1", userMessageEventWithRef("conv-1", "prompt", testNewMessageRef()))
+
+	sub := m.SubscribeConversationStream(conversationTestAgentID, "conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, "user_message"); got != 2 {
+		t.Fatalf("user_message count = %d (types %v), want 2 (seed + one forwarded echo)", got, eventTypes(sub.Events))
+	}
+	forwarded := sub.Events[len(sub.Events)-1]
+	if forwarded.Type != "user_message" {
+		t.Fatalf("last event = %s, want forwarded user_message", forwarded.Type)
+	}
+	ref, ok := forwarded.Payload["message_ref"].(map[string]any)
+	if !ok || ref["message_id"] != "msg-9" || ref["content_hash"] != "hash-9" {
+		t.Fatalf("forwarded message_ref = %#v", forwarded.Payload["message_ref"])
+	}
+}
+
+// Echoes without usable identity (absent, null, or blank-id message_ref —
+// old desktop versions) swallow silently, exactly as before.
+func TestSeededEchoWithoutIdentitySwallowed(t *testing.T) {
+	m := NewManager()
+	m.StartChatCommand(conversationTestAgentID, "run-1", "conv-1", "", "client-1", []map[string]any{
+		{"type": "user_message", "message": "prompt"},
+	})
+	m.ingestChatControl(conversationTestAgentID, "run-1", startedControl("run-1", "conv-1"))
+	m.ingestChatEvent(conversationTestAgentID, "run-1", userMessageEventWithRef("conv-1", "prompt", nil))
+
+	nullRef, _ := json.Marshal(map[string]any{"message": "prompt", "message_ref": nil})
+	m.ingestChatEvent(conversationTestAgentID, "run-1", &gatewayv2.ChatEvent{
+		Type: gatewayv2.ChatEvent_USER_MESSAGE, ConversationId: "conv-1", Data: string(nullRef),
+	})
+	blankRef, _ := json.Marshal(map[string]any{
+		"message":     "prompt",
+		"message_ref": map[string]any{"message_id": "  ", "content_hash": "hash-9"},
+	})
+	m.ingestChatEvent(conversationTestAgentID, "run-1", &gatewayv2.ChatEvent{
+		Type: gatewayv2.ChatEvent_USER_MESSAGE, ConversationId: "conv-1", Data: string(blankRef),
+	})
+
+	sub := m.SubscribeConversationStream(conversationTestAgentID, "conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, "user_message"); got != 1 {
+		t.Fatalf("user_message count = %d (types %v), want 1", got, eventTypes(sub.Events))
+	}
+}
+
+// A GUI-local send is never seeded, so the ref rides inside the single
+// user_message itself.
+func TestGUILocalUserMessageKeepsInlineRef(t *testing.T) {
+	m := NewManager()
+	m.ingestChatControl(conversationTestAgentID, "run-1", startedControl("run-1", "conv-1"))
+	m.ingestChatEvent(conversationTestAgentID, "run-1", userMessageEventWithRef("conv-1", "prompt", testNewMessageRef()))
+
+	sub := m.SubscribeConversationStream(conversationTestAgentID, "conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, "user_message"); got != 1 {
+		t.Fatalf("user_message count = %d (types %v), want 1", got, eventTypes(sub.Events))
+	}
+	for _, event := range sub.Events {
+		if event.Type != "user_message" {
+			continue
+		}
+		ref, ok := event.Payload["message_ref"].(map[string]any)
+		if !ok || ref["message_id"] != "msg-9" {
+			t.Fatalf("user_message message_ref = %#v, want inline ref", event.Payload["message_ref"])
+		}
+	}
+}
+
+// A webui edit_resend echo that carries identity is forwarded (so the ref
+// binds), but its base_message_ref must not seed a second rebased — the
+// truncation was already seeded from the command's accept-time payloads.
+func TestWebuiEditResendIdentityEchoSeedsNoSecondRebased(t *testing.T) {
+	m := NewManager()
+	ref := testBaseMessageRef()
+	m.StartChatCommand(conversationTestAgentID, "run-1", "conv-1", "/workspace", "client-1", []map[string]any{
+		{"type": StreamEventRebased, "base_message_ref": ref, "reason": "edit_resend"},
+		{"type": "user_message", "message": "edited prompt", "base_message_ref": ref, "reason": "edit_resend"},
+	})
+	m.ingestChatControl(conversationTestAgentID, "run-1", startedControl("run-1", "conv-1"))
+	identityEcho, _ := json.Marshal(map[string]any{
+		"message":          "edited prompt",
+		"message_ref":      testNewMessageRef(),
+		"base_message_ref": ref,
+		"reason":           "edit_resend",
+	})
+	m.ingestChatEvent(conversationTestAgentID, "run-1", &gatewayv2.ChatEvent{
+		Type: gatewayv2.ChatEvent_USER_MESSAGE, ConversationId: "conv-1", Data: string(identityEcho),
+	})
+	m.ingestChatEvent(conversationTestAgentID, "run-1", tokenEvent("conv-1", "reply"))
+
+	sub := m.SubscribeConversationStream(conversationTestAgentID, "conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, StreamEventRebased); got != 1 {
+		t.Fatalf("rebased count = %d (types %v), want 1", got, eventTypes(sub.Events))
+	}
+	if got := countEventType(sub.Events, "user_message"); got != 2 {
+		t.Fatalf("user_message count = %d (types %v), want 2 (seed + forwarded identity echo)", got, eventTypes(sub.Events))
+	}
+}

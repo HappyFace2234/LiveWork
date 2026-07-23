@@ -335,7 +335,11 @@ function replaceAll(entries: ChatEntry[], turns: Turn[], historyTurns: HistoryTu
 // "Covered" requires the reply, not just the prompt: a settled turn whose
 // window twin is still user-only (the desktop's post-run flush races the
 // fetch) keeps rendering its streamed content (protectLaggedSettledTurns).
-function alignReplace(params: { turns: Turn[]; entries: ChatEntry[] }): AlignResult {
+function alignReplace(params: {
+  turns: Turn[];
+  entries: ChatEntry[];
+  rebaseReconcile?: boolean;
+}): AlignResult {
   let historyTurns = groupHistoryEntriesIntoTurns(params.entries);
 
   // Trim persisted echoes of active exchanges. Ref-anchored first (covers
@@ -419,7 +423,14 @@ function alignReplace(params: { turns: Turn[]; entries: ChatEntry[] }): AlignRes
     reflessSettled.length,
     Math.max(0, historyUserCount - refMatchedCount),
   );
-  const keptRefless = new Set(reflessSettled.slice(coveredRefless));
+  // Rebase reconciliation: the server authoritatively deleted a settled
+  // suffix (edit-resend truncation whose anchor this client missed), so
+  // uncovered ref-less settled turns are stale edit versions, not
+  // persistence-lagged exchanges — none survive. Genuinely lagged replies
+  // were already captured by protectLaggedSettledTurns above.
+  const keptRefless = new Set(
+    params.rebaseReconcile === true ? [] : reflessSettled.slice(coveredRefless),
+  );
 
   const turns = params.turns.flatMap((turn) => {
     const protectedTurn = protectedTurns.get(turn);
@@ -557,9 +568,18 @@ export function alignHistory(params: {
   turns: Turn[];
   entries: ChatEntry[];
   mode: HistoryApplyMode;
+  // Set after a rebased event whose truncation anchor was missing locally:
+  // the server deleted a settled suffix this client still renders, so the
+  // replace must not keep uncovered ref-less settled turns (only meaningful
+  // with mode "replace").
+  rebaseReconcile?: boolean;
 }): AlignResult {
   if (params.mode === "replace") {
-    return alignReplace({ turns: params.turns, entries: params.entries });
+    return alignReplace({
+      turns: params.turns,
+      entries: params.entries,
+      rebaseReconcile: params.rebaseReconcile,
+    });
   }
   return alignEnrich(params);
 }

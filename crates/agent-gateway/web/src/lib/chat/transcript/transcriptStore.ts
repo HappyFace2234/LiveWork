@@ -5,7 +5,7 @@ import type {
   StreamRunActivity,
 } from "@/lib/chat/stream/streamTypes";
 import { readEventRunId, readEventSeq } from "@/lib/chat/stream/streamTypes";
-import { type ChatEntry, normalizeLiveUploadedFiles } from "@/lib/chatUi";
+import { type ChatEntry, normalizeLiveUploadedFiles, readHistoryMessageRef } from "@/lib/chatUi";
 import type { ChatEvent } from "@/lib/gatewayTypes";
 
 import { alignHistory } from "./historyAlignment";
@@ -201,6 +201,15 @@ export function createTranscriptStore(options?: {
   // and never twice from the same stream position across syncs.
   let divergenceSignaled = false;
   let lastDivergenceSeq = -1;
+  // A rebased event whose truncation anchor was not found locally: the server
+  // authoritatively deleted a settled suffix this transcript still renders
+  // (the pre-message_ref pile-up bug, lost events, retention gaps). The next
+  // history snapshot applies as an authoritative replace (alignHistory
+  // rebaseReconcile) instead of a lag-protective enrich.
+  let rebaseDivergent = false;
+  // One resync nudge per unique missing anchor, ever — a replayed miss must
+  // not ping-pong resubscribes (each resync replays the same failing event).
+  const signaledRebaseAnchorMisses = new Set<string>();
 
   let snapshot = EMPTY_SNAPSHOT;
   let dirty = false;
@@ -348,7 +357,7 @@ export function createTranscriptStore(options?: {
       toolStatus,
       toolStatusIsCompaction,
       retryAttempts,
-      needsHistoryRefresh: turns.some((turn) => turn.contentStale === true),
+      needsHistoryRefresh: rebaseDivergent || turns.some((turn) => turn.contentStale === true),
       foldRevision,
       revision: snapshot.revision + 1,
     };
@@ -459,6 +468,7 @@ export function createTranscriptStore(options?: {
       message_id?: unknown;
       messageId?: unknown;
       uploaded_files?: unknown;
+      message_ref?: unknown;
     };
     const clientRequestId = readEventClientRequestId(event);
     const text = typeof payload.message === "string" ? payload.message : "";
@@ -467,6 +477,35 @@ export function createTranscriptStore(options?: {
     const attachments = normalizeLiveUploadedFiles(payload.uploaded_files);
     if (!text.trim() && attachments.length === 0) {
       return;
+    }
+    // The message's persisted identity (desktop stamps it at persist time):
+    // the bare id aligns live turns with their history twins, the full ref
+    // additionally lets a follow-up edit-resend anchor its rebase on this
+    // turn without waiting for the post-run history refresh.
+    const messageRef = readHistoryMessageRef(payload.message_ref);
+    const bindUserIdentity = (user: UserChatEntry): UserChatEntry => {
+      let next = user;
+      if (messageId && next.messageId !== messageId) {
+        next = { ...next, messageId };
+      }
+      if (messageRef && next.messageRef?.messageId !== messageRef.messageId) {
+        next = { ...next, messageRef };
+      }
+      return next;
+    };
+    if (messageRef) {
+      // Fresh-open overlap: the fetched history may already render this very
+      // message's persisted echo while its run replays into a live turn. The
+      // exchange now belongs to the turn — truncate the region at the echo so
+      // the prompt renders once. Log eviction is prefix-based, so a replay
+      // containing this user_message also contains the rest of its run.
+      const echoIndex = historyEntries.findIndex(
+        (entry) => entry.kind === "user" && entry.messageRef?.messageId === messageRef.messageId,
+      );
+      if (echoIndex >= 0) {
+        historyEntries = historyEntries.slice(0, echoIndex);
+        schedule(true);
+      }
     }
 
     // (1) Our own submission: bind the optimistic turn to its run. The user
@@ -483,11 +522,15 @@ export function createTranscriptStore(options?: {
             text,
             attachments,
             messageId: messageId || undefined,
+            messageRef,
             timestamp: Date.now(),
           },
         };
-      } else if (messageId && next.user.messageId !== messageId) {
-        next = { ...next, user: { ...next.user, messageId } };
+      } else {
+        const boundUser = bindUserIdentity(next.user);
+        if (boundUser !== next.user) {
+          next = { ...next, user: boundUser };
+        }
       }
       if (next !== ownTurn) {
         replaceTurn(ownTurn, next);
@@ -508,16 +551,17 @@ export function createTranscriptStore(options?: {
             text,
             attachments,
             messageId: messageId || undefined,
+            messageRef,
             timestamp: Date.now(),
           },
         });
         schedule(true);
-      } else if (messageId && runTurn.user.messageId !== messageId) {
-        replaceTurn(runTurn, {
-          ...runTurn,
-          user: { ...runTurn.user, messageId },
-        });
-        schedule(true);
+      } else {
+        const boundUser = bindUserIdentity(runTurn.user);
+        if (boundUser !== runTurn.user) {
+          replaceTurn(runTurn, { ...runTurn, user: boundUser });
+          schedule(true);
+        }
       }
       return;
     }
@@ -539,6 +583,7 @@ export function createTranscriptStore(options?: {
           text,
           attachments,
           messageId: messageId || undefined,
+          messageRef,
           timestamp: Date.now(),
         },
       },
@@ -689,9 +734,9 @@ export function createTranscriptStore(options?: {
   // edit_resend: truncate the transcript at the edited user message. This is
   // shared by the synchronous optimistic path and the authoritative stream
   // event so the latter remains idempotent when it arrives.
-  const rebaseFromMessageRef = (ref: unknown): boolean => {
+  const readRebaseAnchor = (ref: unknown): { messageId: string; contentHash: string } | null => {
     if (!ref || typeof ref !== "object") {
-      return false;
+      return null;
     }
     const refValue = ref as Record<string, unknown>;
     const rawMessageId = refValue.message_id ?? refValue.messageId;
@@ -699,8 +744,17 @@ export function createTranscriptStore(options?: {
     const rawContentHash = refValue.content_hash ?? refValue.contentHash;
     const contentHash = typeof rawContentHash === "string" ? rawContentHash.trim() : "";
     if (!messageId && !contentHash) {
+      return null;
+    }
+    return { messageId, contentHash };
+  };
+
+  const rebaseFromMessageRef = (ref: unknown): boolean => {
+    const anchor = readRebaseAnchor(ref);
+    if (!anchor) {
       return false;
     }
+    const { messageId, contentHash } = anchor;
     // Prefer the exact message id; the content hash is only a fallback for
     // refs without one — matching on it eagerly would truncate at the FIRST
     // occurrence of a re-sent identical prompt.
@@ -738,6 +792,26 @@ export function createTranscriptStore(options?: {
     const ref = (event as { base_message_ref?: unknown }).base_message_ref;
     if (rebaseFromMessageRef(ref)) {
       schedule(true);
+      return;
+    }
+    const anchor = readRebaseAnchor(ref);
+    if (!anchor) {
+      return;
+    }
+    // The truncation anchor is nowhere in this transcript (its turn was
+    // created before the persisted identity was known, or the anchor events
+    // fell out of the buffer). Silently keeping the tail is exactly how old
+    // edit versions pile up as extra user bubbles: mark the transcript
+    // rebase-divergent so the next history snapshot applies as an
+    // authoritative replace, and nudge one resync per unique anchor in case
+    // the anchor-bearing events were merely lost from this subscription.
+    rebaseDivergent = true;
+    schedule(true);
+    const anchorKey = anchor.messageId || anchor.contentHash;
+    if (!divergenceSignaled && !signaledRebaseAnchorMisses.has(anchorKey)) {
+      divergenceSignaled = true;
+      signaledRebaseAnchorMisses.add(anchorKey);
+      options?.onDivergence?.();
     }
   };
 
@@ -1122,11 +1196,19 @@ export function createTranscriptStore(options?: {
 
     applyHistorySnapshot: (entries, options) => {
       editResendStash = null;
+      // After a rebase whose anchor was missing, the transcript still renders
+      // settled turns the server already deleted. The lag-protective enrich
+      // would keep them forever — apply this snapshot as an authoritative
+      // replace that drops uncovered ref-less settled turns instead
+      // (persist-lag protections for genuinely lagged replies still apply).
+      const rebaseReconcile = rebaseDivergent;
+      rebaseDivergent = false;
       const result = alignHistory({
         historyEntries,
         turns,
         entries,
-        mode: options?.mode ?? "enrich",
+        mode: rebaseReconcile ? "replace" : (options?.mode ?? "enrich"),
+        rebaseReconcile,
       });
       if (!result.changed) {
         return;

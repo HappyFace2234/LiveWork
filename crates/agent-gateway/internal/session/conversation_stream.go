@@ -186,9 +186,11 @@ type chatRunRecord struct {
 	// queuedInGUI marks commands the desktop app parked in its prompt queue;
 	// the startup watchdog must leave them alone.
 	queuedInGUI bool
-	// rebaseSeeded marks runs whose rebased event was already appended from
-	// the agent's ref-bearing user_message, so a reconnect replay of the same
-	// event cannot seed a second truncation.
+	// rebaseSeeded marks runs whose rebased event was already appended — from
+	// the agent's ref-bearing user_message (GUI-local edits) or from the
+	// gateway-seeded payloads of a webui edit_resend command — so neither a
+	// reconnect replay nor the identity-forwarded desktop echo can seed a
+	// second truncation.
 	rebaseSeeded bool
 	// lostInferred marks a run whose terminal was inferred from missing
 	// liveness reports (desktop_run_lost and friends) rather than delivered by
@@ -1035,6 +1037,7 @@ func (m *Manager) StartChatCommand(
 	s.markRunQueuedLocked(stream, runID, clientRequestID, now)
 	acceptedSeq := s.appendSeededPayloadsLocked(stream, runID, clientRequestID, seededPayloads, now)
 	record.userMessageSeeded = seededPayloadsIncludeUserMessage(seededPayloads)
+	record.rebaseSeeded = seededPayloadsIncludeRebased(seededPayloads)
 	start := ChatCommandStart{
 		AgentID:        agentID,
 		RunID:          runID,
@@ -1063,6 +1066,7 @@ func (s *conversationStreamStore) flushDeferredSeedsLocked(
 	record.deferredSeeds = nil
 	s.appendSeededPayloadsLocked(stream, runID, record.clientRequestID, seeds, now)
 	record.userMessageSeeded = seededPayloadsIncludeUserMessage(seeds)
+	record.rebaseSeeded = seededPayloadsIncludeRebased(seeds)
 }
 
 func (s *conversationStreamStore) appendSeededPayloadsLocked(
@@ -1095,6 +1099,19 @@ func (s *conversationStreamStore) appendSeededPayloadsLocked(
 		}
 	}
 	return acceptedSeq
+}
+
+// seededPayloadsIncludeRebased mirrors seededPayloadsIncludeUserMessage for
+// the webui edit_resend truncation seed: marking rebaseSeeded at accept time
+// keeps the identity-forwarded desktop echo (which still carries the same
+// base_message_ref) from appending a second rebased to the log.
+func seededPayloadsIncludeRebased(seededPayloads []map[string]any) bool {
+	for _, payload := range seededPayloads {
+		if eventType, _ := payload["type"].(string); eventType == StreamEventRebased {
+			return true
+		}
+	}
+	return false
 }
 
 func seededPayloadsIncludeUserMessage(seededPayloads []map[string]any) bool {
