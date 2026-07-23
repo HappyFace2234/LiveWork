@@ -1026,3 +1026,118 @@ func TestWebuiEditResendEchoSeedsNoSecondRebased(t *testing.T) {
 		t.Fatalf("user_message count = %d (types %v), want 1 (echo swallowed)", got, eventTypes(sub.Events))
 	}
 }
+
+func userMessageEventWithRef(conversationID string, message string, ref map[string]any) *gatewayv1.ChatEvent {
+	payload := map[string]any{"message": message}
+	if ref != nil {
+		payload["message_ref"] = ref
+	}
+	data, _ := json.Marshal(payload)
+	return &gatewayv1.ChatEvent{
+		Type:           gatewayv1.ChatEvent_USER_MESSAGE,
+		ConversationId: conversationID,
+		Data:           string(data),
+	}
+}
+
+func testNewMessageRef() map[string]any {
+	return map[string]any{
+		"segment_index": 0,
+		"message_index": 4,
+		"segment_id":    "seg-1",
+		"message_id":    "msg-9",
+		"role":          "user",
+		"content_hash":  "hash-9",
+	}
+}
+
+// The gateway-seeded user_message cannot carry the message's persisted
+// identity (ids are minted at desktop persist time): the swallowed echo's
+// message_ref is distilled into exactly one user_message_ref binding event,
+// replay-safe, carrying the ref and the command's client_request_id.
+func TestSwallowedEchoSeedsUserMessageRefBinding(t *testing.T) {
+	m := NewManager()
+	m.StartChatCommand("run-1", "conv-1", "", "client-1", []map[string]any{
+		{"type": "user_message", "message": "prompt"},
+	})
+	m.ingestChatControl("run-1", startedControl("run-1", "conv-1"))
+	m.ingestChatEvent("run-1", userMessageEventWithRef("conv-1", "prompt", testNewMessageRef()))
+	// Reconnect replay redelivers the same echo: no second binding.
+	m.ingestChatEvent("run-1", userMessageEventWithRef("conv-1", "prompt", testNewMessageRef()))
+
+	sub := m.SubscribeConversationStream("conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, "user_message"); got != 1 {
+		t.Fatalf("user_message count = %d (types %v), want 1 (echo swallowed)", got, eventTypes(sub.Events))
+	}
+	if got := countEventType(sub.Events, StreamEventUserMessageRef); got != 1 {
+		t.Fatalf("user_message_ref count = %d (types %v), want 1", got, eventTypes(sub.Events))
+	}
+	for _, event := range sub.Events {
+		if event.Type != StreamEventUserMessageRef {
+			continue
+		}
+		ref, ok := event.Payload["message_ref"].(map[string]any)
+		if !ok || ref["message_id"] != "msg-9" || ref["content_hash"] != "hash-9" {
+			t.Fatalf("binding message_ref = %#v", event.Payload["message_ref"])
+		}
+		if event.Payload["client_request_id"] != "client-1" {
+			t.Fatalf("binding missing client_request_id: %#v", event.Payload)
+		}
+	}
+}
+
+// Echoes without a usable message_ref (absent, null, or blank message_id —
+// old desktop versions) swallow silently, exactly as before.
+func TestSwallowedEchoWithoutRefSeedsNoBinding(t *testing.T) {
+	m := NewManager()
+	m.StartChatCommand("run-1", "conv-1", "", "client-1", []map[string]any{
+		{"type": "user_message", "message": "prompt"},
+	})
+	m.ingestChatControl("run-1", startedControl("run-1", "conv-1"))
+	m.ingestChatEvent("run-1", userMessageEventWithRef("conv-1", "prompt", nil))
+
+	nullRef, _ := json.Marshal(map[string]any{"message": "prompt", "message_ref": nil})
+	m.ingestChatEvent("run-1", &gatewayv1.ChatEvent{
+		Type: gatewayv1.ChatEvent_USER_MESSAGE, ConversationId: "conv-1", Data: string(nullRef),
+	})
+	blankRef, _ := json.Marshal(map[string]any{
+		"message":     "prompt",
+		"message_ref": map[string]any{"message_id": "  ", "content_hash": "hash-9"},
+	})
+	m.ingestChatEvent("run-1", &gatewayv1.ChatEvent{
+		Type: gatewayv1.ChatEvent_USER_MESSAGE, ConversationId: "conv-1", Data: string(blankRef),
+	})
+
+	sub := m.SubscribeConversationStream("conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, StreamEventUserMessageRef); got != 0 {
+		t.Fatalf("user_message_ref count = %d (types %v), want 0", got, eventTypes(sub.Events))
+	}
+	if got := countEventType(sub.Events, "user_message"); got != 1 {
+		t.Fatalf("user_message count = %d (types %v), want 1", got, eventTypes(sub.Events))
+	}
+}
+
+// A GUI-local send is never seeded, so the ref rides inside the user_message
+// itself — no separate binding event.
+func TestGUILocalUserMessageKeepsInlineRef(t *testing.T) {
+	m := NewManager()
+	m.ingestChatControl("run-1", startedControl("run-1", "conv-1"))
+	m.ingestChatEvent("run-1", userMessageEventWithRef("conv-1", "prompt", testNewMessageRef()))
+
+	sub := m.SubscribeConversationStream("conv-1", 0, "")
+	defer sub.Cleanup()
+	if got := countEventType(sub.Events, StreamEventUserMessageRef); got != 0 {
+		t.Fatalf("user_message_ref count = %d (types %v), want 0", got, eventTypes(sub.Events))
+	}
+	for _, event := range sub.Events {
+		if event.Type != "user_message" {
+			continue
+		}
+		ref, ok := event.Payload["message_ref"].(map[string]any)
+		if !ok || ref["message_id"] != "msg-9" {
+			t.Fatalf("user_message message_ref = %#v, want inline ref", event.Payload["message_ref"])
+		}
+	}
+}

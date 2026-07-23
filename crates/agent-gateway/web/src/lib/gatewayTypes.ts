@@ -64,6 +64,9 @@ export type ChatUserMessageEvent = {
   conversation_id?: string;
   message?: string;
   uploaded_files?: unknown;
+  // The new message's own persisted identity (desktop mints it at persist
+  // time) — lets subscribers bind the turn's messageRef immediately.
+  message_ref?: unknown;
   base_message_ref?: unknown;
   reason?: string;
 };
@@ -73,6 +76,15 @@ export type ChatRebasedEvent = {
   conversation_id?: string;
   base_message_ref?: unknown;
   reason?: string;
+};
+
+// Gateway-seeded binding for a swallowed desktop user_message echo: retrofits
+// the persisted message identity onto the run's already-rendered user bubble.
+export type ChatUserMessageRefEvent = {
+  type: "user_message_ref";
+  client_request_id?: string;
+  conversation_id?: string;
+  message_ref?: unknown;
 };
 
 export type ChatEvent = (
@@ -147,6 +159,7 @@ export type ChatEvent = (
   | { type: "error"; message: string; round?: number; conversation_id?: string }
   | ChatUserMessageEvent
   | ChatRebasedEvent
+  | ChatUserMessageRefEvent
 ) & { seq?: number; workdir?: string };
 
 export type CronManagePayload = {

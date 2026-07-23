@@ -47,7 +47,20 @@ func (m *Manager) ingestChatEvent(requestID string, event *gatewayv1.ChatEvent) 
 	if event.GetType() == gatewayv1.ChatEvent_USER_MESSAGE {
 		if record := s.runs[runID]; record != nil && record.userMessageSeeded {
 			// The gateway already appended this run's user_message at accept
-			// time; swallow the agent echo so the message appears once.
+			// time; swallow the agent echo so the message appears once. The
+			// echo still carries the message's persisted identity the seed
+			// could not know (ids are minted at desktop persist time): append
+			// it as a binding event so subscribers can anchor a later
+			// edit-resend rebase against this turn.
+			if ref, ok := payload["message_ref"].(map[string]any); ok && !record.messageRefSeeded {
+				if messageID, _ := ref["message_id"].(string); strings.TrimSpace(messageID) != "" {
+					record.messageRefSeeded = true
+					s.appendSeededPayloadsLocked(stream, runID, record.clientRequestID, []map[string]any{{
+						"type":        StreamEventUserMessageRef,
+						"message_ref": ref,
+					}}, now)
+				}
+			}
 			return
 		}
 	}

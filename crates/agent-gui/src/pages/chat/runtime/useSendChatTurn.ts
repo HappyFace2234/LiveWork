@@ -16,6 +16,7 @@ import {
   appendMessagesToConversation,
   buildRequestContext,
   type ConversationViewState,
+  findHistoryMessageRefByMessageId,
   type HistoryMessageRef,
 } from "../../../lib/chat/conversation/conversationState";
 import {
@@ -817,6 +818,10 @@ export function useSendChatTurn(params: UseSendChatTurnParams) {
     }
     await gatewayBridgeEvents.queueUserMessage(text, uploadedFiles, {
       baseMessageRef: overrides?.editResendBaseMessageRef,
+      // The new message's own stable identity: lets remote transcripts bind
+      // their user bubble's messageRef immediately, so a follow-up edit of
+      // this message can anchor its rebase without a history round-trip.
+      messageRef: findHistoryMessageRefByMessageId(nextConversationState, pendingUserMessage.id),
     });
     acknowledgeGatewayRunStarted();
     let skillsPrompt = "";

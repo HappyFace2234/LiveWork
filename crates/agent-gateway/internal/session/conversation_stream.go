@@ -58,6 +58,13 @@ const (
 	// user_message arrives. Seeded by the gateway for webui edit_resend
 	// commands and synthesized on ingress for GUI-local edits.
 	StreamEventRebased = "rebased"
+	// StreamEventUserMessageRef binds a run's already-rendered user message to
+	// its persisted stable identity (message_ref). Emitted when the agent's
+	// USER_MESSAGE echo is swallowed as a duplicate of the gateway-seeded
+	// user_message: the seed could not carry the ref (ids are minted at
+	// desktop persist time), but a later edit-resend needs it as the rebase
+	// anchor. Carries message_ref, never message content.
+	StreamEventUserMessageRef = "user_message_ref"
 )
 
 // RunActivity describes the current run of a conversation. A nil activity
@@ -180,6 +187,10 @@ type chatRunRecord struct {
 	// the agent's ref-bearing user_message, so a reconnect replay of the same
 	// event cannot seed a second truncation.
 	rebaseSeeded bool
+	// messageRefSeeded marks runs whose user_message_ref binding event was
+	// already appended from the agent's swallowed echo, so a reconnect replay
+	// of the same echo cannot append a second binding.
+	messageRefSeeded bool
 	// lostInferred marks a run whose terminal was inferred from missing
 	// liveness reports (desktop_run_lost and friends) rather than delivered by
 	// the run itself. Such a terminal is falsifiable: fresh events for the run
@@ -1020,7 +1031,8 @@ func (s *conversationStreamStore) appendSeededPayloadsLocked(
 		for key, value := range payload {
 			cloned[key] = value
 		}
-		if eventType == "user_message" && clientRequestID != "" {
+		if clientRequestID != "" &&
+			(eventType == "user_message" || eventType == StreamEventUserMessageRef) {
 			cloned["client_request_id"] = clientRequestID
 		}
 		event := s.appendEventLocked(stream, runID, eventType, cloned, now)

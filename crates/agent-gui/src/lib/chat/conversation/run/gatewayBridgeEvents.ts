@@ -10,11 +10,16 @@ type QueueUserMessageOptions = {
   // broadcasts a `rebased` event from it so every other connected client
   // truncates its transcript at the same point.
   baseMessageRef?: HistoryMessageRef;
+  // The new user message's own stable identity (minted at persist time).
+  // Carried on every user_message so remote transcripts can bind the turn's
+  // messageRef immediately — a later edit-resend of THIS message anchors its
+  // rebase without waiting for a history refresh.
+  messageRef?: HistoryMessageRef;
 };
 
 // Wire shape mirror of the gateway's ChatMessageRef (snake_case), matching
 // the webui's buildHistoryMessageRefPayload byte for byte.
-function buildGatewayBaseMessageRefPayload(ref: HistoryMessageRef): Record<string, unknown> {
+function buildGatewayMessageRefPayload(ref: HistoryMessageRef): Record<string, unknown> {
   return {
     segment_index: ref.segmentIndex,
     message_index: ref.messageIndex,
@@ -127,9 +132,12 @@ export function createGatewayBridgeEventController(
           file && typeof file === "object" ? { ...(file as Record<string, unknown>) } : file,
         ),
         conversation_id: params.conversationId,
+        ...(options?.messageRef
+          ? { message_ref: buildGatewayMessageRefPayload(options.messageRef) }
+          : {}),
         ...(options?.baseMessageRef
           ? {
-              base_message_ref: buildGatewayBaseMessageRefPayload(options.baseMessageRef),
+              base_message_ref: buildGatewayMessageRefPayload(options.baseMessageRef),
               reason: "edit_resend",
             }
           : {}),
