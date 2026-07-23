@@ -320,9 +320,7 @@ fn classify_upload_text_bytes(bytes: &[u8], prefix_truncated: bool) -> UploadTex
     if bytes.contains(&0) {
         return UploadTextClass::Binary;
     }
-    let stripped = bytes
-        .strip_prefix(&[0xEF, 0xBB, 0xBF])
-        .unwrap_or(bytes);
+    let stripped = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
     match std::str::from_utf8(stripped) {
         Ok(_) => return UploadTextClass::Utf8,
         Err(error) => {
@@ -961,8 +959,7 @@ fn import_readable_file_paths_into_workdir(
                 .unwrap_or("file");
             let sanitized_name = sanitize_uploaded_file_name(source_name);
             let target = unique_path_for_copy(import_root.join(sanitized_name));
-            if detected.needs_utf8_transcode
-                && metadata.len() <= UPLOADED_TEXT_TRANSCODE_MAX_BYTES
+            if detected.needs_utf8_transcode && metadata.len() <= UPLOADED_TEXT_TRANSCODE_MAX_BYTES
             {
                 let bytes = fs::read(&source)
                     .map_err(|e| format!("读取文件失败 {}: {e}", source.display()))?;
