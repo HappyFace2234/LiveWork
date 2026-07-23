@@ -66,6 +66,10 @@ const REASONING_I18N_KEYS: Record<ReasoningLevel, string> = {
   max: "settings.reasoning.max",
 };
 
+function isReasoningLevel(value: unknown): value is ReasoningLevel {
+  return typeof value === "string" && Object.hasOwn(REASONING_I18N_KEYS, value);
+}
+
 function RuntimeControlTooltip(props: { label: string; children: ReactNode }) {
   return (
     <Tooltip.Root>
@@ -886,7 +890,15 @@ export const ChatComposerBar = memo(function ChatComposerBar(props: {
                     >
                       <span className="flex min-w-0 items-center gap-1">
                         <Sparkle className="h-3.5 w-3.5 shrink-0 text-violet-500 transition-colors dark:text-violet-400" />
-                        <SelectValue />
+                        <SelectValue>
+                          {(value) =>
+                            t(
+                              REASONING_I18N_KEYS[
+                                isReasoningLevel(value) ? value : selectedReasoning
+                              ],
+                            )
+                          }
+                        </SelectValue>
                       </span>
                     </SelectTrigger>
                     <SelectContent className="sidebar-context-menu min-w-40 rounded-xl border-0">
